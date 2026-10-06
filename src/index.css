@@ -109,11 +109,17 @@ textarea {
   background: var(--accent-soft);
 }
 
-/* 键盘焦点可见（鼠标点击不触发）—— 全局统一 accent 内圈 */
+/* 键盘焦点可见（鼠标点击不触发）—— 全局统一 accent 内圈。
+   文本框例外：自身不画内圈，由所在容器的 focus-within 描边承担，避免双框 */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   border-radius: 6px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
 }
 
 /* 细滚动条：贴边胶囊样式，两套主题共用派生令牌 */

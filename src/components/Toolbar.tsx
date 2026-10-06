@@ -36,6 +36,7 @@ export function Toolbar() {
   const refresh = useRepo((s) => s.refresh);
   const { mode, setMode } = useTheme();
   const [busy, setBusy] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   if (!meta) return null;
 
@@ -43,6 +44,12 @@ export function Toolbar() {
     setBusy(op);
     await remote(op);
     setBusy(null);
+  };
+
+  const doRefresh = async () => {
+    setRefreshing(true);
+    await refresh();
+    setRefreshing(false);
   };
 
   const ops: { op: "fetch" | "pull" | "push"; label: string; Icon: typeof Download }[] = [
@@ -110,8 +117,18 @@ export function Toolbar() {
           </button>
         )}
       </div>
-      <button className="btn-ghost icon-btn" title="刷新" aria-label="刷新" onClick={() => void refresh()}>
-        <RotateCw size={13} aria-hidden />
+      <button
+        className="btn-ghost icon-btn disabled:opacity-50"
+        title="刷新"
+        aria-label="刷新"
+        disabled={refreshing}
+        onClick={() => void doRefresh()}
+      >
+        {refreshing ? (
+          <LoaderCircle size={13} className="animate-spin" aria-hidden />
+        ) : (
+          <RotateCw size={13} aria-hidden />
+        )}
       </button>
       <button
         className="btn-ghost icon-btn"
