@@ -34,7 +34,6 @@ export function Toolbar() {
   const setFilter = useRepo((s) => s.setFilter);
   const remote = useRepo((s) => s.remote);
   const refresh = useRepo((s) => s.refresh);
-  const toast = useRepo((s) => s.toast);
   const { mode, setMode } = useTheme();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -122,21 +121,6 @@ export function Toolbar() {
       >
         <ThemeIcon size={13} aria-hidden />
       </button>
-      {toast && <ToastDot toast={toast} />}
     </div>
-  );
-}
-
-function ToastDot({ toast }: { toast: { kind: string; text: string } }) {
-  const color =
-    toast.kind === "ok" ? "text-ok" : toast.kind === "err" ? "text-bad" : "text-dim animate-pulse";
-  return (
-    <span
-      className={`tnum max-w-[280px] truncate text-[11px] ${color}`}
-      title={toast.text}
-      aria-live="polite"
-    >
-      {toast.text}
-    </span>
   );
 }

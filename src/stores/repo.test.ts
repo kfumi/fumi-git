@@ -58,7 +58,7 @@ beforeEach(() => {
     status: null,
     summary: null,
     filter: "",
-    toast: null,
+    toasts: [],
   });
 });
 
@@ -100,8 +100,39 @@ describe("store 状态流转（打桩 IPC）", () => {
     const ok = await useRepo.getState().openRepo("D:/nope");
     expect(ok).toBe(false);
     expect(useRepo.getState().meta).toBeNull();
-    expect(useRepo.getState().toast?.kind).toBe("err");
-    expect(useRepo.getState().toast?.text).toContain("不是 git 仓库");
+    const toasts = useRepo.getState().toasts;
+    const toast = toasts[toasts.length - 1];
+    expect(toast?.kind).toBe("err");
+    expect(toast?.text).toContain("不是 git 仓库");
+  });
+
+  it("remote：busy 提示就地转场为结果（成功 ok / 失败 err）", async () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      commits: [],
+      logDone: true,
+    });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.pull as ReturnType<typeof vi.fn>).mockResolvedValue("已拉取 origin/main");
+    (ipc.push as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "NoUpstream",
+      message: "没有配置上游",
+    });
+
+    await useRepo.getState().remote("pull");
+    let s = useRepo.getState();
+    expect(s.toasts).toHaveLength(1); // busy 被原地改写，不叠加
+    expect(s.toasts[0].kind).toBe("ok");
+    expect(s.toasts[0].text).toBe("已拉取 origin/main");
+
+    await useRepo.getState().remote("push");
+    s = useRepo.getState();
+    expect(s.toasts).toHaveLength(2);
+    expect(s.toasts[1].kind).toBe("err");
+    expect(s.toasts[1].text).toContain("没有配置上游");
+
+    useRepo.getState().dismissToast(s.toasts[1].id);
+    expect(useRepo.getState().toasts).toHaveLength(1);
   });
 
   it("stage 后工作区状态即时刷新", async () => {

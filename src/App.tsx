@@ -8,6 +8,7 @@ import { Toolbar } from "./components/Toolbar";
 import { GraphList } from "./components/GraphList";
 import { CommitDetailPanel, StagePanel } from "./components/StagePanel";
 import { Welcome } from "./components/Welcome";
+import { ToastHost } from "./components/ToastHost";
 
 export default function App() {
   const meta = useRepo((s) => s.meta);
@@ -27,7 +28,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!meta) return <Welcome />;
+  if (!meta)
+    return (
+      <>
+        <ToastHost />
+        <Welcome />
+      </>
+    );
 
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
@@ -40,6 +47,7 @@ export default function App() {
           <StagePanel />
         </div>
       </div>
+      <ToastHost />
     </div>
   );
 }

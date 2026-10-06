@@ -14,9 +14,12 @@ import type {
 const PAGE = 200;
 
 export interface Toast {
+  id: number;
   kind: "ok" | "err" | "busy";
   text: string;
 }
+
+let toastSeq = 0;
 
 interface RepoState {
   config: AppConfig | null;
@@ -30,7 +33,7 @@ interface RepoState {
   status: RepoStatus | null;
   summary: BranchSummary | null;
   filter: string;
-  toast: Toast | null;
+  toasts: Toast[];
 
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
@@ -44,13 +47,14 @@ interface RepoState {
   commit: (message: string) => Promise<boolean>;
   remote: (op: "fetch" | "pull" | "push") => Promise<void>;
   setFilter: (f: string) => void;
-  showToast: (t: Toast | null) => void;
+  pushToast: (kind: Toast["kind"], text: string) => number;
+  /** 就地改写某条提示（busy → ok/err 的转场复用同一条，不打断视线） */
+  updateToast: (id: number, patch: Partial<Pick<Toast, "kind" | "text">>) => void;
+  dismissToast: (id: number) => void;
 }
 
-const errToast = async (e: unknown): Promise<Toast> => ({
-  kind: "err",
-  text: `操作失败：${(await asGitError(e)).message}`,
-});
+const errText = async (e: unknown): Promise<string> =>
+  `操作失败：${(await asGitError(e)).message}`;
 
 export const useRepo = create<RepoState>((set, get) => ({
   config: null,
@@ -64,7 +68,16 @@ export const useRepo = create<RepoState>((set, get) => ({
   status: null,
   summary: null,
   filter: "",
-  toast: null,
+  toasts: [],
+
+  pushToast: (kind, text) => {
+    const id = ++toastSeq;
+    set({ toasts: [...get().toasts, { id, kind, text }] });
+    return id;
+  },
+  updateToast: (id, patch) =>
+    set({ toasts: get().toasts.map((t) => (t.id === id ? { ...t, ...patch } : t)) }),
+  dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
 
   hydrate: async () => {
     const cfg = await ipc.getConfig();
@@ -89,7 +102,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       set({ config: await ipc.getConfig() });
       return true;
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().pushToast("err", await errText(e));
       return false;
     }
   },
@@ -115,7 +128,8 @@ export const useRepo = create<RepoState>((set, get) => ({
       const fresh = page.commits.filter((c) => !seen.has(c.id));
       set({ commits: [...commits, ...fresh], logDone: page.done, loadingMore: false });
     } catch (e) {
-      set({ loadingMore: false, toast: await errToast(e) });
+      set({ loadingMore: false });
+      get().pushToast("err", await errText(e));
     }
   },
 
@@ -138,7 +152,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         detail: stillThere ? get().detail : null,
       });
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().pushToast("err", await errText(e));
     }
   },
 
@@ -153,7 +167,8 @@ export const useRepo = create<RepoState>((set, get) => ({
       if (get().selectedId === id) set({ detail, detailLoading: false });
     } catch (e) {
       if (get().selectedId === id) {
-        set({ detail: null, detailLoading: false, toast: await errToast(e) });
+        set({ detail: null, detailLoading: false });
+        get().pushToast("err", await errText(e));
       }
     }
   },
@@ -163,7 +178,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       await ipc.stage(paths);
       set({ status: await ipc.getStatus() });
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().pushToast("err", await errText(e));
     }
   },
 
@@ -172,35 +187,37 @@ export const useRepo = create<RepoState>((set, get) => ({
       await ipc.unstage(paths);
       set({ status: await ipc.getStatus() });
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().pushToast("err", await errText(e));
     }
   },
 
   commit: async (message) => {
     try {
       await ipc.commit(message);
-      set({ toast: { kind: "ok", text: "提交完成" } });
+      get().pushToast("ok", "提交完成");
       await get().refresh();
       return true;
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().pushToast("err", await errText(e));
       return false;
     }
   },
 
   remote: async (op) => {
-    set({ toast: { kind: "busy", text: op === "fetch" ? "抓取中…" : op === "pull" ? "拉取中…" : "推送中…" } });
+    const id = get().pushToast(
+      "busy",
+      op === "fetch" ? "抓取中…" : op === "pull" ? "拉取中…" : "推送中…",
+    );
     try {
       const msg = await (op === "fetch" ? ipc.fetch() : op === "pull" ? ipc.pull() : ipc.push());
-      set({ toast: { kind: "ok", text: msg } });
+      get().updateToast(id, { kind: "ok", text: msg });
       await get().refresh();
     } catch (e) {
-      set({ toast: await errToast(e) });
+      get().updateToast(id, { kind: "err", text: await errText(e) });
     }
   },
 
   setFilter: (f) => set({ filter: f }),
-  showToast: (t) => set({ toast: t }),
 }));
 
 /** 按信息/作者子串过滤（spec 故事 11） */
