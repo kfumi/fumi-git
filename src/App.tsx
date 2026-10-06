@@ -1,6 +1,6 @@
-// 应用骨架：未开仓库 → 欢迎页；已开 → 三栏工作台
-// 栏宽可拖拽（react-resizable-panels），比例持久化到 localStorage（autoSaveId）
-import { useEffect } from "react";
+// 应用骨架：未开仓库 → 欢迎页；已开 → 侧栏 + 中栏工作台（右栏按需出现）
+// 侧栏像素级宽度独立持久化（右栏显隐不影响其宽度）；中/右宽度由 react-resizable-panels 管理
+import { useEffect, useState } from "react";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { listenRepoChanged } from "./lib/ipc";
 import { useRepo } from "./stores/repo";
@@ -10,9 +10,18 @@ import { Toolbar } from "./components/Toolbar";
 import { MainArea } from "./components/MainArea";
 import { CommitDetailPanel } from "./components/StagePanel";
 import { FileDiffTabs, WorkDiffView } from "./components/FileDiffTabs";
-import { HDivider, VDivider } from "./components/ResizeHandle";
+import { HDivider, SidebarHandle, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
+
+const SIDEBAR_MIN = 140;
+const SIDEBAR_MAX = 340;
+const SIDEBAR_KEY = "fumigit.sidebar-width";
+
+function loadSidebarWidth(): number {
+  const w = Number(localStorage.getItem(SIDEBAR_KEY));
+  return Number.isFinite(w) && w >= SIDEBAR_MIN && w <= SIDEBAR_MAX ? w : 216;
+}
 
 export default function App() {
   const meta = useRepo((s) => s.meta);
@@ -24,6 +33,7 @@ export default function App() {
   const workFile = useRepo((s) => s.workFile);
   const selectedId = useRepo((s) => s.selectedId);
   const showRight = mainTab === "changes" ? workFile !== null : selectedId !== null;
+  const [sidebarW, setSidebarW] = useState(loadSidebarWidth);
 
   useEffect(() => {
     void hydrate().then(() => {
@@ -45,25 +55,37 @@ export default function App() {
       </>
     );
 
+  const updateSidebarW = (w: number) => {
+    const clamped = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w));
+    setSidebarW(clamped);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, String(clamped));
+    } catch {
+      // 存不进去只影响下次启动的宽度
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
       <Toolbar />
-      <div className="min-h-0 flex-1">
-        <PanelGroup direction="horizontal" autoSaveId="fumigit-cols">
-          <Panel id="sidebar" defaultSize={17} minSize={12} maxSize={25}>
-            <Sidebar />
-          </Panel>
-          <VDivider />
-          <Panel id="graph" defaultSize={52} minSize={30}>
-            <MainArea />
-          </Panel>
-          {showRight && <VDivider />}
-          {showRight && (
-            <Panel id="right" defaultSize={31} minSize={20} maxSize={44}>
-              <RightPane />
+      <div className="flex min-h-0 flex-1">
+        <div style={{ width: sidebarW }} className="h-full shrink-0">
+          <Sidebar />
+        </div>
+        <SidebarHandle width={sidebarW} onWidthChange={updateSidebarW} />
+        <div className="h-full min-w-0 flex-1">
+          <PanelGroup direction="horizontal" autoSaveId="fumigit-main-cols">
+            <Panel id="graph" defaultSize={63} minSize={30}>
+              <MainArea />
             </Panel>
-          )}
-        </PanelGroup>
+            {showRight && <VDivider />}
+            {showRight && (
+              <Panel id="right" defaultSize={37} minSize={24} maxSize={52}>
+                <RightPane />
+              </Panel>
+            )}
+          </PanelGroup>
+        </div>
       </div>
       <ToastHost />
     </div>
