@@ -228,7 +228,7 @@ function CommitRow({
       onClick={onSelect}
       style={{ top, height: ROW_H }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_112px_70px_56px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_92px_70px_56px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
         (selected ? "bg-sel" : "hover:bg-hover")
       }
     >

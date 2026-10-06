@@ -86,7 +86,7 @@ export const useRepo = create<RepoState>((set, get) => ({
   detailLoading: false,
   openFiles: [],
   detailFile: null,
-  mainTab: "history",
+  mainTab: "changes",
   workFile: null,
   workStaged: false,
   workDiff: null,

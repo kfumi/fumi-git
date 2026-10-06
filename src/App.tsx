@@ -19,6 +19,11 @@ export default function App() {
   const hydrate = useRepo((s) => s.hydrate);
   const refresh = useRepo((s) => s.refresh);
   const setThemeFromConfig = useTheme((s) => s.hydrate);
+  // 右栏按需出现：改动 tab 选中了工作区文件，或历史 tab 选中了提交
+  const mainTab = useRepo((s) => s.mainTab);
+  const workFile = useRepo((s) => s.workFile);
+  const selectedId = useRepo((s) => s.selectedId);
+  const showRight = mainTab === "changes" ? workFile !== null : selectedId !== null;
 
   useEffect(() => {
     void hydrate().then(() => {
@@ -52,10 +57,12 @@ export default function App() {
           <Panel id="graph" defaultSize={52} minSize={30}>
             <MainArea />
           </Panel>
-          <VDivider />
-          <Panel id="right" defaultSize={31} minSize={20} maxSize={44}>
-            <RightPane />
-          </Panel>
+          {showRight && <VDivider />}
+          {showRight && (
+            <Panel id="right" defaultSize={31} minSize={20} maxSize={44}>
+              <RightPane />
+            </Panel>
+          )}
         </PanelGroup>
       </div>
       <ToastHost />

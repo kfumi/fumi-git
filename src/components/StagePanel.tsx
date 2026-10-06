@@ -28,15 +28,15 @@ function StatusBadge({ s }: { s: string }) {
 
 export function CommitDetailPanel() {
   const detail = useRepo((s) => s.detail);
+  const detailLoading = useRepo((s) => s.detailLoading);
   const detailFile = useRepo((s) => s.detailFile);
   const openDetailFile = useRepo((s) => s.openDetailFile);
-  if (!detail) {
+  if (!detail)
     return (
-      <div className="flex h-full items-center justify-center overflow-hidden bg-panel text-xs text-faint">
-        在左侧选择一个提交查看详情
+      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
+        {detailLoading ? "加载详情…" : "选择一个提交查看详情"}
       </div>
     );
-  }
   const meta = detail.meta;
   return (
     <div
