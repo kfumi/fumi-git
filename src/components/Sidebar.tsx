@@ -83,7 +83,7 @@ export function Sidebar() {
             <button
               onClick={() => void openRepo(e.path)}
               className={
-                "flex flex-1 items-center gap-1.5 truncate rounded-md px-2 py-[5px] text-left text-xs transition-colors " +
+                "flex flex-1 items-center gap-1.5 truncate rounded-md px-2 py-[7px] text-left text-xs transition-colors " +
                 (active
                   ? "bg-accent-soft font-medium text-accent-ink"
                   : "text-dim hover:bg-hover hover:text-ink")
@@ -128,7 +128,7 @@ export function Sidebar() {
             <button
               onClick={() => toggleGroup(prefix)}
               aria-expanded={open}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               {open ? (
                 <ChevronDown size={11} aria-hidden className="shrink-0 text-faint" />
@@ -167,7 +167,7 @@ export function Sidebar() {
             <button
               key={name}
               onClick={() => selectRefTip(id)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               <Tag size={11} aria-hidden className="shrink-0 text-warn/80" />
               <span className="truncate">{name.slice(4)}</span>
@@ -183,7 +183,7 @@ export function Sidebar() {
             <button
               key={name}
               onClick={() => selectRefTip(id)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
               <span className="truncate">{name}</span>
@@ -217,7 +217,7 @@ function BranchRow({
       onClick={onSelect}
       title={`${fullName} → ${tip.slice(0, 7)}`}
       className={
-        "flex w-full items-center gap-1.5 rounded-md pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink " +
+        "flex w-full items-center gap-1.5 rounded-md py-[7px] pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink " +
         (indent ? "pl-7" : "pl-2")
       }
     >
