@@ -43,6 +43,10 @@ export interface FileEntry {
 export interface RepoStatus {
   staged: FileEntry[];
   unstaged: FileEntry[];
+  /** 合并冲突（未合入）文件；非空即存在冲突，状态记 'U' */
+  unmerged: FileEntry[];
+  /** 是否有进行中的合并（MERGE_HEAD 存在） */
+  merging: boolean;
   branch: string;
 }
 

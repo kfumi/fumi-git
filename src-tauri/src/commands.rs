@@ -151,6 +151,30 @@ pub fn push_remote(state: State<'_, AppState>) -> Result<String, GitError> {
 }
 
 #[tauri::command]
+pub fn push_upstream(
+    state: State<'_, AppState>,
+    remote: String,
+    branch: String,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| git::push_upstream(repo, &remote, &branch))
+}
+
+#[tauri::command]
+pub fn list_remotes(state: State<'_, AppState>) -> Result<Vec<String>, GitError> {
+    with_active(&state, git::list_remotes)
+}
+
+#[tauri::command]
+pub fn merge_upstream(state: State<'_, AppState>, ref_name: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::merge_ref(repo, &ref_name))
+}
+
+#[tauri::command]
+pub fn abort_merge(state: State<'_, AppState>) -> Result<(), GitError> {
+    with_active(&state, git::abort_merge)
+}
+
+#[tauri::command]
 pub fn get_branch_summary(state: State<'_, AppState>) -> Result<BranchSummary, GitError> {
     with_active(&state, git::get_branch_summary)
 }

@@ -426,6 +426,10 @@ pub struct FileEntry {
 pub struct RepoStatus {
     pub staged: Vec<FileEntry>,
     pub unstaged: Vec<FileEntry>,
+    /// 合并冲突（未合入）文件；非空即存在冲突
+    pub unmerged: Vec<FileEntry>,
+    /// 是否有进行中的合并（MERGE_HEAD 存在），前端据此显示「中止合并」出口
+    pub merging: bool,
     pub branch: String,
 }
 
@@ -433,6 +437,7 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
     let raw = repo.run(&["status", "--porcelain", "-z"])?;
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
+    let mut unmerged = Vec::new();
     let mut it = raw.split('\0').filter(|s| !s.is_empty());
     while let Some(rec) = it.next() {
         let mut chars = rec.chars();
@@ -448,6 +453,15 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
         };
         let path = path.trim().to_string();
         if path.is_empty() {
+            continue;
+        }
+        // 冲突条目独立成组（状态一律记 'U'），不再进暂存/未暂存列表
+        if is_unmerged(x, y) {
+            unmerged.push(FileEntry {
+                path,
+                old_path,
+                status: 'U',
+            });
             continue;
         }
         if x != ' ' && x != '?' {
@@ -469,6 +483,8 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
     Ok(RepoStatus {
         staged,
         unstaged,
+        unmerged,
+        merging: merge_in_progress(repo),
         branch: repo.current_branch(),
     })
 }
@@ -646,6 +662,39 @@ pub fn reset_branch(repo: &GitRepo, target: &str, mode: &str) -> GitResult<()> {
     Ok(())
 }
 
+// ── 分叉拉取：最小 merge ────────────────────────────────────────────────────
+
+fn is_unmerged(x: char, y: char) -> bool {
+    // porcelain 冲突对：UU AA DD AU UA DU UD
+    matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D'))
+}
+
+/// 是否有进行中的合并（MERGE_HEAD 存在）。
+fn merge_in_progress(repo: &GitRepo) -> bool {
+    repo.run_ok(&["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
+}
+
+/// 合并把 <ref>（通常为上游分支如 origin/main）到当前分支。
+/// 冲突时返回 CommandFailed（stderr 含 CONFLICT 详情），仓库进入合并中状态，
+/// 由前端列出冲突文件并提供「中止合并」出口。
+pub fn merge_ref(repo: &GitRepo, ref_name: &str) -> GitResult<String> {
+    let ref_name = ref_name.trim();
+    if ref_name.is_empty() {
+        return Err(GitError::CommandFailed("合并目标为空".into()));
+    }
+    let out = repo.run(&["merge", "--no-edit", ref_name])?;
+    Ok(out.trim().to_string())
+}
+
+/// 中止合并，恢复到合并前状态。仅在合并进行中可用。
+pub fn abort_merge(repo: &GitRepo) -> GitResult<()> {
+    if !merge_in_progress(repo) {
+        return Err(GitError::CommandFailed("当前没有进行中的合并".into()));
+    }
+    repo.run(&["merge", "--abort"])?;
+    Ok(())
+}
+
 // ── 远程同步 ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -692,7 +741,7 @@ pub fn pull(repo: &GitRepo) -> GitResult<String> {
         Err(GitError::CommandFailed(stderr)) => {
             if stderr.contains("Not possible to fast-forward") || stderr.contains("divergent") {
                 Err(GitError::NonFastForward(
-                    "本地与远程历史分叉，无法快进。请在终端处理（rebase/merge）后重试".into(),
+                    "本地与远程历史分叉，无法快进。可选择把远程分支合并进来".into(),
                 ))
             } else {
                 Err(GitError::CommandFailed(stderr))
@@ -702,28 +751,57 @@ pub fn pull(repo: &GitRepo) -> GitResult<String> {
     }
 }
 
+/// push 被拒时的结构化映射：非快进 / 远程领先 → NonFastForward，其余原样。
+fn map_push_err(stderr: String) -> GitError {
+    let s = stderr.to_lowercase();
+    if s.contains("non-fast-forward") || s.contains("rejected") || s.contains("fetch first") {
+        GitError::NonFastForward(
+            "推送被拒：远程有本地没有的提交。请先拉取（无法快进时会引导合并）".into(),
+        )
+    } else {
+        GitError::CommandFailed(stderr)
+    }
+}
+
 pub fn push(repo: &GitRepo) -> GitResult<String> {
     let upstream = repo.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
     if upstream.is_err() {
         let branch = repo.current_branch();
         return Err(GitError::NoUpstream(format!(
-            "分支 {branch} 还没有上游分支。请在终端执行 git push -u <远程> {branch} 建立关联"
+            "分支 {branch} 还没有上游分支。请建立上游关联后推送"
         )));
     }
-    match repo.run(&["push"]) {
-        Ok(_) => Ok("推送完成".into()),
-        Err(GitError::CommandFailed(stderr)) => {
-            let s = stderr.to_lowercase();
-            if s.contains("non-fast-forward") || s.contains("rejected") || s.contains("fetch first") {
-                Err(GitError::NonFastForward(
-                    "推送被拒：远程有本地没有的提交。请先拉取（无法快进时需在终端处理历史）".into(),
-                ))
-            } else {
-                Err(GitError::CommandFailed(stderr))
-            }
-        }
-        Err(e) => Err(e),
+    repo.run(&["push"]).map_err(|e| match e {
+        GitError::CommandFailed(stderr) => map_push_err(stderr),
+        other => other,
+    })?;
+    Ok("推送完成".into())
+}
+
+/// 本地分支还没有上游时：让用户选远程，一次性建立关联并推送（push -u）。
+pub fn push_upstream(repo: &GitRepo, remote: &str, branch: &str) -> GitResult<String> {
+    let remote = remote.trim();
+    let branch = branch.trim();
+    if remote.is_empty() || branch.is_empty() {
+        return Err(GitError::CommandFailed("远程或分支名为空".into()));
     }
+    repo.run(&["push", "--quiet", "-u", remote, branch])
+        .map_err(|e| match e {
+            GitError::CommandFailed(stderr) => map_push_err(stderr),
+            other => other,
+        })?;
+    Ok(format!("已推送 {branch} 并关联 {remote}/{branch}"))
+}
+
+/// git remote 列表，供 push -u 的远程选择框。
+pub fn list_remotes(repo: &GitRepo) -> GitResult<Vec<String>> {
+    let out = repo.run(&["remote"])?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 #[cfg(test)]
@@ -1369,6 +1447,96 @@ mod tests {
         assert!(st3.staged.is_empty() && st3.unstaged.iter().all(|f| f.path == "c.txt"));
         assert!(!t.path().join("b.txt").exists());
         assert!(t.path().join("c.txt").exists());
+    }
+
+    #[test]
+    fn push_upstream_and_remote_list() {
+        let (origin, work) = repo_with_origin();
+        let r = GitRepo::open(work.path()).unwrap();
+        assert_eq!(list_remotes(&r).unwrap(), vec!["origin".to_string()]);
+
+        // 新分支没有上游 → push 报 NoUpstream；push_upstream 建立关联并推送
+        create_branch(&r, "feat", true, None).unwrap();
+        commit_file(work.path(), "f.txt", "1", "feat work");
+        assert!(matches!(push(&r), Err(GitError::NoUpstream(_))));
+        let msg = push_upstream(&r, "origin", "feat").unwrap();
+        assert!(msg.contains("origin/feat"), "{msg}");
+        let up = git(work.path(), &["rev-parse", "--abbrev-ref", "@{u}"]);
+        assert_eq!(up.trim(), "origin/feat");
+
+        // 空参数拒绝
+        assert!(matches!(
+            push_upstream(&r, " ", "feat"),
+            Err(GitError::CommandFailed(_))
+        ));
+        let _ = origin;
+    }
+
+    #[test]
+    fn merge_upstream_clean_conflict_and_abort() {
+        // 干净合并：两边改不同文件
+        let (origin, work) = repo_with_origin();
+        let clone_dir = TempDir::new().unwrap();
+        git(
+            clone_dir.path(),
+            &[
+                "clone",
+                "-q",
+                origin.path().to_str().unwrap(),
+                clone_dir.path().join("c2").to_str().unwrap(),
+            ],
+        );
+        let c2 = clone_dir.path().join("c2");
+        git(&c2, &["config", "user.email", "test@fumigit.dev"]);
+        git(&c2, &["config", "user.name", "Fumi Test"]);
+        commit_file(&c2, "remote.txt", "r1", "remote side");
+        git(&c2, &["push", "-q", "origin", "main"]);
+
+        commit_file(work.path(), "local.txt", "l1", "local side");
+        let r = GitRepo::open(work.path()).unwrap();
+        assert!(matches!(pull(&r), Err(GitError::NonFastForward(_))));
+
+        let msg = merge_ref(&r, "origin/main").unwrap();
+        assert!(msg.contains("Merge") || msg.contains("merge"), "{msg}");
+        assert!(work.path().join("remote.txt").exists());
+        let st = get_status(&r).unwrap();
+        assert!(!st.merging);
+        assert!(st.unmerged.is_empty());
+
+        // 冲突合并：两边改同一文件
+        commit_file(work.path(), "a.txt", "local edit", "local edits a");
+        commit_file(&c2, "a.txt", "remote edit", "remote edits a");
+        git(&c2, &["push", "-q", "origin", "main"]);
+        fetch(&r).unwrap();
+        assert!(matches!(pull(&r), Err(GitError::NonFastForward(_))));
+        assert!(merge_ref(&r, "origin/main").is_err());
+
+        // 合并中：状态带 merging + 冲突清单
+        let st = get_status(&r).unwrap();
+        assert!(st.merging);
+        assert!(st.unmerged.iter().any(|f| f.path == "a.txt" && f.status == 'U'));
+        assert!(!st.staged.iter().any(|f| f.path == "a.txt"));
+        assert!(!st.unstaged.iter().any(|f| f.path == "a.txt"));
+
+        // 中止合并：完整回到合并前
+        abort_merge(&r).unwrap();
+        let st2 = get_status(&r).unwrap();
+        assert!(!st2.merging);
+        assert!(st2.unmerged.is_empty());
+        assert!(st2.staged.is_empty() && st2.unstaged.is_empty());
+        let head = git(work.path(), &["rev-parse", "HEAD"]);
+        assert!(git(work.path(), &["log", "--oneline", "-1", "HEAD"]).contains("local edits a"));
+        assert_eq!(
+            git(work.path(), &["rev-parse", "refs/heads/main"]),
+            head
+        );
+
+        // 非合并状态中止 → 结构化报错
+        assert!(matches!(
+            abort_merge(&r),
+            Err(GitError::CommandFailed(m)) if m.contains("没有进行中的合并")
+        ));
+        let _ = origin;
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

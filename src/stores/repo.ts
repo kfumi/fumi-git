@@ -117,6 +117,12 @@ interface RepoState {
   renameBranchFlow: (branch: string) => void;
   /** 重置当前分支到指定提交（图谱右键入口）：先选模式，硬重置必过脏树拦截 */
   resetBranchTo: (commitId: string) => void;
+  /** push 无上游时的建立关联弹框（选远程 → push -u） */
+  pushUpstreamFlow: () => Promise<void>;
+  /** 分叉拉取：把上游分支合并进当前分支（确认后由 remote('pull') 错误处理触发） */
+  mergeUpstreamFlow: (refName: string) => Promise<void>;
+  /** 中止进行中的合并，恢复到合并前状态 */
+  abortMerge: () => Promise<void>;
 }
 
 const errText = async (e: unknown): Promise<string> =>
@@ -572,6 +578,106 @@ export const useRepo = create<RepoState>((set, get) => ({
     try {
       const msg = await (op === "fetch" ? ipc.fetch() : op === "pull" ? ipc.pull() : ipc.push());
       get().updateToast(id, { kind: "ok", text: msg });
+      await get().refresh();
+    } catch (e) {
+      const err = await asGitError(e);
+      // 分叉拉取 → 引导确认合并（票 04）；推送无上游 → 弹框建立关联
+      if (op === "pull" && err.kind === "NonFastForward") {
+        get().dismissToast(id);
+        const upstream = get().summary?.upstream;
+        if (upstream) await get().mergeUpstreamFlow(upstream);
+        else get().pushToast("err", await errText(e));
+        return;
+      }
+      if (op === "push" && err.kind === "NoUpstream") {
+        get().dismissToast(id);
+        await get().pushUpstreamFlow();
+        return;
+      }
+      get().updateToast(id, { kind: "err", text: await errText(e) });
+    }
+  },
+
+  pushUpstreamFlow: async () => {
+    const branch = get().summary?.branch ?? get().meta?.branch ?? "";
+    if (!branch || branch.startsWith("(HEAD detached")) {
+      get().pushToast("err", "当前不在常规分支上，无法建立上游关联");
+      return;
+    }
+    let remotes: string[] = [];
+    try {
+      remotes = await ipc.listRemotes();
+    } catch (e) {
+      get().pushToast("err", await errText(e));
+      return;
+    }
+    if (remotes.length === 0) {
+      get().pushToast("err", "仓库没有配置远程，请先在终端 git remote add");
+      return;
+    }
+    get().openDialog({
+      title: "推送并建立上游关联",
+      message: `分支 ${branch} 还没有上游分支。选择远程后将执行 push -u 并建立关联：`,
+      actions: remotes.map((r) => ({
+        label: `推送到 ${r}`,
+        kind: r === "origin" ? ("primary" as const) : ("ghost" as const),
+        run: () => {
+          void (async () => {
+            const id = get().pushToast("busy", `推送到 ${r}…`);
+            try {
+              const msg = await ipc.pushUpstream(r, branch);
+              get().updateToast(id, { kind: "ok", text: msg });
+              await get().refresh();
+            } catch (e) {
+              get().updateToast(id, { kind: "err", text: await errText(e) });
+            }
+          })();
+        },
+      })),
+    });
+  },
+
+  mergeUpstreamFlow: async (refName) => {
+    const branch = get().summary?.branch ?? get().meta?.branch ?? "";
+    get().openDialog({
+      title: "本地与远程分叉",
+      message: `无法快进。把 ${refName} 合并到当前分支 ${branch}？`,
+      actions: [
+        {
+          label: `合并 ${refName}`,
+          kind: "primary",
+          run: () => {
+            void (async () => {
+              const id = get().pushToast("busy", `合并 ${refName}…`);
+              try {
+                await ipc.mergeUpstream(refName);
+                get().updateToast(id, { kind: "ok", text: "合并完成" });
+                await get().refresh();
+              } catch (e) {
+                const err = await asGitError(e);
+                await get().refresh();
+                const st = get().status;
+                if (st?.merging) {
+                  get().updateToast(id, {
+                    kind: "err",
+                    text: `合并产生冲突：${st.unmerged.length} 个冲突文件。解决后暂存提交，或中止合并。`,
+                  });
+                } else {
+                  get().updateToast(id, { kind: "err", text: err.message });
+                }
+              }
+            })();
+          },
+        },
+      ],
+    });
+  },
+
+  abortMerge: async () => {
+    const id = get().pushToast("busy", "中止合并…");
+    try {
+      await ipc.abortMerge();
+      get().updateToast(id, { kind: "ok", text: "已中止合并，仓库恢复到合并前" });
       await get().refresh();
     } catch (e) {
       get().updateToast(id, { kind: "err", text: await errText(e) });

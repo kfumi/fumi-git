@@ -28,6 +28,10 @@ vi.mock("../lib/ipc", () => {
     branchUnmergedCount: vi.fn(async () => 0),
     renameBranch: vi.fn(async () => {}),
     resetBranch: vi.fn(async () => {}),
+    pushUpstream: vi.fn(async () => ""),
+    listRemotes: vi.fn(async () => ["origin"]),
+    mergeUpstream: vi.fn(async () => ""),
+    abortMerge: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -126,7 +130,7 @@ describe("store 状态流转（打桩 IPC）", () => {
     (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
     (ipc.pull as ReturnType<typeof vi.fn>).mockResolvedValue("已拉取 origin/main");
     (ipc.push as ReturnType<typeof vi.fn>).mockRejectedValue({
-      kind: "NoUpstream",
+      kind: "CommandFailed",
       message: "没有配置上游",
     });
 
@@ -446,6 +450,97 @@ describe("图谱提交右键：建分支与 reset（票 03）", () => {
     const d = useRepo.getState().dialog!;
     d.actions[2].run("", false);
     await vi.waitFor(() => expect(ipc.resetBranch).toHaveBeenCalledWith("abc123def", "hard"));
+  });
+});
+
+describe("远程同步补全（票 04）", () => {
+  const withRepo = () =>
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "feat" },
+      summary: { branch: "feat", upstream: "origin/feat", ahead: 1, behind: 1 },
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  };
+
+  it("push 无上游：弹远程选择框，单远程锁定 origin，确认后 push -u", async () => {
+    withRepo();
+    logOk();
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+    (ipc.push as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "NoUpstream",
+      message: "分支 feat 还没有上游",
+    });
+
+    await useRepo.getState().remote("push");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toBe("推送并建立上游关联");
+    expect(d.actions).toHaveLength(1); // 单远程 → 只有一个目标
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.pushUpstream).toHaveBeenCalledWith("origin", "feat"));
+  });
+
+  it("pull 分叉：报错转为合并确认，确认后执行 merge", async () => {
+    withRepo();
+    logOk();
+    (ipc.pull as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "NonFastForward",
+      message: "本地与远程历史分叉",
+    });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      merging: false,
+      branch: "feat",
+    });
+
+    await useRepo.getState().remote("pull");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toBe("本地与远程分叉");
+    expect(d.message).toContain("origin/feat");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.mergeUpstream).toHaveBeenCalledWith("origin/feat"));
+  });
+
+  it("merge 冲突：刷新后处于合并中 → 错误提示带冲突文件数", async () => {
+    withRepo();
+    logOk();
+    (ipc.mergeUpstream as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "CONFLICT (content): Merge conflict in a.txt",
+    });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [{ path: "a.txt", old_path: null, status: "U" }],
+      merging: true,
+      branch: "feat",
+    });
+
+    await useRepo.getState().mergeUpstreamFlow("origin/feat");
+    const d = useRepo.getState().dialog!;
+    d.actions[0].run("", false);
+    await vi.waitFor(() => {
+      const t = useRepo.getState().toasts[0];
+      expect(t.text).toContain("1 个冲突文件");
+    });
+  });
+
+  it("abortMerge：成功后提示并刷新", async () => {
+    withRepo();
+    logOk();
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      merging: false,
+      branch: "feat",
+    });
+    await useRepo.getState().abortMerge();
+    expect(ipc.abortMerge).toHaveBeenCalled();
+    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok" });
   });
 });
 

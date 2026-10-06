@@ -60,6 +60,11 @@ export const ipc = {
   fetch: () => cmd<string>("fetch_remote"),
   pull: () => cmd<string>("pull_remote"),
   push: () => cmd<string>("push_remote"),
+  pushUpstream: (remote: string, branch: string) =>
+    cmd<string>("push_upstream", { remote, branch }),
+  listRemotes: () => cmd<string[]>("list_remotes"),
+  mergeUpstream: (refName: string) => cmd<string>("merge_upstream", { refName }),
+  abortMerge: () => cmd<void>("abort_merge"),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

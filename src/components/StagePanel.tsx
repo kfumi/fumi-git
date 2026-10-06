@@ -12,13 +12,14 @@ const ST_CLASS: Record<string, string> = {
   A: "bg-ok/15 text-ok",
   D: "bg-bad/15 text-bad",
   R: "bg-accent-soft text-accent-ink",
+  U: "bg-bad/20 text-bad",
 };
 
 function StatusBadge({ s }: { s: string }) {
   return (
     <span
       className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9.5px] font-semibold leading-none ${ST_CLASS[s] ?? ""}`}
-      title={{ M: "修改", A: "新增", D: "删除", R: "重命名" }[s]}
+      title={{ M: "修改", A: "新增", D: "删除", R: "重命名", U: "冲突" }[s]}
       aria-label={`状态 ${s}`}
     >
       {s}
@@ -134,6 +135,7 @@ export function ChangesPanel() {
   const selectWorkFile = useRepo((s) => s.selectWorkFile);
   const workFile = useRepo((s) => s.workFile);
   const workStaged = useRepo((s) => s.workStaged);
+  const abortMerge = useRepo((s) => s.abortMerge);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -161,10 +163,26 @@ export function ChangesPanel() {
       </div>
     );
   const canCommit = status.staged.length > 0 && message.trim().length > 0;
-  const total = status.staged.length + status.unstaged.length;
+  const total = status.staged.length + status.unstaged.length + status.unmerged.length;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
+      {status.merging && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-brd bg-[rgba(224,166,75,0.10)] px-4 py-2 text-xs">
+          <span className="font-medium text-warn">合并进行中</span>
+          {status.unmerged.length > 0 && (
+            <span className="text-dim">
+              {status.unmerged.length} 个冲突文件，解决后暂存提交；或在终端处理后继续
+            </span>
+          )}
+          <button
+            onClick={() => void abortMerge()}
+            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-bad transition-colors hover:bg-[rgba(242,112,138,0.10)]"
+          >
+            中止合并
+          </button>
+        </div>
+      )}
       <div className="flex shrink-0 items-center justify-between px-4 pb-1.5 pt-3">
         <h4 className="text-[12px] font-semibold text-ink">工作区</h4>
         {total > 0 && (
@@ -180,6 +198,21 @@ export function ChangesPanel() {
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {status.unmerged.length > 0 && (
+            <>
+              <GroupLabel color="bg-bad" label="冲突" count={status.unmerged.length} />
+              {status.unmerged.map((f) => (
+                <WorkRow
+                  key={"c" + f.path}
+                  file={f}
+                  active={workFile === f.path && !workStaged}
+                  onSelect={() => void selectWorkFile(f.path, false)}
+                  actionLabel="标记暂存"
+                  onAction={() => void stage([f.path])}
+                />
+              ))}
+            </>
+          )}
           {status.staged.length > 0 && (
             <>
               <GroupLabel color="bg-ok" label="已暂存" count={status.staged.length} />
