@@ -27,6 +27,7 @@ vi.mock("../lib/ipc", () => {
     deleteBranch: vi.fn(async () => {}),
     branchUnmergedCount: vi.fn(async () => 0),
     renameBranch: vi.fn(async () => {}),
+    resetBranch: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -342,7 +343,7 @@ describe("分支生命周期（票 02）", () => {
     expect(ipc.createBranch).not.toHaveBeenCalled();
 
     await useRepo.getState().createBranch("feat", true);
-    expect(ipc.createBranch).toHaveBeenCalledWith("feat", true);
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat", true, undefined);
     expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok" });
   });
 
@@ -381,6 +382,70 @@ describe("分支生命周期（票 02）", () => {
     expect(await d.actions[0].run("feat", false)).toBe(false); // 同名 → 保持打开
     expect(await d.actions[0].run("feat2", false)).toBeUndefined();
     expect(ipc.renameBranch).toHaveBeenCalledWith("feat", "feat2");
+  });
+});
+
+describe("图谱提交右键：建分支与 reset（票 03）", () => {
+  const withRepo = () =>
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      summary: { branch: "main", upstream: null, ahead: 0, behind: 0 },
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  };
+
+  it("createBranch 传入起点提交，透传给 IPC", async () => {
+    withRepo();
+    logOk();
+    await useRepo.getState().createBranch("feat", true, "abc123");
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat", true, "abc123");
+  });
+
+  it("resetBranchTo：先弹模式选择；硬重置遇脏树再拦截", async () => {
+    withRepo();
+    logOk();
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: "a.ts", old_path: null, status: "M" }],
+      branch: "main",
+    });
+
+    useRepo.getState().resetBranchTo("abc123def");
+    let d = useRepo.getState().dialog!;
+    expect(d.title).toBe("重置当前分支到此提交");
+    expect(d.actions).toHaveLength(3);
+
+    // 软重置直接执行
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.resetBranch).toHaveBeenCalledWith("abc123def", "soft"));
+
+    // 硬重置：脏树 → 二次拦截对话框
+    useRepo.getState().resetBranchTo("abc123def");
+    d = useRepo.getState().dialog!;
+    d.actions[2].run("", false);
+    await vi.waitFor(() => expect(useRepo.getState().dialog!.files).toEqual(["a.ts"]));
+    expect(ipc.resetBranch).not.toHaveBeenCalledWith("abc123def", "hard");
+
+    // 确认丢弃后才真正硬重置
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.resetBranch).toHaveBeenCalledWith("abc123def", "hard"));
+  });
+
+  it("resetBranchTo：干净树硬重置不拦截", async () => {
+    withRepo();
+    logOk();
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      branch: "main",
+    });
+
+    useRepo.getState().resetBranchTo("abc123def");
+    const d = useRepo.getState().dialog!;
+    d.actions[2].run("", false);
+    await vi.waitFor(() => expect(ipc.resetBranch).toHaveBeenCalledWith("abc123def", "hard"));
   });
 });
 

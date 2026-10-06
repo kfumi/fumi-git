@@ -5,8 +5,10 @@ import { GitCommitHorizontal } from "lucide-react";
 import { computeGraph, graphWidth, laneX, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
 import { absTime, avatarColor, relTime } from "../lib/format";
+import { classifyRef } from "../lib/refs";
 import type { CommitEntry } from "../lib/types";
 import { RefChips } from "./RefChips";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 export const ROW_H = 52;
 
@@ -113,6 +115,31 @@ export function GraphList() {
   const loadMore = useRepo((s) => s.loadMore);
   const scrollToId = useRepo((s) => s.scrollToId);
   const scrollNonce = useRepo((s) => s.scrollNonce);
+  const checkout = useRepo((s) => s.checkout);
+  const createBranchFlow = useRepo((s) => s.createBranchFlow);
+  const resetBranchTo = useRepo((s) => s.resetBranchTo);
+  // 提交右键菜单：挂本地分支才出现迁出项（ui-spec 决策：不做 detached HEAD）
+  const [commitMenu, setCommitMenu] = useState<{ x: number; y: number; commit: CommitEntry } | null>(
+    null,
+  );
+
+  const commitMenuItems = (commit: CommitEntry): MenuItem[] => {
+    const branches = commit.refs.filter((r) => classifyRef(r) === "branch");
+    const items: MenuItem[] = branches.map((b) => ({
+      label: `迁出到 ${b}`,
+      disabled: b === useRepo.getState().summary?.branch,
+      hint: b === useRepo.getState().summary?.branch ? "当前分支" : undefined,
+      onSelect: () => void checkout(b),
+    }));
+    items.push(
+      { label: "在此新建分支…", onSelect: () => createBranchFlow(commit.id) },
+      {
+        label: "重置当前分支到此…",
+        onSelect: () => resetBranchTo(commit.id),
+      },
+    );
+    return items;
+  };
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);
   const graph = useMemo(() => computeGraph(rows), [rows]);
@@ -213,9 +240,21 @@ export function GraphList() {
             top={vi.start}
             graphW={graphW}
             onSelect={() => select(rows[vi.index].id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCommitMenu({ x: e.clientX, y: e.clientY, commit: rows[vi.index] });
+            }}
           />
         ))}
       </div>
+      {commitMenu && (
+        <ContextMenu
+          x={commitMenu.x}
+          y={commitMenu.y}
+          items={commitMenuItems(commitMenu.commit)}
+          onClose={() => setCommitMenu(null)}
+        />
+      )}
       {rows.length === 0 && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 flex-col items-center gap-2 text-center text-faint">
           <GitCommitHorizontal size={22} strokeWidth={1.5} aria-hidden />
@@ -232,16 +271,19 @@ function CommitRow({
   top,
   graphW,
   onSelect,
+  onContextMenu,
 }: {
   commit: CommitEntry;
   selected: boolean;
   top: number;
   graphW: number;
   onSelect: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
     <div
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       style={{ top, height: ROW_H, paddingLeft: graphW + 16 }}
       className={
         "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_92px_70px_56px] items-center gap-[10px] overflow-hidden pr-[14px] transition-colors " +

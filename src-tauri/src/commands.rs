@@ -173,8 +173,20 @@ pub fn create_branch(
     state: State<'_, AppState>,
     name: String,
     checkout: bool,
+    start_point: Option<String>,
 ) -> Result<(), GitError> {
-    with_active(&state, |repo| git::create_branch(repo, &name, checkout))
+    with_active(&state, |repo| {
+        git::create_branch(repo, &name, checkout, start_point.as_deref())
+    })
+}
+
+#[tauri::command]
+pub fn reset_branch(
+    state: State<'_, AppState>,
+    target: String,
+    mode: String,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::reset_branch(repo, &target, &mode))
 }
 
 #[tauri::command]

@@ -108,13 +108,15 @@ interface RepoState {
   /** 迁出到本地分支；脏工作树时先经安全拦截对话框（ui-spec §4） */
   checkout: (branch: string) => Promise<void>;
   /** 新建分支（对话框表单：名称 + 建完即迁出勾选）；返回校验错误给对话框显示 */
-  createBranch: (name: string, checkoutAfter: boolean) => Promise<string | void>;
-  /** 新建分支对话框入口（基于当前 HEAD） */
-  createBranchFlow: () => void;
+  createBranch: (name: string, checkoutAfter: boolean, at?: string) => Promise<string | void>;
+  /** 新建分支对话框入口；at 缺省基于当前 HEAD，传入提交 id 则基于该提交 */
+  createBranchFlow: (atCommit?: string) => void;
   /** 删除分支入口：先取未合入计数，按结果弹一次确认或强制删除确认 */
   deleteBranchFlow: (branch: string) => Promise<void>;
   /** 分支改名（对话框表单，预填原名） */
   renameBranchFlow: (branch: string) => void;
+  /** 重置当前分支到指定提交（图谱右键入口）：先选模式，硬重置必过脏树拦截 */
+  resetBranchTo: (commitId: string) => void;
 }
 
 const errText = async (e: unknown): Promise<string> =>
@@ -190,11 +192,11 @@ export const useRepo = create<RepoState>((set, get) => ({
     await doSwitch();
   },
 
-  createBranch: async (name, checkoutAfter) => {
+  createBranch: async (name, checkoutAfter, at) => {
     const trimmed = name.trim();
     if (!trimmed) return "分支名不能为空";
     try {
-      await ipc.createBranch(trimmed, checkoutAfter);
+      await ipc.createBranch(trimmed, checkoutAfter, at);
       get().pushToast(
         "ok",
         checkoutAfter ? `已创建并迁出到 ${trimmed}` : `已创建分支 ${trimmed}`,
@@ -205,17 +207,18 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  createBranchFlow: () => {
+  createBranchFlow: (atCommit) => {
+    const short = atCommit ? atCommit.slice(0, 7) : "";
     get().openDialog({
       title: "新建分支",
-      message: "基于当前 HEAD 创建新分支。",
+      message: atCommit ? `基于提交 ${short} 创建新分支。` : "基于当前 HEAD 创建新分支。",
       input: { placeholder: "分支名，如 feat/login" },
       checkbox: { label: "创建后立即迁出", initial: true },
       actions: [
         {
           label: "创建",
           kind: "primary",
-          run: (name, checkoutAfter) => get().createBranch(name, checkoutAfter),
+          run: (name, checkoutAfter) => get().createBranch(name, checkoutAfter, atCommit),
         },
       ],
     });
@@ -276,6 +279,63 @@ export const useRepo = create<RepoState>((set, get) => ({
             }
           },
         },
+      ],
+    });
+  },
+
+  resetBranchTo: (commitId) => {
+    const branch = get().summary?.branch ?? get().meta?.branch ?? "";
+    const short = commitId.slice(0, 7);
+    const doReset = (mode: "soft" | "mixed" | "hard") => {
+      void (async () => {
+        const id = get().pushToast("busy", `重置 ${branch} 到 ${short}…`);
+        try {
+          await ipc.resetBranch(commitId, mode);
+          get().updateToast(id, { kind: "ok", text: `已重置 ${branch} 到 ${short}` });
+          await get().refresh();
+        } catch (e) {
+          get().updateToast(id, { kind: "err", text: await errText(e) });
+        }
+      })();
+    };
+    // 硬重置销毁未提交改动：脏树时先过安全拦截（与迁出共用模型）
+    const confirmHard = async () => {
+      const st = await ipc.getStatus().catch(() => null);
+      const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
+      if (dirtyFiles.length === 0) {
+        doReset("hard");
+        return;
+      }
+      get().openDialog({
+        title: "硬重置将丢弃未提交改动",
+        message: "硬重置会把工作区与暂存区一起退回目标提交，下列改动将无法找回。",
+        files: dirtyFiles,
+        actions: [
+          { label: "硬重置（丢弃改动）", kind: "danger", run: () => doReset("hard") },
+          {
+            label: "stash 后硬重置",
+            run: () => {
+              void (async () => {
+                try {
+                  await ipc.stashPush("硬重置前自动暂存");
+                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
+                  doReset("hard");
+                } catch (e) {
+                  get().pushToast("err", await errText(e));
+                }
+              })();
+            },
+          },
+        ],
+      });
+    };
+    get().openDialog({
+      title: "重置当前分支到此提交",
+      message: `分支 ${branch} 将指向 ${short}，其后的提交从分支历史移除。三种模式决定这些改动放哪里：`,
+      actions: [
+        { label: "软重置（改动保留在暂存区）", run: () => doReset("soft") },
+        { label: "混合重置（改动保留在工作区）", run: () => doReset("mixed") },
+        { label: "硬重置（全部丢弃）", kind: "danger", run: () => void confirmHard() },
       ],
     });
   },

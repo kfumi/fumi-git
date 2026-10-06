@@ -44,6 +44,7 @@ pub fn run() {
             commands::delete_branch,
             commands::branch_unmerged_count,
             commands::rename_branch,
+            commands::reset_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

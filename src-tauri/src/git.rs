@@ -569,14 +569,29 @@ fn ensure_branch_name_valid(repo: &GitRepo, name: &str) -> GitResult<()> {
     Ok(())
 }
 
-/// 新建分支；checkout=true 时建完即迁出。
-pub fn create_branch(repo: &GitRepo, name: &str, checkout: bool) -> GitResult<()> {
+/// 新建分支；checkout=true 时建完即迁出。start_point 缺省 = 当前 HEAD。
+pub fn create_branch(
+    repo: &GitRepo,
+    name: &str,
+    checkout: bool,
+    start_point: Option<&str>,
+) -> GitResult<()> {
     ensure_branch_name_valid(repo, name)?;
     let name = name.trim();
-    if checkout {
-        repo.run(&["switch", "--create", name])?;
-    } else {
-        repo.run(&["branch", name])?;
+    let start = start_point.map(str::trim).filter(|s| !s.is_empty());
+    match (checkout, start) {
+        (true, Some(sp)) => {
+            repo.run(&["switch", "--create", name, sp])?;
+        }
+        (true, None) => {
+            repo.run(&["switch", "--create", name])?;
+        }
+        (false, Some(sp)) => {
+            repo.run(&["branch", name, sp])?;
+        }
+        (false, None) => {
+            repo.run(&["branch", name])?;
+        }
     }
     Ok(())
 }
@@ -613,6 +628,21 @@ pub fn rename_branch(repo: &GitRepo, old: &str, new: &str) -> GitResult<()> {
     }
     ensure_branch_name_valid(repo, new)?;
     repo.run(&["branch", "--move", old, new.trim()])?;
+    Ok(())
+}
+
+/// 将当前分支重置到目标提交。target 仅接受十六进制哈希（UI 只传提交 id）；
+/// 模式 = soft（保留改动在暂存区）/ mixed（保留在工作区）/ hard（丢弃，脏树拦截在前端）。
+pub fn reset_branch(repo: &GitRepo, target: &str, mode: &str) -> GitResult<()> {
+    let mode = match mode {
+        "soft" | "mixed" | "hard" => mode,
+        other => return Err(GitError::CommandFailed(format!("非法 reset 模式：{other}"))),
+    };
+    let target = target.trim();
+    if target.is_empty() || !target.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::CommandFailed("非法提交哈希".into()));
+    }
+    repo.run(&["reset", &format!("--{mode}"), target])?;
     Ok(())
 }
 
@@ -1242,22 +1272,22 @@ mod tests {
         let r = GitRepo::open(t.path()).unwrap();
 
         // 新建：默认仅创建；checkout=true 则建完即迁出
-        create_branch(&r, "feat", false).unwrap();
+        create_branch(&r, "feat", false, None).unwrap();
         assert_eq!(r.current_branch(), "main");
-        create_branch(&r, "topic", true).unwrap();
+        create_branch(&r, "topic", true, None).unwrap();
         assert_eq!(r.current_branch(), "topic");
 
         // 重名 / 非法名被预检拦截
         assert!(matches!(
-            create_branch(&r, "feat", false),
+            create_branch(&r, "feat", false, None),
             Err(GitError::CommandFailed(m)) if m.contains("已存在")
         ));
         assert!(matches!(
-            create_branch(&r, "bad name", false),
+            create_branch(&r, "bad name", false, None),
             Err(GitError::CommandFailed(m)) if m.contains("非法分支名")
         ));
         assert!(matches!(
-            create_branch(&r, "", false),
+            create_branch(&r, "", false, None),
             Err(GitError::CommandFailed(m)) if m.contains("不能为空")
         ));
 
@@ -1281,12 +1311,12 @@ mod tests {
         assert!(!r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/topic"]));
 
         // 已合入分支 -d 直接删除成功
-        create_branch(&r, "temp", false).unwrap();
+        create_branch(&r, "temp", false, None).unwrap();
         delete_branch(&r, "temp", false).unwrap();
         assert!(!r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/temp"]));
 
         // 改名：成功 / 重名拦截
-        create_branch(&r, "old-name", false).unwrap();
+        create_branch(&r, "old-name", false, None).unwrap();
         rename_branch(&r, "old-name", "new-name").unwrap();
         assert!(r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/new-name"]));
         assert!(matches!(
@@ -1299,6 +1329,46 @@ mod tests {
             delete_branch(&r, "main", true),
             Err(GitError::CommandFailed(_))
         ));
+    }
+
+    #[test]
+    fn reset_branch_three_modes() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        commit_file(t.path(), "b.txt", "staged content", "second");
+        fs::write(t.path().join("c.txt"), "untracked").unwrap();
+        let r = GitRepo::open(t.path()).unwrap();
+        let base = git(t.path(), &["rev-parse", "HEAD~1"]).trim().to_string();
+
+        // 软重置：b 回到暂存区，工作区文件原样
+        reset_branch(&r, &base, "soft").unwrap();
+        let st = get_status(&r).unwrap();
+        assert!(st.staged.iter().any(|f| f.path == "b.txt" && f.status == 'A'));
+        assert_eq!(r.current_branch(), "main");
+
+        // 非法哈希 / 非法模式被拦截
+        assert!(matches!(
+            reset_branch(&r, "zzzz", "soft"),
+            Err(GitError::CommandFailed(m)) if m.contains("非法提交哈希")
+        ));
+        assert!(matches!(
+            reset_branch(&r, &base, "bazooka"),
+            Err(GitError::CommandFailed(m)) if m.contains("非法 reset 模式")
+        ));
+
+        // 混合重置：暂存区清空，改动退回工作区
+        reset_branch(&r, &base, "mixed").unwrap();
+        let st2 = get_status(&r).unwrap();
+        assert!(st2.staged.is_empty());
+        assert!(st2.unstaged.iter().any(|f| f.path == "b.txt"));
+
+        // 硬重置：tracked 改动被丢弃，未跟踪文件保留（b.txt 重新暂存使其回到 index）
+        stage(&r, &["b.txt".into()]).unwrap();
+        reset_branch(&r, &base, "hard").unwrap();
+        let st3 = get_status(&r).unwrap();
+        assert!(st3.staged.is_empty() && st3.unstaged.iter().all(|f| f.path == "c.txt"));
+        assert!(!t.path().join("b.txt").exists());
+        assert!(t.path().join("c.txt").exists());
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）
