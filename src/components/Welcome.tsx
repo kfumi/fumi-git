@@ -23,7 +23,7 @@ export function Welcome() {
       }}
     >
       <div className="text-center">
-        <img src={logo} alt="" className="mb-4 h-14 w-14" />
+        <img src={logo} alt="" className="mx-auto mb-4 h-14 w-14" />
         <h1 className="text-3xl font-semibold tracking-tight">
           Fumi<span className="text-accent-ink">Git</span>
         </h1>
