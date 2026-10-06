@@ -47,6 +47,11 @@ export function laneX(lane: number): number {
   return GRAPH_PAD / 2 + 8 + lane * LANE_STEP;
 }
 
+/** 图谱列宽度：随 lane 数自适应（至少定稿的 96px），分支多的仓库不裁边 */
+export function graphWidth(laneCount: number): number {
+  return Math.max(96, (laneCount + 1) * LANE_STEP);
+}
+
 export function computeGraph(commits: CommitEntry[]): Graph {
   const visible = new Set(commits.map((c) => c.id));
   const lanes: (string | null)[] = [];
@@ -58,6 +63,11 @@ export function computeGraph(commits: CommitEntry[]): Graph {
   commits.forEach((c, row) => {
     let lane = lanes.indexOf(c.id);
     if (lane === -1) lane = lanes.length;
+    // 同一提交可能被多个子提交各预留一个槽位（分叉/合并）；
+    // 未被选中的槽位就地释放，否则 lane 永不回收、一路膨胀（lane 泄漏）
+    for (let i = lanes.length - 1; i >= 0; i--) {
+      if (i !== lane && lanes[i] === c.id) lanes[i] = null;
+    }
     const color = laneColors[lane] ?? BRANCH_PALETTE[colorSeq++ % BRANCH_PALETTE.length];
     laneColors[lane] = color;
     nodes.set(c.id, { lane, color, row });

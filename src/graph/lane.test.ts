@@ -15,6 +15,26 @@ const c = (id: string, parents: string[] = [], refs: string[] = []): CommitEntry
 });
 
 describe("computeGraph", () => {
+  it("lane 泄漏回归：多个子提交为同一父提交占位，未选中的槽位应回收（真实 codeMUX 案例）", () => {
+    // 拓扑序: m 合并提交（预留 p 的槽位0）→ 独立线 z1..z3（z3 又预留 p 的槽位1）→ p
+    // 若槽位不回收，p 之后的新线会被挤到 lane 2+，lane 数随历史一路膨胀
+    const g = computeGraph([
+      c("m", ["p", "tip"]),
+      c("z1", ["z2"]),
+      c("z2", ["z3"]),
+      c("z3", ["p"]),
+      c("p", ["base"]),
+      c("base"),
+      c("u1", ["u2"]),
+      c("u2"),
+    ]);
+    expect(g.nodes.get("p")!.lane).toBe(0);
+    expect(g.nodes.get("z3")!.lane).toBe(1);
+    // u1 进场时（base 线已结束、槽位已清空）不被泄漏的槽位顶到 lane 1
+    expect(g.nodes.get("u1")!.lane).toBe(0);
+    expect(g.laneCount).toBe(2);
+  });
+
   it("线性历史：全部占 lane 0", () => {
     const g = computeGraph([c("c", ["b"]), c("b", ["a"]), c("a")]);
     expect(g.laneCount).toBe(1);

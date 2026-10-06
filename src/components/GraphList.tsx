@@ -2,14 +2,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommitHorizontal } from "lucide-react";
-import { computeGraph, laneX, type Graph } from "../graph/lane";
+import { computeGraph, graphWidth, laneX, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
 import { absTime, avatarColor, relTime } from "../lib/format";
 import type { CommitEntry } from "../lib/types";
 import { RefChips } from "./RefChips";
 
 export const ROW_H = 52;
-const GRAPH_COL = 96;
 
 function CanvasGraph({
   graph,
@@ -31,9 +30,10 @@ function CanvasGraph({
     const canvas = canvasRef.current;
     if (!canvas || viewportH <= 0) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = GRAPH_COL * dpr;
+    const graphW = graphWidth(graph.laneCount);
+    canvas.width = graphW * dpr;
     canvas.height = Math.max(viewportH, 1) * dpr;
-    canvas.style.width = `${GRAPH_COL}px`;
+    canvas.style.width = `${graphW}px`;
     canvas.style.height = `${Math.max(viewportH, 1)}px`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -41,7 +41,7 @@ function CanvasGraph({
     const bg = style.getPropertyValue("--bg").trim() || "#0C0D11";
     const accent = style.getPropertyValue("--accent").trim() || "#7C7FF2";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, GRAPH_COL, viewportH);
+    ctx.clearRect(0, 0, graphW, viewportH);
 
     const rowCount = rows.length;
     const y = (row: number) => row * ROW_H + ROW_H / 2 - scrollTop;
@@ -114,6 +114,7 @@ export function GraphList() {
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);
   const graph = useMemo(() => computeGraph(rows), [rows]);
+  const graphW = graphWidth(graph.laneCount);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -198,6 +199,7 @@ export function GraphList() {
             commit={rows[vi.index]}
             selected={rows[vi.index].id === selectedId}
             top={vi.start}
+            graphW={graphW}
             onSelect={() => select(rows[vi.index].id)}
           />
         ))}
@@ -216,19 +218,21 @@ function CommitRow({
   commit,
   selected,
   top,
+  graphW,
   onSelect,
 }: {
   commit: CommitEntry;
   selected: boolean;
   top: number;
+  graphW: number;
   onSelect: () => void;
 }) {
   return (
     <div
       onClick={onSelect}
-      style={{ top, height: ROW_H }}
+      style={{ top, height: ROW_H, paddingLeft: graphW + 16 }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_92px_70px_56px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_92px_70px_56px] items-center gap-[10px] overflow-hidden pr-[14px] transition-colors " +
         (selected ? "bg-sel" : "hover:bg-hover")
       }
     >
