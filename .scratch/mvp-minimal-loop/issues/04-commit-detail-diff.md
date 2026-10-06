@@ -8,9 +8,13 @@ Rust 侧新增 `get_commit_detail`：基于 git show 类命令解析出元信息
 
 **Status:** ready-for-agent
 
-- [ ] 点选任意提交，详情面板元信息与图谱行一致（hash/作者/ref）
-- [ ] 文件列表增删行数与真实仓库一致；重命名显示为 R 徽章
-- [ ] diff 逐行着色正确：新增绿/删除红/上下文灰、hunk 头强调、行号列对齐
-- [ ] 二进制文件显示占位说明而非乱码
-- [ ] 合并提交显示父提交引用与无 diff 空态
-- [ ] 封装层解析测试覆盖新增/修改/删除/重命名/二进制夹具
+- [x] 点选任意提交，详情面板元信息与图谱行一致（hash/作者/ref）
+- [x] 文件列表增删行数与真实仓库一致；重命名显示为 R 徽章
+- [x] diff 逐行着色正确：新增绿/删除红/上下文灰、hunk 头强调、行号列对齐
+- [x] 二进制文件显示占位说明而非乱码
+- [x] 合并提交显示父提交引用与无 diff 空态
+- [x] 封装层解析测试覆盖新增/修改/删除/重命名/二进制夹具
+
+## Comments
+
+实现：get_commit_detail（name-status 定状态 + numstat 定行数 + patch 截取按文件）、DetailDiff 解析器。测试 detail_add_modify_delete_rename_binary / detail_merge_has_no_patch_but_parents 全绿。

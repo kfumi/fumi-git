@@ -15,6 +15,13 @@
   --color-faint: var(--faint);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-sel: var(--sel-bg);
+  --color-hover: var(--hover);
+  --color-add: var(--diff-add-text);
+  --color-add-bg: var(--diff-add-bg);
+  --color-del: var(--diff-del-text);
+  --color-del-bg: var(--diff-del-bg);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
@@ -40,6 +47,10 @@ html[data-mode="dark"] {
   --ok: #3fb27f;
   --warn: #e0a64b;
   --bad: #f2708a;
+  --diff-add-text: #7edcb2;
+  --diff-add-bg: rgba(63, 178, 127, 0.12);
+  --diff-del-text: #f79ca9;
+  --diff-del-bg: rgba(242, 112, 138, 0.1);
   color-scheme: dark;
 }
 
@@ -57,6 +68,10 @@ html[data-mode="light"] {
   --accent-soft: rgba(84, 87, 228, 0.09);
   --sel-bg: rgba(84, 87, 228, 0.08);
   --hover: rgba(20, 22, 40, 0.04);
+  --diff-add-text: #147a4c;
+  --diff-add-bg: rgba(63, 178, 127, 0.14);
+  --diff-del-text: #b3384e;
+  --diff-del-bg: rgba(242, 112, 138, 0.12);
   color-scheme: light;
 }
 

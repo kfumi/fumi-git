@@ -8,9 +8,13 @@
 
 **Status:** ready-for-agent
 
-- [ ] 选择非 git 目录时，UI 显示引导提示而非报错或空白
-- [ ] 打开有效仓库后，主界面显示该仓库名与当前分支
-- [ ] 最近仓库列表跨重启保留，可切换、可从列表移除
+- [x] 选择非 git 目录时，UI 显示引导提示而非报错或空白
+- [x] 打开有效仓库后，主界面显示该仓库名与当前分支
+- [x] 最近仓库列表跨重启保留，可切换、可从列表移除
 - [ ] 主题选择跨重启保留；"跟随系统"模式响应系统外观实时变化
 - [ ] 封装层对"非仓库目录"返回结构化错误，测试覆盖（真实夹具，不 mock git）
-- [ ] Windows 路径全部经抽象处理，无硬编码分隔符
+- [x] Windows 路径全部经抽象处理，无硬编码分隔符
+
+## Comments
+
+实现：GitRepo::open 归一化仓库根、JSON 配置持久化、主题三态存储；自动化测试全绿（open_rejects_non_repo_and_bare、open_normalizes_to_root_and_reports_branch、config roundtrip）。目录选择器用 tauri-plugin-dialog。

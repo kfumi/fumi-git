@@ -8,10 +8,14 @@ Rust 侧新增 `fetch`/`pull`/`push`（异步执行、进度上报）与 `get_br
 
 **Status:** ready-for-agent
 
-- [ ] fetch/pull/push 全程有进行中指示，结束后有成功/失败反馈
-- [ ] ↑↓ 计数与真实仓库状态一致，同步后自动刷新
-- [ ] 分叉时 pull 失败并显示指引，仓库状态未被改变（--ff-only）
-- [ ] 非快进 push 被拒时显示可读错误与下一步建议
-- [ ] 无上游分支时 push 提示而非报错崩溃
+- [x] fetch/pull/push 全程有进行中指示，结束后有成功/失败反馈
+- [x] ↑↓ 计数与真实仓库状态一致，同步后自动刷新
+- [x] 分叉时 pull 失败并显示指引，仓库状态未被改变（--ff-only）
+- [x] 非快进 push 被拒时显示可读错误与下一步建议
+- [x] 无上游分支时 push 提示而非报错崩溃
 - [ ] 凭证失败（本地夹具模拟无凭证场景）透传为友好错误
-- [ ] 封装层测试覆盖 bare-origin 四态夹具（同步/落后/领先/分叉）
+- [x] 封装层测试覆盖 bare-origin 四态夹具（同步/落后/领先/分叉）
+
+## Comments
+
+实现：fetch --prune / pull --ff-only（NonFastForward 结构化错误）/ push（无上游给 NoUpstream 指引）、get_branch_summary（rev-list --left-right --count）。测试 fetch_pull_fast_forward_and_divergence / push_no_upstream_is_structured_error / push_ahead_succeeds 全绿。凭证复用 git 凭证体系（CLI 继承）。

@@ -1,0 +1,62 @@
+// 类型化 IPC 封装 —— 前端禁止绕过本模块直接 invoke 裸字符串命令
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import type {
+  AppConfig,
+  BranchSummary,
+  CommitDetail,
+  GitError,
+  LogPage,
+  RepoMeta,
+  RepoStatus,
+} from "./types";
+
+const cmd = <T,>(name: string, args?: Record<string, unknown>): Promise<T> =>
+  invoke<T>(name, args);
+
+/** 把 invoke 的拒绝值规整为 GitError（Rust 侧是带 kind/message 的对象） */
+export async function asGitError(e: unknown): Promise<GitError> {
+  if (e && typeof e === "object" && "kind" in e && "message" in e) {
+    return e as GitError;
+  }
+  return { kind: "CommandFailed", message: String(e) };
+}
+
+export const ipc = {
+  getConfig: () => cmd<AppConfig>("get_app_config"),
+  setTheme: (mode: string) => cmd<void>("set_theme", { mode }),
+  removeRecent: (path: string) => cmd<void>("remove_recent", { path }),
+
+  /** 弹出系统目录选择器；取消返回 null */
+  pickDirectory: () =>
+    openDialog({ directory: true, multiple: false, title: "选择 git 仓库目录" }) as Promise<
+      string | null
+    >,
+  openRepo: (path: string) => cmd<RepoMeta>("open_repo", { path }),
+
+  getLog: (skip: number, limit: number) => cmd<LogPage>("get_log", { skip, limit }),
+  getCommitDetail: (hash: string) => cmd<CommitDetail>("get_commit_detail", { hash }),
+  getStatus: () => cmd<RepoStatus>("get_status"),
+  getBranchSummary: () => cmd<BranchSummary>("get_branch_summary"),
+
+  stage: (paths: string[]) => cmd<void>("stage_paths", { paths }),
+  unstage: (paths: string[]) => cmd<void>("unstage_paths", { paths }),
+  commit: (message: string) => cmd<string>("commit_staged", { message }),
+
+  fetch: () => cmd<string>("fetch_remote"),
+  pull: () => cmd<string>("pull_remote"),
+  push: () => cmd<string>("push_remote"),
+};
+
+export function listenRepoChanged(cb: () => void): Promise<() => void> {
+  // 动态引入避免模块级依赖事件 API 的类型噪音
+  return import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("repo-changed", cb).then((un) => {
+      return () => {
+        un();
+      };
+    }),
+  );
+}
+
+export type { GitError };

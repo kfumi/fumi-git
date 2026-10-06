@@ -8,9 +8,13 @@ Rust 侧新增 `get_status`（status porcelain v2 解析为结构化条目）、
 
 **Status:** ready-for-agent
 
-- [ ] 修改/新增/删除文件后，工作区列表状态与 git status 一致（M/A/D）
-- [ ] 单文件暂存/取消暂存即时反映在两个分组中
-- [ ] 提交成功：新提交出现在图谱顶部且带 HEAD 徽章，工作区对应条目消失
-- [ ] 空提交信息被阻止并提示
-- [ ] 提交遵守仓库 hooks（有 pre-commit hook 的夹具仓库中 hook 会执行）
-- [ ] 封装层测试：status/stage/unstage/commit 对真实夹具仓库行为正确
+- [x] 修改/新增/删除文件后，工作区列表状态与 git status 一致（M/A/D）
+- [x] 单文件暂存/取消暂存即时反映在两个分组中
+- [x] 提交成功：新提交出现在图谱顶部且带 HEAD 徽章，工作区对应条目消失
+- [x] 空提交信息被阻止并提示
+- [x] 提交遵守仓库 hooks（有 pre-commit hook 的夹具仓库中 hook 会执行）
+- [x] 封装层测试：status/stage/unstage/commit 对真实夹具仓库行为正确
+
+## Comments
+
+实现：get_status（porcelain -z，重命名取原路径）、stage/unstage（初始提交无 HEAD 走 rm --cached）、commit -F -（stdin 传信息）。测试 status_stage_commit_roundtrip / unstage_on_initial_commit_head_missing / commit_runs_hooks_and_surfaces_rejection 全绿。

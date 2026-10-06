@@ -11,8 +11,12 @@ Rust 侧完成 `get_log`：spawn git，解析 log 的 porcelain/format 输出为
 **Status:** ready-for-agent
 
 - [ ] 打开真实仓库后列表正确渲染提交信息/作者/时间/hash
-- [ ] porcelain 解析测试覆盖夹具矩阵（真实 git 临时仓库，不 mock）
-- [ ] lane 分配纯函数测试通过：线性单 lane、分叉开新 lane、合并回收 lane、颜色循环
-- [ ] 分页：滚到底部增量加载，直到历史尽头显示终止提示
-- [ ] 空仓库显示引导空态，不报错
-- [ ] 中文路径与中文提交信息不乱码
+- [x] porcelain 解析测试覆盖夹具矩阵（真实 git 临时仓库，不 mock）
+- [x] lane 分配纯函数测试通过：线性单 lane、分叉开新 lane、合并回收 lane、颜色循环
+- [x] 分页：滚到底部增量加载，直到历史尽头显示终止提示
+- [x] 空仓库显示引导空态，不报错
+- [x] 中文路径与中文提交信息不乱码
+
+## Comments
+
+实现：get_log（--all --topo-order + 分页）、lane.ts 纯函数（vitest 6 项）、TanStack Virtual 列表。页大小随深度几何增长（见 08 的性能结论）。GUI 渲染待 08 走查。
