@@ -15,6 +15,8 @@ pnpm tauri dev      # 开发运行
 pnpm tauri build    # 打包
 ```
 
+应用图标源文件在 `docs/design/brand/app-icon.png`，修改后用 `pnpm tauri icon docs/design/brand/app-icon.png` 重新生成全套尺寸（.ico 嵌入 exe，任务栏/标题栏即生效）。
+
 ## 文档
 
 - [UI 设计规范](docs/design/ui-spec.md) — 布局、主题令牌、图谱配色（2026-10 定稿）

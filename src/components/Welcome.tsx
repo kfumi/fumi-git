@@ -1,7 +1,8 @@
 // 欢迎页：首启引导 + 最近仓库（票 01）
-import { FolderOpen, GitBranch, X } from "lucide-react";
+import { FolderOpen, X } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { ipc } from "../lib/ipc";
+import logo from "../assets/logo.png";
 
 export function Welcome() {
   const config = useRepo((s) => s.config);
@@ -22,9 +23,7 @@ export function Welcome() {
       }}
     >
       <div className="text-center">
-        <span className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft">
-          <GitBranch size={22} className="text-accent-ink" aria-hidden />
-        </span>
+        <img src={logo} alt="" className="mb-4 h-14 w-14" />
         <h1 className="text-3xl font-semibold tracking-tight">
           Fumi<span className="text-accent-ink">Git</span>
         </h1>
