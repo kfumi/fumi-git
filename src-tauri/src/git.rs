@@ -519,6 +519,32 @@ pub fn commit(repo: &GitRepo, message: &str) -> GitResult<String> {
     Ok(repo.run(&["rev-parse", "HEAD"])?.trim().to_string())
 }
 
+// ── 分支 / 工作树 / stash ───────────────────────────────────────────────────
+
+/// 迁出到已有本地分支。工作区改动与目标分支冲突时由 git 拦截，错误原样上抛。
+pub fn switch_branch(repo: &GitRepo, name: &str) -> GitResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    repo.run(&["switch", name])?;
+    Ok(())
+}
+
+/// 暂存全部改动（含未跟踪文件）。没有可暂存内容时报错，避免空 stash。
+pub fn stash_push(repo: &GitRepo, message: Option<&str>) -> GitResult<()> {
+    let st = get_status(repo)?;
+    if st.staged.is_empty() && st.unstaged.is_empty() {
+        return Err(GitError::NothingToCommit("没有可暂存的改动".into()));
+    }
+    let msg = message.map(str::trim).filter(|m| !m.is_empty());
+    match msg {
+        Some(m) => repo.run(&["stash", "push", "--include-untracked", "--message", m])?,
+        None => repo.run(&["stash", "push", "--include-untracked"])?,
+    };
+    Ok(())
+}
+
 // ── 远程同步 ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1072,6 +1098,70 @@ mod tests {
         assert!(matches!(push(&r), Err(GitError::NonFastForward(_))));
         // push 被拒不改动本地状态
         assert_eq!(git(work.path(), &["rev-parse", "HEAD"]).trim(), head_before.trim());
+    }
+
+    // ── 分支迁出 / stash ──
+
+    #[test]
+    fn switch_branch_moves_head() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        git(t.path(), &["branch", "feat"]);
+        let r = GitRepo::open(t.path()).unwrap();
+        assert_eq!(r.current_branch(), "main");
+        switch_branch(&r, "feat").unwrap();
+        assert_eq!(r.current_branch(), "feat");
+        // 空名拒绝
+        assert!(matches!(
+            switch_branch(&r, "  "),
+            Err(GitError::CommandFailed(_))
+        ));
+        // 不存在的分支由 git 报结构化错误
+        assert!(matches!(
+            switch_branch(&r, "no-such-branch"),
+            Err(GitError::CommandFailed(_))
+        ));
+    }
+
+    #[test]
+    fn switch_branch_dirty_conflict_is_structured_error() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "main\n", "base");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t.path(), "a.txt", "feat\n", "feat side");
+        git(t.path(), &["checkout", "-q", "main"]);
+        // main 侧把 a.txt 改出未提交内容 → 迁到 feat 必然冲突
+        fs::write(t.path().join("a.txt"), "dirty\n").unwrap();
+        let r = GitRepo::open(t.path()).unwrap();
+        assert!(matches!(
+            switch_branch(&r, "feat"),
+            Err(GitError::CommandFailed(_))
+        ));
+        // 仓库仍在 main，未提交改动原样保留
+        assert_eq!(r.current_branch(), "main");
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "dirty\n");
+    }
+
+    #[test]
+    fn stash_push_cleans_worktree_and_keeps_untracked() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        fs::write(t.path().join("a.txt"), "2").unwrap();
+        fs::write(t.path().join("new.txt"), "untracked").unwrap();
+        let r = GitRepo::open(t.path()).unwrap();
+
+        stash_push(&r, Some("半成品"), ).unwrap();
+        let st = get_status(&r).unwrap();
+        assert!(st.staged.is_empty() && st.unstaged.is_empty());
+        assert!(!t.path().join("new.txt").exists());
+        let list = git(t.path(), &["stash", "list", "--format=%gs"]);
+        assert!(list.contains("半成品"), "stash list: {list}");
+
+        // 干净工作树再 stash = 结构化报错
+        assert!(matches!(
+            stash_push(&r, None),
+            Err(GitError::NothingToCommit(_))
+        ));
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

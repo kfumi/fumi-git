@@ -19,6 +19,26 @@ export interface Toast {
   text: string;
 }
 
+/** 对话框动作按钮；run 返回 false = 校验失败保持打开（表单场景） */
+export interface DialogAction {
+  label: string;
+  kind?: "primary" | "danger" | "ghost";
+  run: (input: string, checked: boolean) => boolean | void;
+}
+
+/** 通用对话框描述（ui-spec §4）：确认 / 多选去向 / 输入表单统一走这一槽位 */
+export interface DialogDesc {
+  title: string;
+  message?: string;
+  /** 受影响文件清单（脏工作树拦截） */
+  files?: string[];
+  input?: { initial?: string; placeholder?: string };
+  checkbox?: { label: string; initial?: boolean };
+  /** 取消按钮标签；缺省「取消」；actions 已含取消项时传 null */
+  cancelLabel?: string | null;
+  actions: DialogAction[];
+}
+
 let toastSeq = 0;
 
 interface RepoState {
@@ -47,6 +67,8 @@ interface RepoState {
   summary: BranchSummary | null;
   filter: string;
   toasts: Toast[];
+  /** 当前打开的通用对话框；null = 关闭 */
+  dialog: DialogDesc | null;
 
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
@@ -77,6 +99,10 @@ interface RepoState {
   /** 就地改写某条提示（busy → ok/err 的转场复用同一条，不打断视线） */
   updateToast: (id: number, patch: Partial<Pick<Toast, "kind" | "text">>) => void;
   dismissToast: (id: number) => void;
+  openDialog: (desc: DialogDesc) => void;
+  closeDialog: () => void;
+  /** 迁出到本地分支；脏工作树时先经安全拦截对话框（ui-spec §4） */
+  checkout: (branch: string) => Promise<void>;
 }
 
 const errText = async (e: unknown): Promise<string> =>
@@ -104,6 +130,53 @@ export const useRepo = create<RepoState>((set, get) => ({
   summary: null,
   filter: "",
   toasts: [],
+  dialog: null,
+
+  openDialog: (desc) => set({ dialog: desc }),
+  closeDialog: () => set({ dialog: null }),
+
+  checkout: async (branch) => {
+    const st = await ipc.getStatus().catch(() => null);
+    const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
+    const doSwitch = async () => {
+      const id = get().pushToast("busy", `迁出到 ${branch}…`);
+      try {
+        await ipc.switchBranch(branch);
+        get().updateToast(id, { kind: "ok", text: `已迁出到 ${branch}` });
+        await get().refresh();
+      } catch (e) {
+        get().updateToast(id, { kind: "err", text: await errText(e) });
+      }
+    };
+    if (dirtyFiles.length > 0) {
+      get().openDialog({
+        title: `迁出到 ${branch}`,
+        message:
+          "工作区有未提交改动。带着改动迁出时，若与目标分支冲突，git 会拒绝且现状不变。",
+        files: dirtyFiles,
+        actions: [
+          { label: "带着改动迁出", kind: "primary", run: () => void doSwitch() },
+          {
+            label: "stash 后迁出",
+            kind: "ghost",
+            run: () => {
+              void (async () => {
+                try {
+                  await ipc.stashPush("迁出前自动暂存");
+                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
+                  await doSwitch();
+                } catch (e) {
+                  get().pushToast("err", await errText(e));
+                }
+              })();
+            },
+          },
+        ],
+      });
+      return;
+    }
+    await doSwitch();
+  },
 
   pushToast: (kind, text) => {
     const id = ++toastSeq;
@@ -137,6 +210,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         status: null,
         summary: null,
         filter: "",
+        dialog: null,
       });
       await get().refresh();
       // 刷新最近列表
@@ -167,6 +241,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       workDiffLoading: false,
       status: null,
       summary: null,
+      dialog: null,
     }),
 
   loadMore: async () => {

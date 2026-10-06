@@ -42,6 +42,9 @@ export const ipc = {
     cmd<string>("get_worktree_diff", { staged, path }),
   getBranchSummary: () => cmd<BranchSummary>("get_branch_summary"),
 
+  switchBranch: (name: string) => cmd<void>("switch_branch", { name }),
+  stashPush: (message?: string) => cmd<void>("stash_push", { message }),
+
   stage: (paths: string[]) => cmd<void>("stage_paths", { paths }),
   unstage: (paths: string[]) => cmd<void>("unstage_paths", { paths }),
   commit: (message: string) => cmd<string>("commit_staged", { message }),

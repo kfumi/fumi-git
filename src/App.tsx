@@ -14,6 +14,7 @@ import { FileDiffTabs, WorkDiffView } from "./components/FileDiffTabs";
 import { HDivider, SidebarHandle, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
+import { DialogHost } from "./components/DialogHost";
 
 const SIDEBAR_MIN = 140;
 const SIDEBAR_MAX = 340;
@@ -55,7 +56,6 @@ export default function App() {
         <Welcome />
       </>
     );
-
   const updateSidebarW = (w: number) => {
     const clamped = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w));
     setSidebarW(clamped);
@@ -89,6 +89,7 @@ export default function App() {
         </div>
       </div>
       <ToastHost />
+      <DialogHost />
     </div>
   );
 }

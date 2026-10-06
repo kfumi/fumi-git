@@ -13,6 +13,7 @@ import {
 import { useRepo } from "../stores/repo";
 import { classifyRef, groupBranches } from "../lib/refs";
 import type { BranchSummary } from "../lib/types";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 const GROUPS_KEY = "fumigit.expanded-branch-groups";
 
@@ -33,6 +34,23 @@ export function Sidebar() {
   const removeRecent = useRepo((s) => s.removeRecent);
   const selectRefTip = useRepo((s) => s.selectRefTip);
   const summary = useRepo((s) => s.summary);
+  const checkout = useRepo((s) => s.checkout);
+  // 分支右键菜单：{ 位置, 分支全名 }；操作项随批次增长（新建/删除/改名在后续票接入）
+  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; branch: string } | null>(
+    null,
+  );
+
+  const branchMenuItems = (branch: string): MenuItem[] => {
+    const current = summary?.branch === branch;
+    return [
+      {
+        label: "迁出",
+        hint: current ? "当前分支" : undefined,
+        disabled: current,
+        onSelect: () => void checkout(branch),
+      },
+    ];
+  };
 
   const { branches, remotes, tags } = useMemo(() => {
     const b = new Map<string, string>(); // name -> tip commit id
@@ -119,6 +137,10 @@ export function Sidebar() {
           current={summary?.branch === name}
           summary={summary}
           onSelect={() => selectRefTip(id)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setBranchMenu({ x: e.clientX, y: e.clientY, branch: name });
+          }}
         />
       ))}
       {tree.groups.map(([prefix, members]) => {
@@ -154,11 +176,28 @@ export function Sidebar() {
                   current={summary?.branch === prefix + "/" + rest}
                   summary={summary}
                   onSelect={() => selectRefTip(id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setBranchMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      branch: prefix + "/" + rest,
+                    });
+                  }}
                 />
               ))}
           </div>
         );
       })}
+
+      {branchMenu && (
+        <ContextMenu
+          x={branchMenu.x}
+          y={branchMenu.y}
+          items={branchMenuItems(branchMenu.branch)}
+          onClose={() => setBranchMenu(null)}
+        />
+      )}
 
       {tags.size > 0 && (
         <>
@@ -203,6 +242,7 @@ function BranchRow({
   current,
   summary,
   onSelect,
+  onContextMenu,
 }: {
   name: string;
   fullName: string;
@@ -211,10 +251,12 @@ function BranchRow({
   current: boolean;
   summary: BranchSummary | null;
   onSelect: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
     <button
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       title={`${fullName} → ${tip.slice(0, 7)}`}
       className={
         "flex w-full items-center gap-1.5 rounded-md py-[7px] pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink " +

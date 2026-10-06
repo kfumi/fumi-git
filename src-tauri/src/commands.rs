@@ -154,3 +154,16 @@ pub fn push_remote(state: State<'_, AppState>) -> Result<String, GitError> {
 pub fn get_branch_summary(state: State<'_, AppState>) -> Result<BranchSummary, GitError> {
     with_active(&state, git::get_branch_summary)
 }
+
+#[tauri::command]
+pub fn switch_branch(state: State<'_, AppState>, name: String) -> Result<(), GitError> {
+    with_active(&state, |repo| git::switch_branch(repo, &name))
+}
+
+#[tauri::command]
+pub fn stash_push(
+    state: State<'_, AppState>,
+    message: Option<String>,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::stash_push(repo, message.as_deref()))
+}

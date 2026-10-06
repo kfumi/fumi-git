@@ -212,6 +212,34 @@ textarea:focus-visible {
     filter: none;
   }
 
+  /* 危险按钮：销毁类确认动作（删除分支 / 丢弃改动 / 强制操作） */
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--bad);
+    color: #fff;
+    cursor: pointer;
+    transition: filter 150ms ease, opacity 150ms ease;
+  }
+  .btn-danger:hover {
+    filter: brightness(1.08);
+  }
+  .btn-danger:active {
+    filter: brightness(0.95);
+  }
+  .btn-danger:disabled {
+    opacity: 0.4;
+    cursor: default;
+    filter: none;
+  }
+
   /* 侧栏分区标题 */
   .section-label {
     padding: 0 8px;

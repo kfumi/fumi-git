@@ -21,6 +21,8 @@ vi.mock("../lib/ipc", () => {
     fetch: vi.fn(),
     pull: vi.fn(),
     push: vi.fn(),
+    switchBranch: vi.fn(async () => {}),
+    stashPush: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -62,6 +64,7 @@ beforeEach(() => {
     summary: null,
     filter: "",
     toasts: [],
+    dialog: null,
   });
 });
 
@@ -268,6 +271,55 @@ describe("工作区文件 diff", () => {
     await useRepo.getState().refresh();
     expect(useRepo.getState().workFile).toBe("a.ts"); // 仍在 → diff 刷新
     expect(useRepo.getState().workDiff).toBe("+fresh\n");
+  });
+});
+
+describe("checkout 安全模型（票 01）", () => {
+  const clean = { staged: [], unstaged: [], branch: "main" };
+  const dirty = {
+    staged: [{ path: "s.ts", old_path: null, status: "M" as const }],
+    unstaged: [{ path: "u.ts", old_path: null, status: "M" as const }],
+    branch: "main",
+  };
+
+  it("干净工作树：直接迁出并刷新", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(clean);
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+    await useRepo.getState().checkout("feat");
+    expect(ipc.switchBranch).toHaveBeenCalledWith("feat");
+    expect(useRepo.getState().dialog).toBeNull();
+    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok", text: "已迁出到 feat" });
+  });
+
+  it("脏工作树：拦截弹三选，不直接迁出", async () => {
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
+
+    await useRepo.getState().checkout("feat");
+    expect(ipc.switchBranch).not.toHaveBeenCalled();
+    const d = useRepo.getState().dialog;
+    expect(d).not.toBeNull();
+    expect(d?.files).toEqual(["s.ts", "u.ts"]);
+    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动迁出", "stash 后迁出"]);
+
+    d!.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
+  });
+
+  it("脏工作树选「stash 后迁出」：先入 stash 再迁出", async () => {
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+    await useRepo.getState().checkout("feat");
+    const d = useRepo.getState().dialog!;
+    // 宿主契约：action.run 返回非 false 时由 DialogHost 关闭对话框
+    if (d.actions[1].run("", false) !== false) useRepo.getState().closeDialog();
+    await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
+    expect(ipc.stashPush).toHaveBeenCalledWith("迁出前自动暂存");
+    expect(useRepo.getState().dialog).toBeNull();
   });
 });
 

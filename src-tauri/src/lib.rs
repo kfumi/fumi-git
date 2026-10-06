@@ -38,6 +38,8 @@ pub fn run() {
             commands::pull_remote,
             commands::push_remote,
             commands::get_branch_summary,
+            commands::switch_branch,
+            commands::stash_push,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
