@@ -1,11 +1,11 @@
-// 右侧：提交详情（元信息 + 文件列表 + diff）与工作区（暂存/提交）
+// 右上：提交详情（元信息 + 文件列表，点击文件 → 右下 diff tab）
+// 中栏「改动」tab：工作区（暂存/提交）
 import { useEffect, useState } from "react";
 import { Check, LoaderCircle } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { absTime, avatarColor } from "../lib/format";
 import type { FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
-import { DetailDiff } from "./DiffView";
 
 const ST_CLASS: Record<string, string> = {
   M: "bg-warn/15 text-warn",
@@ -28,11 +28,8 @@ function StatusBadge({ s }: { s: string }) {
 
 export function CommitDetailPanel() {
   const detail = useRepo((s) => s.detail);
-  const loading = useRepo((s) => s.detailLoading);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
-  useEffect(() => {
-    setActiveFile(null); // 换提交后回到第一个文件
-  }, [detail?.meta.id]);
+  const detailFile = useRepo((s) => s.detailFile);
+  const openDetailFile = useRepo((s) => s.openDetailFile);
   if (!detail) {
     return (
       <div className="flex h-full items-center justify-center overflow-hidden bg-panel text-xs text-faint">
@@ -42,57 +39,50 @@ export function CommitDetailPanel() {
   }
   const meta = detail.meta;
   return (
-      <div
-        id="detail-panel"
-        tabIndex={-1}
-        className="h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
-      >
-        <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
-        {detail.body && (
-          <p className="mb-2.5 whitespace-pre-wrap text-xs leading-relaxed text-dim">{detail.body}</p>
-        )}
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-dim">
-          <span
-            className="avatar flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-            style={{ background: avatarColor(meta.author_name) }}
-            aria-hidden
-          >
-            {meta.author_name.slice(0, 1)}
-          </span>
-          <span>{meta.author_name}</span>
-          <span className="text-faint">·</span>
-          <span className="tnum" title={absTime(meta.time)}>
-            {absTime(meta.time)}
-          </span>
-          <span className="text-faint">·</span>
-          <span className="tnum font-mono text-[11px] text-faint">{meta.short_id}</span>
-        </div>
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          <RefChips refs={meta.refs} />
-        </div>
-        {meta.parents.length > 1 && (
-          <p className="tnum mb-3 font-mono text-[11px] text-faint">
-            父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
-          </p>
-        )}
-
-        <div className="overflow-hidden rounded-lg border border-brd bg-panel2">
-          {detail.files.map((f) => (
-            <FileRow
-              key={f.path + (f.old_path ?? "")}
-              file={f}
-              active={activeFile === f.path || (activeFile === null && f === detail.files[0])}
-              onClick={() => setActiveFile(f.path)}
-            />
-          ))}
-        </div>
-      {loading ? (
-        <p className="mt-3 text-xs text-faint">加载 diff…</p>
-      ) : (
-        <div className="mt-3">
-          <DetailDiff detail={detail} selectedFile={activeFile ?? detail.files[0]?.path ?? null} />
-        </div>
+    <div
+      id="detail-panel"
+      tabIndex={-1}
+      className="h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
+    >
+      <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
+      {detail.body && (
+        <p className="mb-2.5 whitespace-pre-wrap text-xs leading-relaxed text-dim">{detail.body}</p>
       )}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-dim">
+        <span
+          className="avatar flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+          style={{ background: avatarColor(meta.author_name) }}
+          aria-hidden
+        >
+          {meta.author_name.slice(0, 1)}
+        </span>
+        <span>{meta.author_name}</span>
+        <span className="text-faint">·</span>
+        <span className="tnum" title={absTime(meta.time)}>
+          {absTime(meta.time)}
+        </span>
+        <span className="text-faint">·</span>
+        <span className="tnum font-mono text-[11px] text-faint">{meta.short_id}</span>
+      </div>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        <RefChips refs={meta.refs} />
+      </div>
+      {meta.parents.length > 1 && (
+        <p className="tnum mb-3 font-mono text-[11px] text-faint">
+          父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
+        </p>
+      )}
+
+      <div className="overflow-hidden rounded-lg border border-brd bg-panel2">
+        {detail.files.map((f) => (
+          <FileRow
+            key={f.path + (f.old_path ?? "")}
+            file={f}
+            active={f.path === detailFile}
+            onClick={() => openDetailFile(f.path)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -134,7 +124,8 @@ function FileRow({
   );
 }
 
-export function StagePanel() {
+// 中栏「改动」tab：工作区文件分组 + 暂存/提交操作（原右下面板整体迁入）
+export function ChangesPanel() {
   const status = useRepo((s) => s.status);
   const stage = useRepo((s) => s.stage);
   const unstage = useRepo((s) => s.unstage);
@@ -159,7 +150,12 @@ export function StagePanel() {
     if (ok) setMessage("");
   };
 
-  if (!status) return null;
+  if (!status)
+    return (
+      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
+        加载工作区…
+      </div>
+    );
   const canCommit = status.staged.length > 0 && message.trim().length > 0;
 
   return (

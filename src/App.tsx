@@ -7,8 +7,9 @@ import { useRepo } from "./stores/repo";
 import { useTheme } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
-import { GraphList } from "./components/GraphList";
-import { CommitDetailPanel, StagePanel } from "./components/StagePanel";
+import { MainArea } from "./components/MainArea";
+import { CommitDetailPanel } from "./components/StagePanel";
+import { FileDiffTabs } from "./components/FileDiffTabs";
 import { HDivider, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
@@ -49,7 +50,7 @@ export default function App() {
           </Panel>
           <VDivider />
           <Panel id="graph" defaultSize={52} minSize={30}>
-            <GraphList />
+            <MainArea />
           </Panel>
           <VDivider />
           <Panel id="right" defaultSize={31} minSize={20} maxSize={44}>
@@ -59,7 +60,7 @@ export default function App() {
               </Panel>
               <HDivider />
               <Panel id="stage" defaultSize={43} minSize={20}>
-                <StagePanel />
+                <FileDiffTabs />
               </Panel>
             </PanelGroup>
           </Panel>

@@ -30,6 +30,9 @@ interface RepoState {
   selectedId: string | null;
   detail: CommitDetail | null;
   detailLoading: boolean;
+  /** 提交详情里已打开的文件 diff tab（路径，有序）与当前激活项 */
+  openFiles: string[];
+  detailFile: string | null;
   status: RepoStatus | null;
   summary: BranchSummary | null;
   filter: string;
@@ -42,6 +45,10 @@ interface RepoState {
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
   select: (id: string | null) => Promise<void>;
+  /** 打开（或激活）提交详情的一个文件 diff tab */
+  openDetailFile: (path: string) => void;
+  /** 关闭文件 diff tab；关闭激活项时自动激活相邻 tab */
+  closeDetailFile: (path: string) => void;
   stage: (paths: string[]) => Promise<void>;
   unstage: (paths: string[]) => Promise<void>;
   commit: (message: string) => Promise<boolean>;
@@ -65,6 +72,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   selectedId: null,
   detail: null,
   detailLoading: false,
+  openFiles: [],
+  detailFile: null,
   status: null,
   summary: null,
   filter: "",
@@ -93,6 +102,8 @@ export const useRepo = create<RepoState>((set, get) => ({
         logDone: false,
         selectedId: null,
         detail: null,
+        openFiles: [],
+        detailFile: null,
         status: null,
         summary: null,
         filter: "",
@@ -113,7 +124,16 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   closeRepo: () =>
-    set({ meta: null, commits: [], selectedId: null, detail: null, status: null, summary: null }),
+    set({
+      meta: null,
+      commits: [],
+      selectedId: null,
+      detail: null,
+      openFiles: [],
+      detailFile: null,
+      status: null,
+      summary: null,
+    }),
 
   loadMore: async () => {
     const { meta, commits, logDone, loadingMore } = get();
@@ -150,6 +170,8 @@ export const useRepo = create<RepoState>((set, get) => ({
         summary,
         selectedId: stillThere ? selectedId : null,
         detail: stillThere ? get().detail : null,
+        openFiles: stillThere ? get().openFiles : [],
+        detailFile: stillThere ? get().detailFile : null,
       });
     } catch (e) {
       get().pushToast("err", await errText(e));
@@ -158,19 +180,43 @@ export const useRepo = create<RepoState>((set, get) => ({
 
   select: async (id) => {
     if (id === null) {
-      set({ selectedId: null, detail: null });
+      set({ selectedId: null, detail: null, openFiles: [], detailFile: null });
       return;
     }
     set({ selectedId: id, detailLoading: true });
     try {
       const detail = await ipc.getCommitDetail(id);
-      if (get().selectedId === id) set({ detail, detailLoading: false });
+      if (get().selectedId === id) {
+        // 换提交后文件 tab 重置为第一个文件
+        const first = detail.files[0]?.path ?? null;
+        set({ detail, detailLoading: false, openFiles: first ? [first] : [], detailFile: first });
+      }
     } catch (e) {
       if (get().selectedId === id) {
-        set({ detail: null, detailLoading: false });
+        set({ detail: null, detailLoading: false, openFiles: [], detailFile: null });
         get().pushToast("err", await errText(e));
       }
     }
+  },
+
+  openDetailFile: (path) => {
+    const { openFiles } = get();
+    set(
+      openFiles.includes(path)
+        ? { detailFile: path }
+        : { openFiles: [...openFiles, path], detailFile: path },
+    );
+  },
+
+  closeDetailFile: (path) => {
+    const prev = get().openFiles;
+    const openFiles = prev.filter((p) => p !== path);
+    let detailFile = get().detailFile;
+    if (detailFile === path) {
+      const idx = prev.indexOf(path);
+      detailFile = openFiles[Math.min(idx, openFiles.length - 1)] ?? null;
+    }
+    set({ openFiles, detailFile });
   },
 
   stage: async (paths) => {

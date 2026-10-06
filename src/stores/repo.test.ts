@@ -55,6 +55,8 @@ beforeEach(() => {
     selectedId: null,
     detail: null,
     detailLoading: false,
+    openFiles: [],
+    detailFile: null,
     status: null,
     summary: null,
     filter: "",
@@ -161,5 +163,57 @@ describe("store 状态流转（打桩 IPC）", () => {
     await useRepo.getState().loadMore();
     const [, limit2] = (ipc.getLog as ReturnType<typeof vi.fn>).mock.lastCall as [number, number];
     expect(limit2).toBe(250); // max(200, 1000/4)
+  });
+});
+
+describe("提交详情文件 tab", () => {
+  it("select 成功后 tab 重置为第一个文件；openDetailFile 去重并激活", async () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      openFiles: ["src/old.ts"],
+      detailFile: "src/old.ts",
+    });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { id: "a", short_id: "a", subject: "s", author_name: "林", author_email: "a@b.c", time: 1, parents: [], refs: [] },
+      files: [
+        { path: "src/a.ts", old_path: null, status: "M", add: 1, del: 0, binary: false },
+        { path: "src/b.ts", old_path: null, status: "A", add: 2, del: 0, binary: false },
+      ],
+      patch: "",
+    });
+
+    await useRepo.getState().select("a");
+    let s = useRepo.getState();
+    expect(s.openFiles).toEqual(["src/a.ts"]); // 换提交后只剩第一个文件
+    expect(s.detailFile).toBe("src/a.ts");
+
+    useRepo.getState().openDetailFile("src/b.ts");
+    s = useRepo.getState();
+    expect(s.openFiles).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(s.detailFile).toBe("src/b.ts");
+
+    useRepo.getState().openDetailFile("src/a.ts"); // 已打开 → 仅激活，不重复
+    s = useRepo.getState();
+    expect(s.openFiles).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(s.detailFile).toBe("src/a.ts");
+
+    await useRepo.getState().select(null);
+    s = useRepo.getState();
+    expect(s.openFiles).toEqual([]);
+    expect(s.detailFile).toBeNull();
+  });
+
+  it("closeDetailFile：关闭激活 tab 时激活相邻，全部关闭后为空", () => {
+    useRepo.setState({ openFiles: ["a.ts", "b.ts", "c.ts"], detailFile: "b.ts" });
+    useRepo.getState().closeDetailFile("b.ts");
+    expect(useRepo.getState().detailFile).toBe("c.ts");
+
+    useRepo.setState({ openFiles: ["a.ts", "c.ts"], detailFile: "c.ts" });
+    useRepo.getState().closeDetailFile("c.ts");
+    expect(useRepo.getState().detailFile).toBe("a.ts");
+
+    useRepo.getState().closeDetailFile("a.ts");
+    expect(useRepo.getState().openFiles).toEqual([]);
+    expect(useRepo.getState().detailFile).toBeNull();
   });
 });
