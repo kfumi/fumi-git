@@ -67,10 +67,10 @@ FumiGit v0.1：一个 Windows 桌面 Git 客户端（Tauri），**提交图谱�
 
 - **技术栈**：Tauri 2（Rust 后端 + WebView 前端）；前端 React 19 + TypeScript + Tailwind v4 + Zustand + TanStack Virtual；Rust crate 与前端通过 Tauri IPC 通信。
 - **Git 接入（ADR 级决策）**：git CLI 是唯一 Git 后端。Rust 侧 spawn git 进程并解析 `--porcelain`/`--format` 输出；不引入 libgit2/gitoxide 作为行为来源。由此免费继承用户的 gitconfig、hooks、credential helper 与 SSH agent。频繁调用通过常驻/复用进程池优化。
-- **IPC 命令集（前后端契约）**：`open_repo`、`list_recent_repos`、`add_recent_repo`、`get_log`（增量分页）、`get_status`、`stage`、`unstage`、`commit`、`fetch`、`pull`、`push`、`get_branch_summary`。TS 侧类型与 Rust serde 结构镜像，前端只允许通过类型化封装调用，禁止裸字符串命令。
-- **布局**：定稿为三栏工作台（侧栏 216px / 图谱自适应 / 详情+工作区 396px），窗口 1280×800、最小 960×640。度量与配色以 docs/design/ui-spec.md 为唯一来源。
+- **IPC 命令集（前后端契约）**：`get_app_config`、`set_theme`、`open_repo`、`remove_recent`、`get_log`、`get_commit_detail`、`get_status`、`stage_paths`、`unstage_paths`、`commit_staged`、`fetch_remote`、`pull_remote`、`push_remote`、`get_branch_summary`。所有命令围绕「当前激活仓库」；最近仓库列表由 `open_repo` 隐式维护（去重置顶、容量 10）。TS 侧类型与 Rust serde 结构镜像，前端只允许通过类型化封装调用，禁止裸字符串命令。
+- **布局**：定稿为三栏工作台（侧栏 216px / 图谱自适应 / 详情+工作区 396px），窗口 1280×800、最小 960×640。窗口标题栏使用系统原生装饰（v0.1 不做自绘 34px 标题栏，prototype 原案裁剪）。度量与配色以 docs/design/ui-spec.md 为唯一来源。
 - **主题**：深/浅/跟随系统三态，CSS 变量驱动，`data-mode` 由前端 store 管理；选择持久化到本地配置。
-- **图谱渲染**：Canvas 2D + 虚拟滚动（行高 52px、lane 步进 15px、图列宽 96px）。lane 分配规则源自已归档原型：按时间倒序遍历提交，first parent 延续当前 lane，其余 parent 各生成新 lane（从 8 色分支调色板取下一色），空 lane 立即回收压缩；HEAD 节点加大并描边。
+- **图谱渲染**：Canvas 2D + 虚拟滚动（行高 52px、lane 步进 15px、图列宽 96px）。lane 分配规则源自已归档原型：按 `git log --topo-order`（children 恒排在 parent 之前）遍历提交，first parent 延续当前 lane，其余 parent 各生成新 lane（从 8 色分支调色板取下一色），空 lane 立即回收压缩，父提交不在可见集（被过滤）时省略该边并回收 lane；HEAD 节点加大并描边。分页页大小随深度几何增长——topo 序每页都要全量走一遍历史，固定小页会让深滚动退化为 O(页数 × 历史长度)（十万提交性能 smoke 实测后定稿）。
 - **最近仓库持久化**：本地 JSON 配置文件（应用配置目录），不引入数据库。
 - **搜索**：对已加载提交按信息/作者做子串过滤，不建索引、不搜索文件内容。
 - **pull 策略**：`--ff-only`；失败时返回结构化错误，由前端展示指引，v0.1 不做合并界面。

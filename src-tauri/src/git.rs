@@ -6,11 +6,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
-
-static GIT_SPAWN_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// 结构化错误：前端据此渲染引导/指引，而不是裸报错。
 #[derive(Debug, Clone, Serialize)]
@@ -55,15 +52,15 @@ pub struct GitOutput {
 }
 
 pub fn git_version() -> GitResult<String> {
-    let out = spawn_git(None, &["--version"])?;
+    let out = spawn_git(None, &["--version"], None)?;
     if !out.success {
         return Err(GitError::CommandFailed(out.stderr));
     }
     Ok(out.stdout.trim().to_string())
 }
 
-fn spawn_git(dir: Option<&Path>, args: &[&str]) -> GitResult<GitOutput> {
-    GIT_SPAWN_COUNT.fetch_add(1, Ordering::Relaxed);
+fn spawn_git(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> GitResult<GitOutput> {
+    use std::io::Write;
     let mut cmd = Command::new("git");
     if let Some(d) = dir {
         cmd.current_dir(d);
@@ -71,11 +68,19 @@ fn spawn_git(dir: Option<&Path>, args: &[&str]) -> GitResult<GitOutput> {
     // 路径原样输出（非 ASCII 不转义），所有子命令统一生效
     cmd.arg("-c").arg("core.quotepath=off");
     cmd.args(args)
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_OPTIONAL_LOCKS", "0");
-    let out = cmd.output()?;
+    let mut child = cmd.spawn()?;
+    if let Some(input) = stdin {
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| GitError::Io("stdin 不可用".into()))?
+            .write_all(input.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
     Ok(GitOutput {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -98,12 +103,12 @@ impl GitRepo {
                 dir.display()
             )));
         }
-        let out = spawn_git(Some(dir), &["rev-parse", "--show-toplevel"])?;
+        let out = spawn_git(Some(dir), &["rev-parse", "--show-toplevel"], None)?;
         if out.success {
             let root = PathBuf::from(out.stdout.trim());
             return Ok(GitRepo { root });
         }
-        let bare = spawn_git(Some(dir), &["rev-parse", "--is-bare-repository"])?;
+        let bare = spawn_git(Some(dir), &["rev-parse", "--is-bare-repository"], None)?;
         if bare.success && bare.stdout.trim() == "true" {
             return Err(GitError::BareRepo(
                 "裸仓库（bare repository）暂不支持，请打开包含工作区的仓库".into(),
@@ -117,7 +122,7 @@ impl GitRepo {
 
     /// 运行命令，失败时把 stderr 收进结构化错误。
     pub fn run(&self, args: &[&str]) -> GitResult<String> {
-        let out = spawn_git(Some(&self.root), args)?;
+        let out = spawn_git(Some(&self.root), args, None)?;
         if !out.success {
             return Err(GitError::CommandFailed(out.stderr.trim().to_string()));
         }
@@ -125,30 +130,15 @@ impl GitRepo {
     }
 
     pub fn run_with_stdin(&self, args: &[&str], input: &str) -> GitResult<String> {
-        use std::io::Write;
-        let mut child = Command::new("git")
-            .current_dir(&self.root)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitError::Io("stdin 不可用".into()))?
-            .write_all(input.as_bytes())?;
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
+        let out = spawn_git(Some(&self.root), args, Some(input))?;
+        if !out.success {
+            return Err(GitError::CommandFailed(out.stderr.trim().to_string()));
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(out.stdout)
     }
 
     pub fn run_ok(&self, args: &[&str]) -> bool {
-        spawn_git(Some(&self.root), args)
+        spawn_git(Some(&self.root), args, None)
             .map(|o| o.success)
             .unwrap_or(false)
     }
@@ -228,8 +218,11 @@ fn parse_decorations(d: &str) -> Vec<String> {
         if let Some(b) = p.strip_prefix("HEAD -> ") {
             refs.push("HEAD".into());
             refs.push(b.to_string());
+        } else if let Some(t) = p.strip_prefix("tag:") {
+            // git 装饰输出为 `tag: v1.0`（冒号带空格），统一归一化为 `tag:v1.0`
+            refs.push(format!("tag:{}", t.trim()));
         } else {
-            refs.push(p.to_string()); // 分支名 / origin/* / tag:xxx
+            refs.push(p.to_string()); // 分支名 / origin/*
         }
     }
     refs
@@ -557,7 +550,7 @@ pub fn get_branch_summary(repo: &GitRepo) -> GitResult<BranchSummary> {
 }
 
 pub fn fetch(repo: &GitRepo) -> GitResult<String> {
-    repo.run(&["fetch", "--prune"]).map(|_| "抓取完成".into())
+    repo.run(&["fetch"]).map(|_| "抓取完成".into())
 }
 
 pub fn pull(repo: &GitRepo) -> GitResult<String> {
@@ -584,7 +577,20 @@ pub fn push(repo: &GitRepo) -> GitResult<String> {
             "分支 {branch} 还没有上游分支。请在终端执行 git push -u <远程> {branch} 建立关联"
         )));
     }
-    repo.run(&["push"]).map(|_| "推送完成".into())
+    match repo.run(&["push"]) {
+        Ok(_) => Ok("推送完成".into()),
+        Err(GitError::CommandFailed(stderr)) => {
+            let s = stderr.to_lowercase();
+            if s.contains("non-fast-forward") || s.contains("rejected") || s.contains("fetch first") {
+                Err(GitError::NonFastForward(
+                    "推送被拒：远程有本地没有的提交。请先拉取（无法快进时需在终端处理历史）".into(),
+                ))
+            } else {
+                Err(GitError::CommandFailed(stderr))
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -989,6 +995,50 @@ mod tests {
         push(&r).unwrap();
         let log = git(origin.path(), &["log", "--oneline", "-1", "main"]);
         assert!(log.contains("ahead"));
+    }
+
+    #[test]
+    fn log_tag_decoration_parsed() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        commit_file(t.path(), "a.txt", "2", "tagged");
+        git(t.path(), &["tag", "v0.1.0"]);
+        let r = GitRepo::open(t.path()).unwrap();
+        let page = get_log(&r, 0, 5).unwrap();
+        let tip = page.commits.iter().find(|c| c.subject == "tagged").unwrap();
+        assert!(tip.refs.contains(&"tag:v0.1.0".to_string()));
+        assert!(tip.refs.contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn log_empty_repo_returns_empty_done_page() {
+        let t = repo();
+        let r = GitRepo::open(t.path()).unwrap();
+        let page = get_log(&r, 0, 200).unwrap();
+        assert!(page.commits.is_empty());
+        assert!(page.done);
+        assert_eq!(r.current_branch(), "main");
+    }
+
+    #[test]
+    fn push_rejected_non_fast_forward_is_structured() {
+        let (origin, work) = repo_with_origin();
+        // 远程被第三方推进
+        let clone_dir = TempDir::new().unwrap();
+        git(
+            clone_dir.path(),
+            &["clone", "-q", origin.path().to_str().unwrap(), "c2"],
+        );
+        let c2 = clone_dir.path().join("c2");
+        commit_file(&c2, "other.txt", "x", "third party");
+        git(&c2, &["push", "-q", "origin", "main"]);
+        // 本地基于旧历史直接提交 → push 必须被拒
+        commit_file(work.path(), "a.txt", "3", "local diverge");
+        let head_before = git(work.path(), &["rev-parse", "HEAD"]);
+        let r = GitRepo::open(work.path()).unwrap();
+        assert!(matches!(push(&r), Err(GitError::NonFastForward(_))));
+        // push 被拒不改动本地状态
+        assert_eq!(git(work.path(), &["rev-parse", "HEAD"]).trim(), head_before.trim());
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

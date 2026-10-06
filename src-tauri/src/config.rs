@@ -45,7 +45,7 @@ pub fn save(path: &Path, cfg: &AppConfig) {
 
 /// 把 path 移到最近列表首位（去重，容量 10）。
 pub fn touch_recent(cfg: &mut AppConfig, path: &str, name: &str) {
-    let now = chrono_millis();
+    let now = now_millis();
     cfg.recent_repos.retain(|e| e.path != path);
     cfg.recent_repos.insert(
         0,
@@ -58,7 +58,7 @@ pub fn touch_recent(cfg: &mut AppConfig, path: &str, name: &str) {
     cfg.recent_repos.truncate(10);
 }
 
-fn chrono_millis() -> i64 {
+fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

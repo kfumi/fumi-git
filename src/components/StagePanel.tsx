@@ -1,7 +1,7 @@
 // 右侧：提交详情（元信息 + 文件列表 + diff）与工作区（暂存/提交）
 import { useEffect, useState } from "react";
 import { useRepo } from "../stores/repo";
-import { absTime, avatarColor, shortHash } from "../lib/format";
+import { absTime, avatarColor } from "../lib/format";
 import type { FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
 import { DetailDiff } from "./DiffView";
@@ -55,14 +55,14 @@ export function CommitDetailPanel() {
         <span>·</span>
         <span title={absTime(meta.time)}>{absTime(meta.time)}</span>
         <span>·</span>
-        <span className="font-mono text-[11px] text-faint">{shortHash(meta.id)}</span>
+        <span className="font-mono text-[11px] text-faint">{meta.short_id}</span>
       </div>
       <div className="mb-3 flex flex-wrap gap-1.5">
         <RefChips refs={meta.refs} />
       </div>
       {meta.parents.length > 1 && (
         <p className="mb-3 font-mono text-[11px] text-faint">
-          父提交：{meta.parents.map(shortHash).join("、")}
+          父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
         </p>
       )}
 

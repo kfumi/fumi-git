@@ -1,6 +1,7 @@
 // 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰）/ 远程
 import { useMemo } from "react";
 import { useRepo } from "../stores/repo";
+import { classifyRef } from "../lib/refs";
 
 export function Sidebar() {
   const config = useRepo((s) => s.config);
@@ -17,10 +18,18 @@ export function Sidebar() {
     const t = new Map<string, string>();
     for (const c of commits) {
       for (const ref of c.refs) {
-        if (ref === "HEAD") continue;
-        else if (ref.startsWith("origin/")) r.set(ref, c.id);
-        else if (ref.startsWith("tag:")) t.set(ref, c.id);
-        else b.set(ref, c.id);
+        switch (classifyRef(ref)) {
+          case "head":
+            break;
+          case "remote":
+            r.set(ref, c.id);
+            break;
+          case "tag":
+            t.set(ref, c.id);
+            break;
+          default:
+            b.set(ref, c.id);
+        }
       }
     }
     return { branches: b, remotes: r, tags: t };
@@ -66,7 +75,10 @@ export function Sidebar() {
           <span className="truncate">
             ⑂ {name}
             {summary?.branch === name && summary.upstream && (summary.ahead > 0 || summary.behind > 0) && (
-              <span className="ml-1 text-[10px] text-ok">↑{summary.ahead}</span>
+              <span className="ml-1 text-[10px]">
+                {summary.ahead > 0 && <span className="text-ok">↑{summary.ahead}</span>}
+                {summary.behind > 0 && <span className="text-warn">↓{summary.behind}</span>}
+              </span>
             )}
           </span>
         </button>

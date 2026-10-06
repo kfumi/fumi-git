@@ -14,11 +14,18 @@ export function parsePatch(patch: string): DiffLine[] {
   const out: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
+  // 文件头（--- / +++）只出现在 hunk 之前；进入 hunk 后的 --- 行是删除内容
+  let inHunk = false;
   for (const raw of patch.split("\n")) {
-    if (raw.startsWith("diff --git") || raw.startsWith("index ") || raw.startsWith("--- ") || raw.startsWith("+++ ")) {
+    if (raw.startsWith("diff --git") || raw.startsWith("index ")) {
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk && (raw.startsWith("--- ") || raw.startsWith("+++ "))) {
       continue;
     }
     if (raw.startsWith("@@")) {
+      inHunk = true;
       const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       oldNo = m ? Number(m[1]) : 0;
       newNo = m ? Number(m[2]) : 0;
@@ -74,10 +81,10 @@ export function DetailDiff({
 }) {
   const filePatch = useMemo(() => {
     if (!detail.patch || !selectedFile) return null;
-    // 从整段 patch 中截取该文件的段落
+    // 从整段 patch 中截取该文件的段落：按各段头部 `+++ b/<path>` 精确匹配，避免前缀重名错配
     const marker = "diff --git";
     const sections = detail.patch.split(marker).filter((s) => s.trim());
-    const hit = sections.find((s) => s.includes(` a/${selectedFile}`));
+    const hit = sections.find((s) => s.split("\n").some((l) => l === `+++ b/${selectedFile}`));
     return hit ? marker + hit : null;
   }, [detail.patch, selectedFile]);
 

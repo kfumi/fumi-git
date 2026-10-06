@@ -1,5 +1,5 @@
 // 展示格式化工具
-const PALETTE = ["#7C7FF2", "#3ECFB2", "#F0A64B", "#F2708A", "#B085F5", "#4EA8F0"];
+import { BRANCH_PALETTE } from "../graph/lane";
 
 export function relTime(unixSec: number): string {
   if (!unixSec) return "";
@@ -17,10 +17,11 @@ export function absTime(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 头像底色与图谱分支色共用一个调色板（避免双份色板发散） */
 export function avatarColor(name: string): string {
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)!) & 0x7fffffff;
-  return PALETTE[h % PALETTE.length];
+  return BRANCH_PALETTE[h % BRANCH_PALETTE.length];
 }
 
 export function shortHash(id: string): string {

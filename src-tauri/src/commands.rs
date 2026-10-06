@@ -16,20 +16,26 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub active: Mutex<Option<GitRepo>>,
     /// 切换仓库时 drop 旧 watcher 即停止监听
-    pub repo_watcher: Mutex<Option<RecommendedWatcherBox>>,
+    pub repo_watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
-
-type RecommendedWatcherBox = notify::RecommendedWatcher;
 
 fn with_active<T>(
     state: &AppState,
     f: impl FnOnce(&GitRepo) -> Result<T, GitError>,
 ) -> Result<T, GitError> {
-    let guard = state.active.lock().map_err(|_| GitError::Io("状态锁中毒".into()))?;
-    let repo = guard
-        .as_ref()
-        .ok_or_else(|| GitError::NotARepo("尚未打开任何仓库".into()))?;
-    f(repo)
+    // 只在取引用时持锁：GitRepo 是廉价克隆（一个 PathBuf），
+    // 慢命令（fetch/pull/push）期间不得阻塞其它命令的数据面。
+    let repo = {
+        let guard = state
+            .active
+            .lock()
+            .map_err(|_| GitError::Io("状态锁中毒".into()))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| GitError::NotARepo("尚未打开任何仓库".into()))?
+    };
+    f(&repo)
 }
 
 fn save_config(state: &AppState) {
