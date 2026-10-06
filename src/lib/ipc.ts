@@ -49,6 +49,17 @@ export const ipc = {
   stashDiff: (index: number) => cmd<string>("stash_diff", { index }),
   stashApply: (index: number, pop: boolean) => cmd<void>("stash_apply", { index, pop }),
   stashDrop: (index: number) => cmd<void>("stash_drop", { index }),
+
+  /** 丢弃未暂存改动（未暂存组 M/D 行，从 index 恢复工作区） */
+  discardWorktree: (paths: string[]) => cmd<void>("discard_worktree", { paths }),
+  /** 删除未跟踪文件（未暂存组 'A' 行） */
+  deleteUntracked: (paths: string[]) => cmd<void>("delete_untracked", { paths }),
+  /** 丢弃已暂存改动（M/D/R 行，index+工作区一起退回 HEAD；重命名需附 old_path） */
+  discardStaged: (paths: string[]) => cmd<void>("discard_staged", { paths }),
+  /** 丢弃已暂存新增文件（已暂存组 'A' 行，从 index 移除并删文件） */
+  discardStagedNew: (paths: string[]) => cmd<void>("discard_staged_new", { paths }),
+  /** 全部丢弃：tracked 退回 HEAD + 清掉未跟踪；合并进行中会被拒绝 */
+  discardAll: () => cmd<void>("discard_all"),
   createBranch: (name: string, checkout: boolean, startPoint?: string) =>
     cmd<void>("create_branch", { name, checkout, startPoint: startPoint ?? null }),
   resetBranch: (target: string, mode: "soft" | "mixed" | "hard") =>

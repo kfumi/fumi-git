@@ -26,6 +26,8 @@
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad-soft: var(--bad-soft);
   --shadow-card: var(--card-shadow);
   --font-ui: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: "IBM Plex Mono", "Cascadia Code", Consolas, monospace;
@@ -49,6 +51,9 @@ html[data-mode="dark"] {
   --ok: #3fb27f;
   --warn: #e0a64b;
   --bad: #f2708a;
+  /* 语义色软底：合并横幅 / 对话框错误条（ui-spec §4） */
+  --warn-soft: rgba(224, 166, 75, 0.1);
+  --bad-soft: rgba(242, 112, 138, 0.12);
   --diff-add-text: #7edcb2;
   --diff-add-bg: rgba(63, 178, 127, 0.12);
   --diff-del-text: #f79ca9;
@@ -78,6 +83,8 @@ html[data-mode="light"] {
   --diff-add-bg: rgba(63, 178, 127, 0.14);
   --diff-del-text: #b3384e;
   --diff-del-bg: rgba(242, 112, 138, 0.12);
+  --warn-soft: rgba(224, 166, 75, 0.12);
+  --bad-soft: rgba(179, 56, 78, 0.08);
   --card-shadow: 0 1px 2px rgba(20, 22, 40, 0.05), 0 4px 16px rgba(20, 22, 40, 0.06);
   --thumb: rgba(93, 98, 112, 0.3);
   --thumb-hover: rgba(93, 98, 112, 0.5);

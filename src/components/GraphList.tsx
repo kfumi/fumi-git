@@ -118,6 +118,7 @@ export function GraphList() {
   const checkout = useRepo((s) => s.checkout);
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
   const resetBranchTo = useRepo((s) => s.resetBranchTo);
+  const summary = useRepo((s) => s.summary);
   // 提交右键菜单：挂本地分支才出现迁出项（ui-spec 决策：不做 detached HEAD）
   const [commitMenu, setCommitMenu] = useState<{ x: number; y: number; commit: CommitEntry } | null>(
     null,
@@ -127,8 +128,8 @@ export function GraphList() {
     const branches = commit.refs.filter((r) => classifyRef(r) === "branch");
     const items: MenuItem[] = branches.map((b) => ({
       label: `迁出到 ${b}`,
-      disabled: b === useRepo.getState().summary?.branch,
-      hint: b === useRepo.getState().summary?.branch ? "当前分支" : undefined,
+      disabled: b === summary?.branch,
+      hint: b === summary?.branch ? "当前分支" : undefined,
       onSelect: () => void checkout(b),
     }));
     items.push(

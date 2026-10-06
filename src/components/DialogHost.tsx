@@ -15,23 +15,29 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
   const [input, setInput] = useState(desc.input?.initial ?? "");
   const [checked, setChecked] = useState(desc.checkbox?.initial ?? false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const primary = desc.actions.find((a) => a.kind === "primary" || a.kind === "danger");
+  const primary = desc.actions.find((a) => a.kind === "primary");
+
+  // 输入即时校验（表单场景）；submit 错误单独展示，二者取先
+  const [inputError, setInputError] = useState<string | null>(
+    desc.input?.validate?.(desc.input?.initial ?? "") ?? null,
+  );
+  const error = inputError ?? submitError;
 
   useEffect(() => {
     if (desc.input) inputRef.current?.select();
   }, [desc.input]);
 
   const run = async (action: DialogDesc["actions"][number]) => {
-    if (busy) return;
+    if (busy || inputError) return;
     setBusy(true);
-    setError(null);
+    setSubmitError(null);
     try {
       const r = await action.run(input, checked);
       if (r === false) return;
       if (typeof r === "string") {
-        setError(r);
+        setSubmitError(r);
         return;
       }
       onClose();
@@ -46,6 +52,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
         e.stopPropagation();
         onClose();
       } else if (e.key === "Enter" && primary && !(e.target instanceof HTMLTextAreaElement)) {
+        // Enter 只绑定主动作，不绑定危险动作（多选/危险确认需显式点击）
         e.preventDefault();
         void run(primary);
       }
@@ -53,7 +60,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [desc, input, checked, busy]);
+  }, [desc, input, checked, busy, inputError]);
 
   return (
     <div
@@ -80,7 +87,11 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
           <input
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setSubmitError(null);
+              setInputError(desc.input?.validate?.(e.target.value) ?? null);
+            }}
             placeholder={desc.input.placeholder}
             className="mt-2.5 h-8 w-full rounded-lg border border-brd bg-panel2 px-2.5 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
           />
@@ -97,9 +108,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
           </label>
         )}
         {error && (
-          <p className="mt-2 rounded-md bg-[rgba(242,112,138,0.12)] px-2 py-1.5 text-xs text-bad">
-            {error}
-          </p>
+          <p className="mt-2 rounded-md bg-bad-soft px-2 py-1.5 text-xs text-bad">{error}</p>
         )}
         <div className="mt-3.5 flex items-center justify-end gap-2">
           {desc.actions.map((a, i) => (

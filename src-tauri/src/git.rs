@@ -539,10 +539,7 @@ pub fn commit(repo: &GitRepo, message: &str) -> GitResult<String> {
 
 /// 迁出到已有本地分支。工作区改动与目标分支冲突时由 git 拦截，错误原样上抛。
 pub fn switch_branch(repo: &GitRepo, name: &str) -> GitResult<()> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(GitError::CommandFailed("分支名为空".into()));
-    }
+    let name = branch_arg(name)?;
     repo.run(&["switch", name])?;
     Ok(())
 }
@@ -559,6 +556,15 @@ pub fn stash_push(repo: &GitRepo, message: Option<&str>) -> GitResult<()> {
         None => repo.run(&["stash", "push", "--include-untracked"])?,
     };
     Ok(())
+}
+
+/// 分支名参数统一守卫：trim + 空名拒绝（switch/delete/计数共用同一文案）。
+fn branch_arg(name: &str) -> GitResult<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    Ok(name)
 }
 
 /// 分支名预检：空名 / 非法名 / 已存在时给出面向用户的中文错误。
@@ -615,10 +621,7 @@ pub fn create_branch(
 /// 删除本地分支。force=false 时 git 拒绝未合入分支（-d），force=true 强删（-D）。
 /// 删除当前分支由 git 自身拦截。
 pub fn delete_branch(repo: &GitRepo, name: &str, force: bool) -> GitResult<()> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(GitError::CommandFailed("分支名为空".into()));
-    }
+    let name = branch_arg(name)?;
     let flag = if force { "-D" } else { "-d" };
     repo.run(&["branch", flag, name])?;
     Ok(())
@@ -626,10 +629,7 @@ pub fn delete_branch(repo: &GitRepo, name: &str, force: bool) -> GitResult<()> {
 
 /// 分支上尚未合入当前 HEAD 的提交数（0 = 已合入）。供删除前的防丢确认。
 pub fn branch_unmerged_count(repo: &GitRepo, name: &str) -> GitResult<u32> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(GitError::CommandFailed("分支名为空".into()));
-    }
+    let name = branch_arg(name)?;
     let out = repo.run(&["rev-list", "--count", &format!("HEAD..{name}")])?;
     out.trim()
         .parse()
@@ -638,10 +638,7 @@ pub fn branch_unmerged_count(repo: &GitRepo, name: &str) -> GitResult<u32> {
 
 /// 分支改名（old 不存在 / new 非法或已存在时由预检或 git 拦截）。
 pub fn rename_branch(repo: &GitRepo, old: &str, new: &str) -> GitResult<()> {
-    let old = old.trim();
-    if old.is_empty() {
-        return Err(GitError::CommandFailed("分支名为空".into()));
-    }
+    let old = branch_arg(old)?;
     ensure_branch_name_valid(repo, new)?;
     repo.run(&["branch", "--move", old, new.trim()])?;
     Ok(())
@@ -738,9 +735,20 @@ pub fn stash_list(repo: &GitRepo) -> GitResult<Vec<StashEntry>> {
     Ok(list)
 }
 
-/// stash 条目 diff（只读展示）。
+/// stash 条目 diff（只读展示）。未跟踪文件存于 stash 的第三父提交（^3），
+/// 存在时一并拼入，保证与 push --include-untracked 对称。
 pub fn stash_diff(repo: &GitRepo, index: u32) -> GitResult<String> {
-    repo.run(&["stash", "show", "--patch", &stash_ref(index)])
+    let refname = stash_ref(index);
+    let mut out = repo.run(&["stash", "show", "--patch", &refname])?;
+    if repo.run_ok(&["rev-parse", "--verify", "--quiet", &format!("{refname}^3")]) {
+        if let Ok(untracked) = repo.run(&["show", "--format=", "--patch", &format!("{refname}^3")]) {
+            if !out.is_empty() && !untracked.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&untracked);
+        }
+    }
+    Ok(out)
 }
 
 /// 恢复 stash：pop = 成功后移除条目（git 在冲突时自动保留条目），apply = 保留副本。
@@ -753,6 +761,54 @@ pub fn stash_apply(repo: &GitRepo, index: u32, pop: bool) -> GitResult<()> {
 /// 删除 stash 条目。
 pub fn stash_drop(repo: &GitRepo, index: u32) -> GitResult<()> {
     repo.run(&["stash", "drop", &stash_ref(index)])?;
+    Ok(())
+}
+
+// ── 丢弃工作区改动（不可恢复，确认在前端） ─────────────────────────────────
+
+/// 丢弃未暂存改动：从 index 恢复工作区（适用于未暂存组的 M/D 行）。
+pub fn discard_worktree(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
+    let mut args = vec!["restore", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    repo.run(&args)?;
+    Ok(())
+}
+
+/// 删除未跟踪文件（未暂存组中状态 'A' 的行）。
+pub fn delete_untracked(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
+    let mut args = vec!["clean", "--force", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    repo.run(&args)?;
+    Ok(())
+}
+
+/// 丢弃已暂存改动：index 与工作区一起退回 HEAD（M/D/R 行，重命名需附 old_path）。
+/// 状态 'A'（新暂存文件）不适用本函数——HEAD 中不存在，走 discard_staged_new。
+pub fn discard_staged(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
+    let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    repo.run(&args)?;
+    Ok(())
+}
+
+/// 丢弃已暂存的新增文件：从 index 移除并删除工作区文件。
+pub fn discard_staged_new(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
+    let mut args = vec!["rm", "--force", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    repo.run(&args)?;
+    Ok(())
+}
+
+/// 全部丢弃：tracked 的 index+工作区退回 HEAD，未跟踪文件/目录一并清掉。
+/// 合并进行中时拒绝（冲突现场请先解决或中止合并）。
+pub fn discard_all(repo: &GitRepo) -> GitResult<()> {
+    if merge_in_progress(repo) {
+        return Err(GitError::CommandFailed(
+            "合并进行中，请先解决冲突并提交，或中止合并".into(),
+        ));
+    }
+    repo.run(&["restore", "--source=HEAD", "--staged", "--worktree", "--", ":/"])?;
+    repo.run(&["clean", "-f", "-d"])?;
     Ok(())
 }
 
@@ -1644,6 +1700,68 @@ mod tests {
         // drop：确认后删除
         stash_drop(&r, 0).unwrap();
         assert_eq!(stash_list(&r).unwrap().len(), before - 2);
+    }
+
+    #[test]
+    fn stash_diff_includes_untracked_files() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        fs::write(t.path().join("a.txt"), "2").unwrap();
+        fs::write(t.path().join("new.txt"), "untracked body").unwrap();
+        stash_push(&r, None).unwrap();
+
+        let patch = stash_diff(&r, 0).unwrap();
+        assert!(patch.contains("+2"), "tracked part: {patch}");
+        assert!(patch.contains("untracked body"), "untracked part: {patch}");
+    }
+
+    #[test]
+    fn discard_worktree_staged_untracked_and_all() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "init");
+        commit_file(t.path(), "b.txt", "keep\n", "init b");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 现场：a 未暂存修改 + b 暂存修改 + c 新暂存 + d 未跟踪
+        fs::write(t.path().join("a.txt"), "dirty\n").unwrap();
+        fs::write(t.path().join("b.txt"), "staged edit\n").unwrap();
+        stage(&r, &["b.txt".into()]).unwrap();
+        fs::write(t.path().join("c.txt"), "new file\n").unwrap();
+        stage(&r, &["c.txt".into()]).unwrap();
+        fs::write(t.path().join("d.txt"), "untracked\n").unwrap();
+
+        // 未暂存丢弃：a 从 index 恢复
+        discard_worktree(&r, &["a.txt".into()]).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "base\n");
+
+        // 未跟踪删除
+        delete_untracked(&r, &["d.txt".into()]).unwrap();
+        assert!(!t.path().join("d.txt").exists());
+
+        // 已暂存丢弃（M）：b 回到 HEAD
+        discard_staged(&r, &["b.txt".into()]).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("b.txt")).unwrap(), "keep\n");
+
+        // 已暂存新增丢弃：c 从 index 与磁盘同时消失
+        discard_staged_new(&r, &["c.txt".into()]).unwrap();
+        assert!(!t.path().join("c.txt").exists());
+        let st = get_status(&r).unwrap();
+        assert!(st.staged.is_empty() && st.unstaged.is_empty());
+
+        // 全部丢弃：tracked + 未跟踪一起清场
+        fs::write(t.path().join("a.txt"), "dirty again\n").unwrap();
+        fs::write(t.path().join("e.txt"), "untracked\n").unwrap();
+        fs::create_dir_all(t.path().join("sub")).unwrap();
+        fs::write(t.path().join("sub").join("f.txt"), "u\n").unwrap();
+        stage(&r, &["a.txt".into()]).unwrap();
+        discard_all(&r).unwrap();
+        let st2 = get_status(&r).unwrap();
+        assert!(st2.staged.is_empty() && st2.unstaged.is_empty());
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "base\n");
+        assert!(!t.path().join("e.txt").exists());
+        assert!(!t.path().join("sub").exists());
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

@@ -36,6 +36,11 @@ vi.mock("../lib/ipc", () => {
     stashDiff: vi.fn(async () => ""),
     stashApply: vi.fn(async () => {}),
     stashDrop: vi.fn(async () => {}),
+    discardWorktree: vi.fn(async () => {}),
+    deleteUntracked: vi.fn(async () => {}),
+    discardStaged: vi.fn(async () => {}),
+    discardStagedNew: vi.fn(async () => {}),
+    discardAll: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -363,15 +368,22 @@ describe("分支生命周期（票 02）", () => {
     expect(await useRepo.getState().createBranch("feat", false)).toContain("已存在");
   });
 
-  it("deleteBranchFlow：未合入 N 个 → 强删确认并带 force；已合入 → 普通删除", async () => {
+  it("deleteBranchFlow：未合入 → 展示计数后二次强删确认；已合入 → 一次确认", async () => {
     withRepo();
     (ipc.branchUnmergedCount as ReturnType<typeof vi.fn>).mockResolvedValue(3);
     await useRepo.getState().deleteBranchFlow("feat");
+    // 第一步：展示未合入计数
     let d = useRepo.getState().dialog!;
     expect(d.message).toContain("3 个提交未合入");
+    expect(d.actions[0].label).toBe("继续");
+    d.actions[0].run("", false);
+    // 第二步：强制删除确认（spec 决策 #5 双保险）
+    d = useRepo.getState().dialog!;
+    expect(d.title).toBe("确认强制删除");
     expect(d.actions[0].label).toContain("强制删除");
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.deleteBranch).toHaveBeenCalledWith("feat", true));
+    await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
 
     (ipc.branchUnmergedCount as ReturnType<typeof vi.fn>).mockResolvedValue(0);
     await useRepo.getState().deleteBranchFlow("temp");
@@ -626,6 +638,95 @@ describe("stash 管理（票 05）", () => {
     expect(d.actions[0].kind).toBe("danger");
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.stashDrop).toHaveBeenCalledWith(0));
+  });
+});
+
+describe("丢弃改动（spec US22–25）", () => {
+  const withRepo = () =>
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      merging: false,
+      branch: "main",
+    });
+  };
+
+  it("未暂存丢弃与未跟踪删除走对应 IPC", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().discardUnstagedFlow("a.ts");
+    let d = useRepo.getState().dialog!;
+    expect(d.actions[0].kind).toBe("danger");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.discardWorktree).toHaveBeenCalledWith(["a.ts"]));
+    await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
+
+    useRepo.getState().discardUntrackedFlow("b.ts");
+    d = useRepo.getState().dialog!;
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.deleteUntracked).toHaveBeenCalledWith(["b.ts"]));
+  });
+
+  it("已暂存丢弃：M 附带 old_path；新增文件走 rm", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().discardStagedFlow("renamed.txt", "old.txt");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() =>
+      expect(ipc.discardStaged).toHaveBeenCalledWith(["old.txt", "renamed.txt"]),
+    );
+    await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
+
+    useRepo.getState().discardStagedNewFlow("new.ts");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.discardStagedNew).toHaveBeenCalledWith(["new.ts"]));
+  });
+
+  it("全部丢弃：列出受影响文件；确认后 discardAll", async () => {
+    withRepo();
+    logOk();
+    useRepo.setState({
+      status: {
+        staged: [{ path: "s.ts", old_path: null, status: "M" }],
+        unstaged: [
+          { path: "u.ts", old_path: null, status: "M" },
+          { path: "n.ts", old_path: null, status: "A" },
+        ],
+        unmerged: [],
+        merging: false,
+        branch: "main",
+      },
+    });
+    useRepo.getState().discardAllFlow();
+    const d = useRepo.getState().dialog!;
+    expect(d.files).toEqual(["s.ts", "u.ts", "n.ts"]);
+    expect(d.actions[0].kind).toBe("danger");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.discardAll).toHaveBeenCalled());
+  });
+
+  it("writeBusy 期间拒绝第二个写操作（US31）", async () => {
+    withRepo();
+    logOk();
+    // 手动置忙，模拟在飞操作
+    useRepo.setState({ writeBusy: true });
+    await useRepo.getState().checkout("feat");
+    expect(ipc.switchBranch).not.toHaveBeenCalled();
+    useRepo.setState({ writeBusy: false });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      merging: false,
+      branch: "main",
+    });
+    await useRepo.getState().checkout("feat");
+    expect(ipc.switchBranch).toHaveBeenCalledWith("feat");
   });
 });
 

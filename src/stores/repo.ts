@@ -37,7 +37,12 @@ export interface DialogDesc {
   message?: string;
   /** 受影响文件清单（脏工作树拦截） */
   files?: string[];
-  input?: { initial?: string; placeholder?: string };
+  /** validate 随输入即时回调（表单即时校验，US4） */
+  input?: {
+    initial?: string;
+    placeholder?: string;
+    validate?: (value: string) => string | null;
+  };
   checkbox?: { label: string; initial?: boolean };
   /** 取消按钮标签；缺省「取消」；actions 已含取消项时传 null */
   cancelLabel?: string | null;
@@ -74,6 +79,8 @@ interface RepoState {
   toasts: Toast[];
   /** 当前打开的通用对话框；null = 关闭 */
   dialog: DialogDesc | null;
+  /** 有写操作在飞：期间拒绝再发起其它写操作（US31 防重复触发） */
+  writeBusy: boolean;
   /** stash 条目列表（0 = 最新） */
   stashes: StashEntry[];
   /** 正在查看的 stash 条目及其 diff；null = 收起 */
@@ -136,10 +143,67 @@ interface RepoState {
   stashRestore: (index: number, pop: boolean) => Promise<void>;
   /** 删除 stash 条目（带确认） */
   stashDropFlow: (index: number) => void;
+  /** 丢弃工作区改动（US22–25：右键单文件 / 全部丢弃，均带不可恢复确认） */
+  discardUnstagedFlow: (path: string) => void;
+  discardUntrackedFlow: (path: string) => void;
+  discardStagedFlow: (path: string, oldPath?: string) => void;
+  discardStagedNewFlow: (path: string) => void;
+  discardAllFlow: () => void;
 }
 
-const errText = async (e: unknown): Promise<string> =>
-  `操作失败：${(await asGitError(e)).message}`;
+const errText = async (e: unknown): Promise<string> => {
+  const err = await asGitError(e);
+  // git 自身拦截（如迁出/合并时改动会被覆盖）的常见场景给可读中文（US32）
+  if (/would be overwritten|local changes/i.test(err.message)) {
+    return "操作失败：工作区改动会与目标冲突，请先提交或 stash 后重试";
+  }
+  return `操作失败：${err.message}`;
+};
+
+/** 分支名客户端预检（表单即时反馈；后端仍以 check-ref-format 为准） */
+const BAD_BRANCH_CHARS = new Set([" ", "~", "^", ":", "?", "*", "[", "]", "\\", "\t"]);
+
+export function validateBranchName(name: string): string | null {
+  const n = name.trim();
+  if (!n) return "分支名不能为空";
+  if (
+    [...n].some((ch) => BAD_BRANCH_CHARS.has(ch)) ||
+    n.includes("..") ||
+    /^[.\-]/.test(n) ||
+    n.endsWith(".lock")
+  ) {
+    return "非法分支名（不能含空格 ~ ^ : ? * [ \\，不能以 . 或 - 开头）";
+  }
+  return null;
+}
+
+/**
+ * 通用写操作包裹（US31）：writeBusy 期间拒绝新写操作；
+ * busy 提示就地转场为 op 返回的文案（ok）或结构化错误（err），完成后刷新。
+ */
+async function runWrite(
+  set: (partial: Partial<RepoState>) => void,
+  get: () => RepoState,
+  busyText: string,
+  okText: string,
+  op: () => Promise<string | void>,
+): Promise<void> {
+  if (get().writeBusy) {
+    get().pushToast("err", "有操作正在进行中，请稍候");
+    return;
+  }
+  set({ writeBusy: true });
+  const id = get().pushToast("busy", busyText);
+  try {
+    const msg = await op();
+    get().updateToast(id, { kind: "ok", text: typeof msg === "string" && msg ? msg : okText });
+    await get().refresh();
+  } catch (e) {
+    get().updateToast(id, { kind: "err", text: await errText(e) });
+  } finally {
+    set({ writeBusy: false });
+  }
+}
 
 export const useRepo = create<RepoState>((set, get) => ({
   config: null,
@@ -164,6 +228,7 @@ export const useRepo = create<RepoState>((set, get) => ({
   filter: "",
   toasts: [],
   dialog: null,
+  writeBusy: false,
   stashes: [],
   stashView: null,
 
@@ -173,16 +238,10 @@ export const useRepo = create<RepoState>((set, get) => ({
   checkout: async (branch) => {
     const st = await ipc.getStatus().catch(() => null);
     const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
-    const doSwitch = async () => {
-      const id = get().pushToast("busy", `迁出到 ${branch}…`);
-      try {
+    const doSwitch = () =>
+      runWrite(set, get, `迁出到 ${branch}…`, `已迁出到 ${branch}`, async () => {
         await ipc.switchBranch(branch);
-        get().updateToast(id, { kind: "ok", text: `已迁出到 ${branch}` });
-        await get().refresh();
-      } catch (e) {
-        get().updateToast(id, { kind: "err", text: await errText(e) });
-      }
-    };
+      });
     if (dirtyFiles.length > 0) {
       get().openDialog({
         title: `迁出到 ${branch}`,
@@ -233,7 +292,7 @@ export const useRepo = create<RepoState>((set, get) => ({
     get().openDialog({
       title: "新建分支",
       message: atCommit ? `基于提交 ${short} 创建新分支。` : "基于当前 HEAD 创建新分支。",
-      input: { placeholder: "分支名，如 feat/login" },
+      input: { placeholder: "分支名，如 feat/login", validate: validateBranchName },
       checkbox: { label: "创建后立即迁出", initial: true },
       actions: [
         {
@@ -253,37 +312,56 @@ export const useRepo = create<RepoState>((set, get) => ({
       get().pushToast("err", await errText(e));
       return;
     }
-    get().openDialog({
-      title: `删除分支 ${branch}`,
-      message:
-        unmerged > 0
-          ? `该分支有 ${unmerged} 个提交未合入当前分支。强制删除后，这些提交将只存在于 reflog 中，很难找回。`
-          : "该分支已全部合入当前分支。删除后分支引用不可恢复。",
-      actions: [
-        {
-          label: unmerged > 0 ? `强制删除（丢弃 ${unmerged} 个提交）` : "删除分支",
-          kind: "danger",
-          run: () => {
-            void (async () => {
-              const id = get().pushToast("busy", `删除分支 ${branch}…`);
-              try {
-                await ipc.deleteBranch(branch, unmerged > 0);
-                get().updateToast(id, { kind: "ok", text: `已删除分支 ${branch}` });
-                await get().refresh();
-              } catch (e) {
-                get().updateToast(id, { kind: "err", text: await errText(e) });
-              }
-            })();
+    const forceDelete = () => {
+      get().openDialog({
+        title: "确认强制删除",
+        message: `将丢弃 ${branch} 上 ${unmerged} 个未合入的提交，删除后这些提交很难找回。`,
+        actions: [
+          {
+            label: `强制删除（丢弃 ${unmerged} 个提交）`,
+            kind: "danger",
+            run: () => {
+              void runWrite(set, get, `删除分支 ${branch}…`, `已删除分支 ${branch}`, async () => {
+                await ipc.deleteBranch(branch, true);
+              });
+            },
           },
-        },
-      ],
-    });
+        ],
+      });
+    };
+    if (unmerged > 0) {
+      // 未合入分支：先展示计数，再做一次强制删除确认（spec 决策 #5 双保险）
+      get().openDialog({
+        title: `删除分支 ${branch}`,
+        message: `该分支有 ${unmerged} 个提交未合入当前分支。继续将进入强制删除确认。`,
+        actions: [{ label: "继续", run: () => forceDelete() }],
+      });
+    } else {
+      get().openDialog({
+        title: `删除分支 ${branch}`,
+        message: "该分支已全部合入当前分支。删除后分支引用不可恢复。",
+        actions: [
+          {
+            label: "删除分支",
+            kind: "danger",
+            run: () => {
+              void runWrite(set, get, `删除分支 ${branch}…`, `已删除分支 ${branch}`, async () => {
+                await ipc.deleteBranch(branch, false);
+              });
+            },
+          },
+        ],
+      });
+    }
   },
 
   renameBranchFlow: (branch) => {
     get().openDialog({
       title: "重命名分支",
-      input: { initial: branch },
+      input: {
+        initial: branch,
+        validate: (v) => (v.trim() === branch ? null : validateBranchName(v)),
+      },
       actions: [
         {
           label: "重命名",
@@ -308,16 +386,15 @@ export const useRepo = create<RepoState>((set, get) => ({
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     const short = commitId.slice(0, 7);
     const doReset = (mode: "soft" | "mixed" | "hard") => {
-      void (async () => {
-        const id = get().pushToast("busy", `重置 ${branch} 到 ${short}…`);
-        try {
+      void runWrite(
+        set,
+        get,
+        `重置 ${branch} 到 ${short}…`,
+        `已重置 ${branch} 到 ${short}`,
+        async () => {
           await ipc.resetBranch(commitId, mode);
-          get().updateToast(id, { kind: "ok", text: `已重置 ${branch} 到 ${short}` });
-          await get().refresh();
-        } catch (e) {
-          get().updateToast(id, { kind: "err", text: await errText(e) });
-        }
-      })();
+        },
+      );
     };
     // 硬重置销毁未提交改动：脏树时先过安全拦截（与迁出共用模型）
     const confirmHard = async () => {
@@ -651,22 +728,17 @@ export const useRepo = create<RepoState>((set, get) => ({
         label: `推送到 ${r}`,
         kind: r === "origin" ? ("primary" as const) : ("ghost" as const),
         run: () => {
-          void (async () => {
-            const id = get().pushToast("busy", `推送到 ${r}…`);
-            try {
-              const msg = await ipc.pushUpstream(r, branch);
-              get().updateToast(id, { kind: "ok", text: msg });
-              await get().refresh();
-            } catch (e) {
-              get().updateToast(id, { kind: "err", text: await errText(e) });
-            }
-          })();
+          void runWrite(set, get, `推送到 ${r}…`, "", async () => await ipc.pushUpstream(r, branch));
         },
       })),
     });
   },
 
   mergeUpstreamFlow: async (refName) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     get().openDialog({
       title: "本地与远程分叉",
@@ -703,14 +775,9 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   abortMerge: async () => {
-    const id = get().pushToast("busy", "中止合并…");
-    try {
+    await runWrite(set, get, "中止合并…", "已中止合并，仓库恢复到合并前", async () => {
       await ipc.abortMerge();
-      get().updateToast(id, { kind: "ok", text: "已中止合并，仓库恢复到合并前" });
-      await get().refresh();
-    } catch (e) {
-      get().updateToast(id, { kind: "err", text: await errText(e) });
-    }
+    });
   },
 
   stashFlow: () => {
@@ -723,16 +790,9 @@ export const useRepo = create<RepoState>((set, get) => ({
           label: "暂存",
           kind: "primary",
           run: (message) => {
-            void (async () => {
-              const id = get().pushToast("busy", "暂存中…");
-              try {
-                await ipc.stashPush(message.trim() || undefined);
-                get().updateToast(id, { kind: "ok", text: "已暂存到 stash" });
-                await get().refresh();
-              } catch (e) {
-                get().updateToast(id, { kind: "err", text: await errText(e) });
-              }
-            })();
+            void runWrite(set, get, "暂存中…", "已暂存到 stash", async () => {
+              await ipc.stashPush(message.trim() || undefined);
+            });
           },
         },
       ],
@@ -785,16 +845,107 @@ export const useRepo = create<RepoState>((set, get) => ({
           label: "删除",
           kind: "danger",
           run: () => {
-            void (async () => {
-              const id = get().pushToast("busy", "删除 stash 条目…");
-              try {
-                await ipc.stashDrop(index);
-                get().updateToast(id, { kind: "ok", text: "已删除 stash 条目" });
-                await get().refresh();
-              } catch (e) {
-                get().updateToast(id, { kind: "err", text: await errText(e) });
-              }
-            })();
+            void runWrite(set, get, "删除 stash 条目…", "已删除 stash 条目", async () => {
+              await ipc.stashDrop(index);
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  // ── 丢弃工作区改动（spec US22–25；均带不可恢复确认，US31 由 runWrite 守卫） ──
+
+  discardUnstagedFlow: (path) => {
+    get().openDialog({
+      title: `丢弃 ${path} 的改动？`,
+      message: "该文件将从暂存区内容恢复，未暂存的改动不可恢复。",
+      actions: [
+        {
+          label: "丢弃改动",
+          kind: "danger",
+          run: () => {
+            void runWrite(set, get, `丢弃 ${path}…`, `已丢弃 ${path} 的改动`, async () => {
+              await ipc.discardWorktree([path]);
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  discardUntrackedFlow: (path) => {
+    get().openDialog({
+      title: `删除 ${path}？`,
+      message: "这是未跟踪的新文件，删除后不可恢复。",
+      actions: [
+        {
+          label: "删除文件",
+          kind: "danger",
+          run: () => {
+            void runWrite(set, get, `删除 ${path}…`, `已删除 ${path}`, async () => {
+              await ipc.deleteUntracked([path]);
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  discardStagedFlow: (path, oldPath) => {
+    const label = oldPath ? `${oldPath} → ${path}` : path;
+    get().openDialog({
+      title: `丢弃 ${label} 的改动？`,
+      message: "已暂存的改动会连同暂存状态一起消失，文件恢复到 HEAD，不可恢复。",
+      actions: [
+        {
+          label: "丢弃（含暂存状态）",
+          kind: "danger",
+          run: () => {
+            void runWrite(set, get, `丢弃 ${label}…`, `已丢弃 ${label} 的改动`, async () => {
+              await ipc.discardStaged(oldPath ? [oldPath, path] : [path]);
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  discardStagedNewFlow: (path) => {
+    get().openDialog({
+      title: `丢弃 ${path}？`,
+      message: "新暂存的文件将从暂存区移除并从磁盘删除，不可恢复。",
+      actions: [
+        {
+          label: "丢弃新增文件",
+          kind: "danger",
+          run: () => {
+            void runWrite(set, get, `丢弃 ${path}…`, `已丢弃 ${path}`, async () => {
+              await ipc.discardStagedNew([path]);
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  discardAllFlow: () => {
+    const st = get().status;
+    if (!st) return;
+    const files = [...st.staged, ...st.unstaged].map((f) => f.path);
+    get().openDialog({
+      title: "全部丢弃？",
+      message:
+        "所有已暂存与未暂存的改动将退回 HEAD，未跟踪文件与目录一并删除，均不可恢复。建议先 stash 留个存档。",
+      files,
+      actions: [
+        {
+          label: `全部丢弃（${files.length} 个文件）`,
+          kind: "danger",
+          run: () => {
+            void runWrite(set, get, "全部丢弃…", "已丢弃全部改动", async () => {
+              await ipc.discardAll();
+            });
           },
         },
       ],

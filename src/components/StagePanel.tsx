@@ -6,6 +6,7 @@ import { useRepo } from "../stores/repo";
 import { absTime, avatarColor } from "../lib/format";
 import type { FileEntry, FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 const ST_CLASS: Record<string, string> = {
   M: "bg-warn/15 text-warn",
@@ -136,8 +137,44 @@ export function ChangesPanel() {
   const workFile = useRepo((s) => s.workFile);
   const workStaged = useRepo((s) => s.workStaged);
   const abortMerge = useRepo((s) => s.abortMerge);
+  const discardUnstagedFlow = useRepo((s) => s.discardUnstagedFlow);
+  const discardUntrackedFlow = useRepo((s) => s.discardUntrackedFlow);
+  const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
+  const discardStagedNewFlow = useRepo((s) => s.discardStagedNewFlow);
+  const discardAllFlow = useRepo((s) => s.discardAllFlow);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 工作区文件行右键菜单：{ 位置, 文件, 所在分组 }
+  const [rowMenu, setRowMenu] = useState<{
+    x: number;
+    y: number;
+    file: FileEntry;
+    group: "staged" | "unstaged";
+  } | null>(null);
+
+  const rowMenuItems = (file: FileEntry, group: "staged" | "unstaged"): MenuItem[] => {
+    if (group === "staged") {
+      return file.status === "A"
+        ? [
+            {
+              label: "丢弃新增文件…",
+              danger: true,
+              onSelect: () => discardStagedNewFlow(file.path),
+            },
+          ]
+        : [
+            {
+              label: "丢弃改动（含暂存状态）…",
+              danger: true,
+              onSelect: () => discardStagedFlow(file.path, file.old_path ?? undefined),
+            },
+          ];
+    }
+    // 未暂存组：状态 'A' = 未跟踪文件
+    return file.status === "A"
+      ? [{ label: "删除文件…", danger: true, onSelect: () => discardUntrackedFlow(file.path) }]
+      : [{ label: "丢弃改动…", danger: true, onSelect: () => discardUnstagedFlow(file.path) }];
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -168,7 +205,7 @@ export function ChangesPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
       {status.merging && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-brd bg-[rgba(224,166,75,0.10)] px-4 py-2 text-xs">
+        <div className="flex shrink-0 items-center gap-2 border-b border-brd bg-warn-soft px-4 py-2 text-xs">
           <span className="font-medium text-warn">合并进行中</span>
           {status.unmerged.length > 0 && (
             <span className="text-dim">
@@ -224,6 +261,10 @@ export function ChangesPanel() {
                   onSelect={() => void selectWorkFile(f.path, true)}
                   actionLabel="取消暂存"
                   onAction={() => void unstage([f.path])}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setRowMenu({ x: e.clientX, y: e.clientY, file: f, group: "staged" });
+                  }}
                 />
               ))}
             </>
@@ -239,11 +280,23 @@ export function ChangesPanel() {
                   onSelect={() => void selectWorkFile(f.path, false)}
                   actionLabel="暂存"
                   onAction={() => void stage([f.path])}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setRowMenu({ x: e.clientX, y: e.clientY, file: f, group: "unstaged" });
+                  }}
                 />
               ))}
             </>
           )}
         </div>
+      )}
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          items={rowMenuItems(rowMenu.file, rowMenu.group)}
+          onClose={() => setRowMenu(null)}
+        />
       )}
       <div className="shrink-0 border-t border-brd p-3">
         <textarea
@@ -268,6 +321,15 @@ export function ChangesPanel() {
           <span className="tnum ml-auto text-[11px] text-faint">
             {status.staged.length} 个已暂存
           </span>
+          {total > 0 && !status.merging && (
+            <button
+              onClick={() => discardAllFlow()}
+              title="丢弃全部工作区改动（不可恢复）"
+              className="text-[11px] text-bad transition-colors hover:opacity-80"
+            >
+              全部丢弃
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -280,16 +342,19 @@ function WorkRow({
   onSelect,
   actionLabel,
   onAction,
+  onContextMenu,
 }: {
   file: FileEntry;
   active: boolean;
   onSelect: () => void;
   actionLabel: string;
   onAction: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
     <div
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       className={
         "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors " +
         (active ? "bg-sel" : "hover:bg-hover")

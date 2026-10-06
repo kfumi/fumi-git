@@ -213,6 +213,31 @@ pub fn stash_drop(state: State<'_, AppState>, index: u32) -> Result<(), GitError
 }
 
 #[tauri::command]
+pub fn discard_worktree(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), GitError> {
+    with_active(&state, |repo| git::discard_worktree(repo, &paths))
+}
+
+#[tauri::command]
+pub fn delete_untracked(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), GitError> {
+    with_active(&state, |repo| git::delete_untracked(repo, &paths))
+}
+
+#[tauri::command]
+pub fn discard_staged(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), GitError> {
+    with_active(&state, |repo| git::discard_staged(repo, &paths))
+}
+
+#[tauri::command]
+pub fn discard_staged_new(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), GitError> {
+    with_active(&state, |repo| git::discard_staged_new(repo, &paths))
+}
+
+#[tauri::command]
+pub fn discard_all(state: State<'_, AppState>) -> Result<(), GitError> {
+    with_active(&state, git::discard_all)
+}
+
+#[tauri::command]
 pub fn create_branch(
     state: State<'_, AppState>,
     name: String,
