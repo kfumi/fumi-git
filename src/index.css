@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/*
+ * 设计令牌 — 定稿值来自 docs/design/ui-spec.md（2026-10 变体 A 胜出）
+ * 深色为默认；html[data-mode] 由 src/theme.ts 三态（深/浅/跟随系统）驱动。
+ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-brd: var(--border);
+  --color-brd-soft: var(--border-soft);
+  --color-ink: var(--text);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --font-ui: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Code", Consolas, monospace;
+}
+
+:root,
+html[data-mode="dark"] {
+  --bg: #0c0d11;
+  --panel: #121319;
+  --panel2: #171923;
+  --border: #23252f;
+  --border-soft: #1c1e27;
+  --text: #e6e8ef;
+  --dim: #9ba0b0;
+  --faint: #6b7080;
+  --accent: #7c7ff2;
+  --accent-ink: #a5a7fa;
+  --accent-soft: rgba(124, 127, 242, 0.13);
+  --sel-bg: rgba(124, 127, 242, 0.1);
+  --hover: rgba(255, 255, 255, 0.035);
+  --ok: #3fb27f;
+  --warn: #e0a64b;
+  --bad: #f2708a;
+  color-scheme: dark;
+}
+
+html[data-mode="light"] {
+  --bg: #f2f3f6;
+  --panel: #ffffff;
+  --panel2: #fafafc;
+  --border: #e3e5eb;
+  --border-soft: #ecedf2;
+  --text: #1c1e27;
+  --dim: #5d6270;
+  --faint: #9599a6;
+  --accent: #5457e4;
+  --accent-ink: #4a4dd6;
+  --accent-soft: rgba(84, 87, 228, 0.09);
+  --sel-bg: rgba(84, 87, 228, 0.08);
+  --hover: rgba(20, 22, 40, 0.04);
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
