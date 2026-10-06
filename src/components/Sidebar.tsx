@@ -1,6 +1,7 @@
 // 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰，按 "/" 前缀分组折叠）/ 远程
 import { useMemo, useState } from "react";
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   Cloud,
@@ -13,7 +14,8 @@ import {
 } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { classifyRef, groupBranches } from "../lib/refs";
-import type { BranchSummary } from "../lib/types";
+import { relTime } from "../lib/format";
+import type { BranchSummary, StashEntry } from "../lib/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 const GROUPS_KEY = "fumigit.expanded-branch-groups";
@@ -39,10 +41,26 @@ export function Sidebar() {
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
   const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
   const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
+  const stashes = useRepo((s) => s.stashes);
+  const stashView = useRepo((s) => s.stashView);
+  const selectStash = useRepo((s) => s.selectStash);
+  const stashFlow = useRepo((s) => s.stashFlow);
+  const stashRestore = useRepo((s) => s.stashRestore);
+  const stashDropFlow = useRepo((s) => s.stashDropFlow);
   // 分支右键菜单：{ 位置, 分支全名 }
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; branch: string } | null>(
     null,
   );
+  // stash 条目右键菜单：{ 位置, 条目 }
+  const [stashMenu, setStashMenu] = useState<{ x: number; y: number; entry: StashEntry } | null>(
+    null,
+  );
+
+  const stashMenuItems = (entry: StashEntry): MenuItem[] => [
+    { label: "恢复（弹出）", hint: "成功后移除", onSelect: () => void stashRestore(entry.index, true) },
+    { label: "恢复（保留副本）", onSelect: () => void stashRestore(entry.index, false) },
+    { label: "删除…", danger: true, onSelect: () => stashDropFlow(entry.index) },
+  ];
 
   const branchMenuItems = (branch: string): MenuItem[] => {
     const current = summary?.branch === branch;
@@ -219,6 +237,52 @@ export function Sidebar() {
           y={branchMenu.y}
           items={branchMenuItems(branchMenu.branch)}
           onClose={() => setBranchMenu(null)}
+        />
+      )}
+
+      <div className="flex items-center justify-between pr-1">
+        <h4 className="section-label pb-1.5 pt-4">stash</h4>
+        <button
+          title="暂存全部改动到 stash"
+          aria-label="暂存到 stash"
+          onClick={() => stashFlow()}
+          className="mb-1 rounded p-1 text-faint transition-colors hover:bg-hover hover:text-ink"
+        >
+          <Plus size={12} aria-hidden />
+        </button>
+      </div>
+      {stashes.length === 0 && (
+        <p className="px-2 pb-1 text-[11px] text-faint">暂无存档</p>
+      )}
+      {stashes.map((e) => (
+        <button
+          key={e.index}
+          onClick={() => void selectStash(e.index)}
+          onContextMenu={(ev) => {
+            ev.preventDefault();
+            setStashMenu({ x: ev.clientX, y: ev.clientY, entry: e });
+          }}
+          title={e.message}
+          className={
+            "flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs transition-colors " +
+            (stashView?.index === e.index
+              ? "bg-sel text-ink"
+              : "text-dim hover:bg-hover hover:text-ink")
+          }
+        >
+          <Archive size={11} aria-hidden className="shrink-0 text-faint" />
+          <span className="truncate">{e.message}</span>
+          <span className="tnum ml-auto shrink-0 text-[10px] text-faint">
+            {relTime(e.time)}
+          </span>
+        </button>
+      ))}
+      {stashMenu && (
+        <ContextMenu
+          x={stashMenu.x}
+          y={stashMenu.y}
+          items={stashMenuItems(stashMenu.entry)}
+          onClose={() => setStashMenu(null)}
         />
       )}
 

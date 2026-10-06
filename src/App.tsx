@@ -10,7 +10,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { MainArea } from "./components/MainArea";
 import { CommitDetailPanel } from "./components/StagePanel";
-import { FileDiffTabs, WorkDiffView } from "./components/FileDiffTabs";
+import { FileDiffTabs, StashDiffView, WorkDiffView } from "./components/FileDiffTabs";
 import { HDivider, SidebarHandle, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
@@ -34,7 +34,10 @@ export default function App() {
   const mainTab = useRepo((s) => s.mainTab);
   const workFile = useRepo((s) => s.workFile);
   const selectedId = useRepo((s) => s.selectedId);
-  const showRight = mainTab === "changes" ? workFile !== null : selectedId !== null;
+  const stashView = useRepo((s) => s.stashView);
+  // 右栏按需出现：stash 条目查看、改动 tab 选中了工作区文件、或历史 tab 选中了提交
+  const showRight =
+    stashView !== null || (mainTab === "changes" ? workFile !== null : selectedId !== null);
   const [sidebarW, setSidebarW] = useState(loadSidebarWidth);
 
   useEffect(() => {
@@ -102,10 +105,14 @@ function RightPane() {
   const mainTab = useRepo((s) => s.mainTab);
   const openFiles = useRepo((s) => s.openFiles);
   const workFile = useRepo((s) => s.workFile);
+  const stashView = useRepo((s) => s.stashView);
   const closeRightPane = useRepo((s) => s.closeRightPane);
 
   let content: React.ReactNode;
-  if (mainTab === "changes") {
+  // stash 条目查看优先：点侧栏 stash 行后整体展示其只读 diff
+  if (stashView) {
+    content = <StashDiffView />;
+  } else if (mainTab === "changes") {
     content = workFile ? (
       <WorkDiffView />
     ) : (

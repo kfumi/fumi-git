@@ -193,6 +193,26 @@ pub fn stash_push(
 }
 
 #[tauri::command]
+pub fn stash_list(state: State<'_, AppState>) -> Result<Vec<git::StashEntry>, GitError> {
+    with_active(&state, git::stash_list)
+}
+
+#[tauri::command]
+pub fn stash_diff(state: State<'_, AppState>, index: u32) -> Result<String, GitError> {
+    with_active(&state, |repo| git::stash_diff(repo, index))
+}
+
+#[tauri::command]
+pub fn stash_apply(state: State<'_, AppState>, index: u32, pop: bool) -> Result<(), GitError> {
+    with_active(&state, |repo| git::stash_apply(repo, index, pop))
+}
+
+#[tauri::command]
+pub fn stash_drop(state: State<'_, AppState>, index: u32) -> Result<(), GitError> {
+    with_active(&state, |repo| git::stash_drop(repo, index))
+}
+
+#[tauri::command]
 pub fn create_branch(
     state: State<'_, AppState>,
     name: String,

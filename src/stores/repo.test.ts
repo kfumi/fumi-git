@@ -32,6 +32,10 @@ vi.mock("../lib/ipc", () => {
     listRemotes: vi.fn(async () => ["origin"]),
     mergeUpstream: vi.fn(async () => ""),
     abortMerge: vi.fn(async () => {}),
+    stashList: vi.fn(async () => []),
+    stashDiff: vi.fn(async () => ""),
+    stashApply: vi.fn(async () => {}),
+    stashDrop: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -541,6 +545,87 @@ describe("远程同步补全（票 04）", () => {
     await useRepo.getState().abortMerge();
     expect(ipc.abortMerge).toHaveBeenCalled();
     expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok" });
+  });
+});
+
+describe("stash 管理（票 05）", () => {
+  const withRepo = () =>
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      stashes: [
+        { index: 0, message: "On main: wip2", time: 1700000002 },
+        { index: 1, message: "On main: 第一条", time: 1700000001 },
+      ],
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      merging: false,
+      branch: "main",
+    });
+  };
+
+  it("refresh 拉取 stash 列表；查看中条目消失后自动收起", async () => {
+    withRepo();
+    logOk();
+    (ipc.stashList as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ index: 0, message: "wip", time: 1 }])
+      .mockResolvedValueOnce([]);
+    (ipc.stashDiff as ReturnType<typeof vi.fn>).mockResolvedValue("+x");
+
+    await useRepo.getState().selectStash(0);
+    expect(useRepo.getState().stashView).toMatchObject({ index: 0, patch: "+x" });
+    // 第一次 refresh：条目仍在（新列表覆盖 stashes）→ 查看保持
+    await useRepo.getState().refresh();
+    expect(useRepo.getState().stashView).toMatchObject({ index: 0 });
+    // 第二次 refresh：条目消失 → 自动收起
+    await useRepo.getState().refresh();
+    expect(useRepo.getState().stashView).toBeNull();
+  });
+
+  it("selectStash：再次点击收起；diff 拉取传 index", async () => {
+    withRepo();
+    (ipc.stashDiff as ReturnType<typeof vi.fn>).mockResolvedValue("+x");
+    await useRepo.getState().selectStash(1);
+    expect(ipc.stashDiff).toHaveBeenCalledWith(1);
+    await useRepo.getState().selectStash(1);
+    expect(useRepo.getState().stashView).toBeNull();
+  });
+
+  it("stashRestore：apply 保留副本 / pop 成功移除；pop 冲突提示条目保留", async () => {
+    withRepo();
+    logOk();
+    await useRepo.getState().stashRestore(1, false);
+    expect(ipc.stashApply).toHaveBeenLastCalledWith(1, false);
+    const toasts1 = useRepo.getState().toasts;
+    expect(toasts1[toasts1.length - 1]).toMatchObject({ kind: "ok" });
+
+    (ipc.stashApply as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "error: Your local changes would be overwritten",
+    });
+    (ipc.stashList as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { index: 0, message: "wip", time: 1 },
+    ]);
+    await useRepo.getState().stashRestore(0, true);
+    const toasts2 = useRepo.getState().toasts;
+    const t = toasts2[toasts2.length - 1]!;
+    expect(t.kind).toBe("err");
+    expect(t.text).toContain("已保留");
+  });
+
+  it("stashDropFlow：确认后删除", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().stashDropFlow(0);
+    const d = useRepo.getState().dialog!;
+    expect(d.actions[0].kind).toBe("danger");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.stashDrop).toHaveBeenCalledWith(0));
   });
 });
 

@@ -74,6 +74,15 @@ export interface BranchSummary {
   behind: number;
 }
 
+/** stash 条目（index 即 stash@{N} 的 N，0 = 最新） */
+export interface StashEntry {
+  index: number;
+  /** reflog 描述：自定义 message 或 "WIP on <branch>: …" */
+  message: string;
+  /** 创建时间（unix 秒） */
+  time: number;
+}
+
 export type ThemeMode = 'dark' | 'light' | 'system';
 
 /** Rust GitError 的序列化形态 */

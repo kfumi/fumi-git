@@ -9,6 +9,7 @@ import type {
   LogPage,
   RepoMeta,
   RepoStatus,
+  StashEntry,
 } from "./types";
 
 const cmd = <T,>(name: string, args?: Record<string, unknown>): Promise<T> =>
@@ -44,6 +45,10 @@ export const ipc = {
 
   switchBranch: (name: string) => cmd<void>("switch_branch", { name }),
   stashPush: (message?: string) => cmd<void>("stash_push", { message }),
+  stashList: () => cmd<StashEntry[]>("stash_list"),
+  stashDiff: (index: number) => cmd<string>("stash_diff", { index }),
+  stashApply: (index: number, pop: boolean) => cmd<void>("stash_apply", { index, pop }),
+  stashDrop: (index: number) => cmd<void>("stash_drop", { index }),
   createBranch: (name: string, checkout: boolean, startPoint?: string) =>
     cmd<void>("create_branch", { name, checkout, startPoint: startPoint ?? null }),
   resetBranch: (target: string, mode: "soft" | "mixed" | "hard") =>

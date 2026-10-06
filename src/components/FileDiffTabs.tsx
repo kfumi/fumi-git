@@ -96,3 +96,33 @@ export function WorkDiffView() {
     </div>
   );
 }
+
+// stash 条目只读 diff（侧栏 stash 区点条目时整体替换右栏内容）
+export function StashDiffView() {
+  const stashView = useRepo((s) => s.stashView);
+  const stashes = useRepo((s) => s.stashes);
+  if (!stashView) return null;
+  const entry = stashes.find((s) => s.index === stashView.index);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-panel">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-brd px-3">
+        <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">
+          stash@{`{${stashView.index}}`}
+        </span>
+        <span className="truncate text-[11px] text-dim" title={entry?.message}>
+          {entry?.message ?? "加载中…"}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {stashView.loading ? (
+          <p className="text-xs text-faint">加载 diff…</p>
+        ) : stashView.patch ? (
+          <DiffView patch={stashView.patch} />
+        ) : (
+          <p className="text-xs text-faint">无文本变更（可能是二进制文件）</p>
+        )}
+      </div>
+    </div>
+  );
+}

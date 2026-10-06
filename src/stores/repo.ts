@@ -9,6 +9,7 @@ import type {
   CommitEntry,
   RepoMeta,
   RepoStatus,
+  StashEntry,
 } from "../lib/types";
 
 const PAGE = 200;
@@ -73,6 +74,10 @@ interface RepoState {
   toasts: Toast[];
   /** 当前打开的通用对话框；null = 关闭 */
   dialog: DialogDesc | null;
+  /** stash 条目列表（0 = 最新） */
+  stashes: StashEntry[];
+  /** 正在查看的 stash 条目及其 diff；null = 收起 */
+  stashView: { index: number; patch: string | null; loading: boolean } | null;
 
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
@@ -123,6 +128,14 @@ interface RepoState {
   mergeUpstreamFlow: (refName: string) => Promise<void>;
   /** 中止进行中的合并，恢复到合并前状态 */
   abortMerge: () => Promise<void>;
+  /** stash 入口：对话框附可选描述，暂存全部改动（含未跟踪） */
+  stashFlow: () => void;
+  /** 选中/收起 stash 条目，右栏查看其只读 diff */
+  selectStash: (index: number) => Promise<void>;
+  /** 恢复 stash：pop=true 成功后移除条目（冲突时 git 自动保留），pop=false 保留副本 */
+  stashRestore: (index: number, pop: boolean) => Promise<void>;
+  /** 删除 stash 条目（带确认） */
+  stashDropFlow: (index: number) => void;
 }
 
 const errText = async (e: unknown): Promise<string> =>
@@ -151,6 +164,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   filter: "",
   toasts: [],
   dialog: null,
+  stashes: [],
+  stashView: null,
 
   openDialog: (desc) => set({ dialog: desc }),
   closeDialog: () => set({ dialog: null }),
@@ -379,6 +394,8 @@ export const useRepo = create<RepoState>((set, get) => ({
         summary: null,
         filter: "",
         dialog: null,
+        stashes: [],
+        stashView: null,
       });
       await get().refresh();
       // 刷新最近列表
@@ -410,6 +427,8 @@ export const useRepo = create<RepoState>((set, get) => ({
       status: null,
       summary: null,
       dialog: null,
+      stashes: [],
+      stashView: null,
     }),
 
   loadMore: async () => {
@@ -434,10 +453,11 @@ export const useRepo = create<RepoState>((set, get) => ({
     const { meta, selectedId } = get();
     if (!meta) return;
     try {
-      const [page, status, summary] = await Promise.all([
+      const [page, status, summary, stashes] = await Promise.all([
         ipc.getLog(0, Math.max(PAGE, get().commits.length || PAGE)),
         ipc.getStatus().catch(() => null),
         ipc.getBranchSummary().catch(() => null),
+        ipc.stashList().catch(() => []),
       ]);
       const stillThere = selectedId && page.commits.some((c) => c.id === selectedId);
       set({
@@ -445,6 +465,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         logDone: page.done,
         status,
         summary,
+        stashes,
         selectedId: stillThere ? selectedId : null,
         detail: stillThere ? get().detail : null,
         openFiles: stillThere ? get().openFiles : [],
@@ -459,6 +480,9 @@ export const useRepo = create<RepoState>((set, get) => ({
         if (still) void get().reloadWorkDiff(wf, get().workStaged);
         else set({ workFile: null, workDiff: null, workDiffLoading: false });
       }
+      // 查看中的 stash 条目已消失（被 pop/drop）→ 收起
+      const sv = get().stashView;
+      if (sv && !stashes.some((s) => s.index === sv.index)) set({ stashView: null });
     } catch (e) {
       get().pushToast("err", await errText(e));
     }
@@ -536,6 +560,11 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   closeRightPane: () => {
+    // stash diff 查看优先收起；否则按 tab 语义移除触发条件
+    if (get().stashView) {
+      set({ stashView: null });
+      return;
+    }
     if (get().mainTab === "changes") void get().selectWorkFile(null);
     else void get().select(null);
   },
@@ -682,6 +711,94 @@ export const useRepo = create<RepoState>((set, get) => ({
     } catch (e) {
       get().updateToast(id, { kind: "err", text: await errText(e) });
     }
+  },
+
+  stashFlow: () => {
+    get().openDialog({
+      title: "暂存到 stash",
+      message: "把工作区全部改动（含未跟踪文件）存入 stash。",
+      input: { placeholder: "描述（可选）" },
+      actions: [
+        {
+          label: "暂存",
+          kind: "primary",
+          run: (message) => {
+            void (async () => {
+              const id = get().pushToast("busy", "暂存中…");
+              try {
+                await ipc.stashPush(message.trim() || undefined);
+                get().updateToast(id, { kind: "ok", text: "已暂存到 stash" });
+                await get().refresh();
+              } catch (e) {
+                get().updateToast(id, { kind: "err", text: await errText(e) });
+              }
+            })();
+          },
+        },
+      ],
+    });
+  },
+
+  selectStash: async (index) => {
+    const cur = get().stashView;
+    if (cur?.index === index) {
+      set({ stashView: null });
+      return;
+    }
+    set({ stashView: { index, patch: null, loading: true } });
+    try {
+      const patch = await ipc.stashDiff(index);
+      if (get().stashView?.index === index)
+        set({ stashView: { index, patch, loading: false } });
+    } catch (e) {
+      if (get().stashView?.index === index) set({ stashView: { index, patch: null, loading: false } });
+      get().pushToast("err", await errText(e));
+    }
+  },
+
+  stashRestore: async (index, pop) => {
+    const id = get().pushToast("busy", pop ? "恢复中（弹出）…" : "恢复中（保留副本）…");
+    try {
+      await ipc.stashApply(index, pop);
+      get().updateToast(id, { kind: "ok", text: pop ? "已恢复并移除 stash 条目" : "已恢复，stash 条目保留" });
+      await get().refresh();
+    } catch (e) {
+      const err = await asGitError(e);
+      await get().refresh();
+      const stillThere = get().stashes.some((s) => s.index === index);
+      get().updateToast(id, {
+        kind: "err",
+        text:
+          err.kind === "CommandFailed" && stillThere && pop
+            ? `恢复产生冲突，stash 条目已保留。${err.message}`
+            : err.message,
+      });
+    }
+  },
+
+  stashDropFlow: (index) => {
+    get().openDialog({
+      title: `删除 stash@{${index}}`,
+      message: "删除后该存档不可恢复。",
+      actions: [
+        {
+          label: "删除",
+          kind: "danger",
+          run: () => {
+            void (async () => {
+              const id = get().pushToast("busy", "删除 stash 条目…");
+              try {
+                await ipc.stashDrop(index);
+                get().updateToast(id, { kind: "ok", text: "已删除 stash 条目" });
+                await get().refresh();
+              } catch (e) {
+                get().updateToast(id, { kind: "err", text: await errText(e) });
+              }
+            })();
+          },
+        },
+      ],
+    });
   },
 
   setFilter: (f) => set({ filter: f }),

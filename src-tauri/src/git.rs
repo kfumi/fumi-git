@@ -695,6 +695,67 @@ pub fn abort_merge(repo: &GitRepo) -> GitResult<()> {
     Ok(())
 }
 
+// ── stash 管理 ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StashEntry {
+    /// stash 索引（stash@{N} 的 N，0 = 最新）
+    pub index: u32,
+    /// reflog 描述：自定义 message 或 "WIP on <branch>: …"
+    pub message: String,
+    /// 创建时间（unix 秒）
+    pub time: i64,
+}
+
+fn stash_ref(index: u32) -> String {
+    format!("stash@{{{index}}}")
+}
+
+/// stash 列表（0 = 最新）。
+pub fn stash_list(repo: &GitRepo) -> GitResult<Vec<StashEntry>> {
+    let out = repo.run(&["stash", "list", "--format=%gd%x1f%gs%x1f%ct"])?;
+    let mut list = Vec::new();
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\x1f').collect();
+        if f.len() < 3 {
+            continue;
+        }
+        // f[0] 形如 "stash@{2}"
+        let index = f[0]
+            .rsplit('{')
+            .next()
+            .and_then(|s| s.trim_end_matches('}').parse().ok())
+            .unwrap_or(list.len() as u32);
+        list.push(StashEntry {
+            index,
+            message: f[1].to_string(),
+            time: f[2].trim().parse().unwrap_or(0),
+        });
+    }
+    Ok(list)
+}
+
+/// stash 条目 diff（只读展示）。
+pub fn stash_diff(repo: &GitRepo, index: u32) -> GitResult<String> {
+    repo.run(&["stash", "show", "--patch", &stash_ref(index)])
+}
+
+/// 恢复 stash：pop = 成功后移除条目（git 在冲突时自动保留条目），apply = 保留副本。
+pub fn stash_apply(repo: &GitRepo, index: u32, pop: bool) -> GitResult<()> {
+    let cmd = if pop { "pop" } else { "apply" };
+    repo.run(&["stash", cmd, &stash_ref(index)])?;
+    Ok(())
+}
+
+/// 删除 stash 条目。
+pub fn stash_drop(repo: &GitRepo, index: u32) -> GitResult<()> {
+    repo.run(&["stash", "drop", &stash_ref(index)])?;
+    Ok(())
+}
+
 // ── 远程同步 ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1537,6 +1598,52 @@ mod tests {
             Err(GitError::CommandFailed(m)) if m.contains("没有进行中的合并")
         ));
         let _ = origin;
+    }
+
+    #[test]
+    fn stash_lifecycle_list_diff_apply_drop() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 两条 stash：最新在前
+        fs::write(t.path().join("a.txt"), "wip1").unwrap();
+        stash_push(&r, Some("第一条")).unwrap();
+        fs::write(t.path().join("a.txt"), "wip2").unwrap();
+        stash_push(&r, None).unwrap();
+
+        let list = stash_list(&r).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].index, 0);
+        assert_eq!(list[1].index, 1);
+        assert!(list[1].message.contains("第一条"), "{}", list[1].message);
+        assert!(list[0].time > 0);
+
+        // 只读 diff：stash@{1} 是把 a.txt 改成 wip1 的改动
+        let patch = stash_diff(&r, 1).unwrap();
+        assert!(patch.contains("+wip1"), "{patch}");
+
+        // apply 保留副本：工作区恢复且条目仍在
+        stash_apply(&r, 1, false).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "wip1");
+        assert_eq!(stash_list(&r).unwrap().len(), 2);
+
+        // 冲突场景：先弄脏工作区再 pop 同一 stash → 报错且条目保留
+        fs::write(t.path().join("a.txt"), "conflicting").unwrap();
+        let before = stash_list(&r).unwrap().len();
+        assert!(stash_apply(&r, 0, true).is_err());
+        assert_eq!(stash_list(&r).unwrap().len(), before, "pop 冲突时条目必须保留");
+        // 中止现场：还原工作区文件
+        git(t.path(), &["checkout", "--", "a.txt"]);
+
+        // pop 成功：条目移除
+        stash_apply(&r, 1, true).unwrap();
+        assert_eq!(stash_list(&r).unwrap().len(), before - 1);
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "wip1");
+
+        // drop：确认后删除
+        stash_drop(&r, 0).unwrap();
+        assert_eq!(stash_list(&r).unwrap().len(), before - 2);
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）
