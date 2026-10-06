@@ -287,7 +287,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   setMainTab: (tab) => set({ mainTab: tab }),
 
   selectRefTip: (id) => {
-    set({ scrollToId: id, scrollNonce: get().scrollNonce + 1 });
+    // 跳转目标在历史里：无论当前处于哪个 tab，先切回历史再定位
+    set({ mainTab: "history", scrollToId: id, scrollNonce: get().scrollNonce + 1 });
     void get().select(id);
   },
 

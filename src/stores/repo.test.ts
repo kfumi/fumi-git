@@ -275,6 +275,7 @@ describe("侧栏引用跳转与右栏关闭", () => {
   it("selectRefTip：记录跳转信号（nonce 递增）并选中提交", async () => {
     useRepo.setState({
       meta: { name: "demo", path: "D:/demo", branch: "main" },
+      mainTab: "changes", // 处于改动 tab 时点引用 → 自动切回历史
       scrollToId: null,
       scrollNonce: 0,
     });
@@ -286,6 +287,7 @@ describe("侧栏引用跳转与右栏关闭", () => {
 
     useRepo.getState().selectRefTip("tip1");
     const s = useRepo.getState();
+    expect(s.mainTab).toBe("history");
     expect(s.scrollToId).toBe("tip1");
     expect(s.scrollNonce).toBe(1);
     await vi.waitFor(() => expect(useRepo.getState().selectedId).toBe("tip1"));
