@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ipc } from "./lib/ipc";
 import type { ThemeMode } from "./lib/types";
 
@@ -7,8 +8,20 @@ const media = window.matchMedia("(prefers-color-scheme: dark)");
 export const resolveMode = (mode: ThemeMode): "dark" | "light" =>
   mode === "system" ? (media.matches ? "dark" : "light") : mode;
 
+/** 原生窗口主题（标题栏颜色）跟随应用内主题；"system" 传 null 恢复跟随系统 */
+const syncWindowTheme = (mode: ThemeMode) => {
+  try {
+    void getCurrentWindow()
+      .setTheme(mode === "system" ? null : mode)
+      .catch(() => {});
+  } catch {
+    // 纯浏览器 dev 无 Tauri 后端，跳过
+  }
+};
+
 export const applyMode = (mode: ThemeMode) => {
   document.documentElement.dataset.mode = resolveMode(mode);
+  syncWindowTheme(mode);
 };
 
 media.addEventListener("change", () => {
