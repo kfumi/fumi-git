@@ -13,6 +13,7 @@ vi.mock("../lib/ipc", () => {
     getLog: vi.fn(),
     getCommitDetail: vi.fn(),
     getStatus: vi.fn(),
+    getWorktreeDiff: vi.fn(),
     getBranchSummary: vi.fn(),
     stage: vi.fn(async () => {}),
     unstage: vi.fn(async () => {}),
@@ -167,7 +168,7 @@ describe("store 状态流转（打桩 IPC）", () => {
 });
 
 describe("提交详情文件 tab", () => {
-  it("select 成功后 tab 重置为第一个文件；openDetailFile 去重并激活", async () => {
+  it("select 成功后 tab 清空（点文件才展开）；openDetailFile 打开/去重/激活", async () => {
     useRepo.setState({
       meta: { name: "demo", path: "D:/demo", branch: "main" },
       openFiles: ["src/old.ts"],
@@ -184,9 +185,10 @@ describe("提交详情文件 tab", () => {
 
     await useRepo.getState().select("a");
     let s = useRepo.getState();
-    expect(s.openFiles).toEqual(["src/a.ts"]); // 换提交后只剩第一个文件
-    expect(s.detailFile).toBe("src/a.ts");
+    expect(s.openFiles).toEqual([]); // 默认不展示 diff 面板
+    expect(s.detailFile).toBeNull();
 
+    useRepo.getState().openDetailFile("src/a.ts");
     useRepo.getState().openDetailFile("src/b.ts");
     s = useRepo.getState();
     expect(s.openFiles).toEqual(["src/a.ts", "src/b.ts"]);
@@ -215,5 +217,56 @@ describe("提交详情文件 tab", () => {
     useRepo.getState().closeDetailFile("a.ts");
     expect(useRepo.getState().openFiles).toEqual([]);
     expect(useRepo.getState().detailFile).toBeNull();
+  });
+});
+
+describe("工作区文件 diff", () => {
+  it("selectWorkFile 拉取 patch；再点同文件收起；点 null 直接收起", async () => {
+    (ipc.getWorktreeDiff as ReturnType<typeof vi.fn>).mockResolvedValue("+line3\n");
+    await useRepo.getState().selectWorkFile("a.ts", false);
+    let s = useRepo.getState();
+    expect(s.workFile).toBe("a.ts");
+    expect(s.workStaged).toBe(false);
+    expect(s.workDiff).toBe("+line3\n");
+    expect(ipc.getWorktreeDiff).toHaveBeenCalledWith(false, "a.ts");
+
+    await useRepo.getState().selectWorkFile("a.ts", false); // 同文件 → 收起
+    s = useRepo.getState();
+    expect(s.workFile).toBeNull();
+    expect(s.workDiff).toBeNull();
+
+    await useRepo.getState().selectWorkFile("a.ts", true); // 已暂存版本
+    expect(ipc.getWorktreeDiff).toHaveBeenLastCalledWith(true, "a.ts");
+
+    await useRepo.getState().selectWorkFile(null);
+    expect(useRepo.getState().workFile).toBeNull();
+  });
+
+  it("refresh 后选中文件已不在工作区 → 自动收起；仍在则刷新 diff", async () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      commits: [c("a", "first")],
+      logDone: true,
+      workFile: "gone.ts",
+      workStaged: false,
+      workDiff: "old",
+    });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [c("a", "first")], done: true });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: "a.ts", old_path: null, status: "M" }],
+      branch: "main",
+    });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getWorktreeDiff as ReturnType<typeof vi.fn>).mockResolvedValue("+line3\n");
+
+    await useRepo.getState().refresh();
+    expect(useRepo.getState().workFile).toBeNull(); // gone.ts 已消失
+
+    await useRepo.getState().selectWorkFile("a.ts", false);
+    (ipc.getWorktreeDiff as ReturnType<typeof vi.fn>).mockResolvedValue("+fresh\n");
+    await useRepo.getState().refresh();
+    expect(useRepo.getState().workFile).toBe("a.ts"); // 仍在 → diff 刷新
+    expect(useRepo.getState().workDiff).toBe("+fresh\n");
   });
 });

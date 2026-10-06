@@ -473,6 +473,20 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
     })
 }
 
+/// 工作区文件 diff：staged=true 读已暂存改动（`diff --cached`），否则未暂存（`diff`）。
+/// 只取单个文件的 patch 文本，供右栏 diff 面板直接渲染。
+pub fn worktree_diff(repo: &GitRepo, staged: bool, path: &str) -> GitResult<String> {
+    let safe = path.trim();
+    if safe.is_empty() {
+        return Err(GitError::CommandFailed("文件路径为空".into()));
+    }
+    if staged {
+        repo.run(&["diff", "--cached", "--", safe])
+    } else {
+        repo.run(&["diff", "--", safe])
+    }
+}
+
 pub fn stage(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
     let mut args = vec!["add", "--"];
     args.extend(paths.iter().map(|s| s.as_str()));
@@ -865,6 +879,33 @@ mod tests {
         assert_eq!(st4.unstaged.len(), 2); // b 删除 + c 未跟踪
         let page = get_log(&r, 0, 3).unwrap();
         assert_eq!(page.commits[0].subject, "feat: 暂存 a 修改");
+    }
+
+    #[test]
+    fn worktree_diff_staged_vs_unstaged() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "line1\n", "init");
+        // 二次修改并暂存；再改出未暂存部分
+        fs::write(t.path().join("a.txt"), "line1\nline2\n").unwrap();
+        let r = GitRepo::open(t.path()).unwrap();
+        stage(&r, &["a.txt".into()]).unwrap();
+        fs::write(t.path().join("a.txt"), "line1\nline2\nline3\n").unwrap();
+
+        // 未暂存 diff：含 line3，不含 line2
+        let unstaged = worktree_diff(&r, false, "a.txt").unwrap();
+        assert!(unstaged.contains("+line3"), "unstaged: {unstaged}");
+        assert!(!unstaged.contains("+line2"));
+
+        // 已暂存 diff：含 line2，不含 line3
+        let staged = worktree_diff(&r, true, "a.txt").unwrap();
+        assert!(staged.contains("+line2"), "staged: {staged}");
+        assert!(!staged.contains("+line3"));
+
+        // 空路径拒绝
+        assert!(matches!(
+            worktree_diff(&r, false, "  "),
+            Err(GitError::CommandFailed(_))
+        ));
     }
 
     #[test]

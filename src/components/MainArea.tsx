@@ -1,26 +1,25 @@
 // 中栏：改动 / 历史 双 tab（GitHub Desktop 式）。历史默认——提交图谱是主角
-import { useState } from "react";
 import { FileDiff, GitBranch } from "lucide-react";
+import { useRepo } from "../stores/repo";
 import { GraphList } from "./GraphList";
 import { ChangesPanel } from "./StagePanel";
 
-type Tab = "changes" | "history";
-
 export function MainArea() {
-  const [tab, setTab] = useState<Tab>("history");
+  const tab = useRepo((s) => s.mainTab);
+  const setMainTab = useRepo((s) => s.setMainTab);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-brd bg-panel px-2">
         <TabBtn
           active={tab === "changes"}
-          onClick={() => setTab("changes")}
+          onClick={() => setMainTab("changes")}
           icon={<FileDiff size={13} aria-hidden />}
           label="改动"
         />
         <TabBtn
           active={tab === "history"}
-          onClick={() => setTab("history")}
+          onClick={() => setMainTab("history")}
           icon={<GitBranch size={13} aria-hidden />}
           label="历史"
         />
@@ -55,7 +54,9 @@ function TabBtn({
       aria-current={active ? "page" : undefined}
       className={
         "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors " +
-        (active ? "bg-panel2 font-medium text-ink" : "text-dim hover:bg-hover hover:text-ink")
+        (active
+          ? "bg-accent-soft font-semibold text-accent-ink shadow-[inset_0_0_0_1px_var(--accent)]"
+          : "text-dim hover:bg-hover hover:text-ink")
       }
     >
       {icon}

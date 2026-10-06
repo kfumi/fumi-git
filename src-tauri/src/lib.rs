@@ -30,6 +30,7 @@ pub fn run() {
             commands::get_log,
             commands::get_commit_detail,
             commands::get_status,
+            commands::get_worktree_diff,
             commands::stage_paths,
             commands::unstage_paths,
             commands::commit_staged,

@@ -9,7 +9,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { MainArea } from "./components/MainArea";
 import { CommitDetailPanel } from "./components/StagePanel";
-import { FileDiffTabs } from "./components/FileDiffTabs";
+import { FileDiffTabs, WorkDiffView } from "./components/FileDiffTabs";
 import { HDivider, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
@@ -54,19 +54,42 @@ export default function App() {
           </Panel>
           <VDivider />
           <Panel id="right" defaultSize={31} minSize={20} maxSize={44}>
-            <PanelGroup direction="vertical" autoSaveId="fumigit-right">
-              <Panel id="detail" defaultSize={57} minSize={16}>
-                <CommitDetailPanel />
-              </Panel>
-              <HDivider />
-              <Panel id="stage" defaultSize={43} minSize={20}>
-                <FileDiffTabs />
-              </Panel>
-            </PanelGroup>
+            <RightPane />
           </Panel>
         </PanelGroup>
       </div>
       <ToastHost />
     </div>
+  );
+}
+
+// 右栏跟随中栏 tab 与选中状态：
+// 历史 → 提交详情常驻；点击详情文件后下半展开 diff tab 区（默认不占位）
+// 改动 → 无详情面板；点击工作区文件后整栏展示其 diff
+function RightPane() {
+  const mainTab = useRepo((s) => s.mainTab);
+  const openFiles = useRepo((s) => s.openFiles);
+  const workFile = useRepo((s) => s.workFile);
+
+  if (mainTab === "changes") {
+    return workFile ? (
+      <WorkDiffView />
+    ) : (
+      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
+        点击左侧文件查看改动 diff
+      </div>
+    );
+  }
+  if (openFiles.length === 0) return <CommitDetailPanel />;
+  return (
+    <PanelGroup direction="vertical" autoSaveId="fumigit-right">
+      <Panel id="detail" defaultSize={55} minSize={20}>
+        <CommitDetailPanel />
+      </Panel>
+      <HDivider />
+      <Panel id="filediff" defaultSize={45} minSize={20}>
+        <FileDiffTabs />
+      </Panel>
+    </PanelGroup>
   );
 }

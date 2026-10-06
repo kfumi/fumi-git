@@ -112,6 +112,15 @@ pub fn get_status(state: State<'_, AppState>) -> Result<RepoStatus, GitError> {
 }
 
 #[tauri::command]
+pub fn get_worktree_diff(
+    state: State<'_, AppState>,
+    staged: bool,
+    path: String,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| git::worktree_diff(repo, staged, &path))
+}
+
+#[tauri::command]
 pub fn stage_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), GitError> {
     with_active(&state, |repo| git::stage(repo, &paths))
 }

@@ -1,10 +1,10 @@
 // 右上：提交详情（元信息 + 文件列表，点击文件 → 右下 diff tab）
 // 中栏「改动」tab：工作区（暂存/提交）
 import { useEffect, useState } from "react";
-import { Check, LoaderCircle } from "lucide-react";
+import { Check, CircleCheck, LoaderCircle } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { absTime, avatarColor } from "../lib/format";
-import type { FileStat } from "../lib/types";
+import type { FileEntry, FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
 
 const ST_CLASS: Record<string, string> = {
@@ -125,11 +125,15 @@ function FileRow({
 }
 
 // 中栏「改动」tab：工作区文件分组 + 暂存/提交操作（原右下面板整体迁入）
+// 点击文件行 → 右栏展示该文件的工作区 diff
 export function ChangesPanel() {
   const status = useRepo((s) => s.status);
   const stage = useRepo((s) => s.stage);
   const unstage = useRepo((s) => s.unstage);
   const commit = useRepo((s) => s.commit);
+  const selectWorkFile = useRepo((s) => s.selectWorkFile);
+  const workFile = useRepo((s) => s.workFile);
+  const workStaged = useRepo((s) => s.workStaged);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -157,56 +161,63 @@ export function ChangesPanel() {
       </div>
     );
   const canCommit = status.staged.length > 0 && message.trim().length > 0;
+  const total = status.staged.length + status.unstaged.length;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
-      <div className="px-4 pb-1.5 pt-3 text-[11px] font-semibold text-dim">
-        工作区 — <span className="tnum">{status.staged.length + status.unstaged.length}</span> 个文件
+      <div className="flex shrink-0 items-center justify-between px-4 pb-1.5 pt-3">
+        <h4 className="text-[12px] font-semibold text-ink">工作区</h4>
+        {total > 0 && (
+          <span className="tnum rounded-full bg-panel2 px-2 py-0.5 text-[10.5px] text-dim">
+            {total} 个文件
+          </span>
+        )}
       </div>
-      <div className="min-h-[40px] flex-1 overflow-y-auto px-2">
-        <GroupLabel color="bg-ok" label="已暂存" count={status.staged.length} />
-        {status.staged.map((f) => (
-          <div
-            key={"s" + f.path}
-            className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-hover"
-          >
-            <StatusBadge s={f.status} />
-            <span className="truncate text-dim" title={f.old_path ? `${f.old_path} → ${f.path}` : f.path}>
-              {f.path}
-            </span>
-            <button
-              onClick={() => void unstage([f.path])}
-              className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-ink group-hover:block"
-            >
-              取消暂存
-            </button>
-          </div>
-        ))}
-        <GroupLabel color="bg-warn" label="未暂存" count={status.unstaged.length} />
-        {status.unstaged.map((f) => (
-          <div
-            key={"u" + f.path}
-            className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-hover"
-          >
-            <StatusBadge s={f.status} />
-            <span className="truncate text-dim" title={f.path}>
-              {f.path}
-            </span>
-            <button
-              onClick={() => void stage([f.path])}
-              className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-accent-ink group-hover:block"
-            >
-              暂存
-            </button>
-          </div>
-        ))}
-      </div>
+      {total === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 pb-16 text-faint">
+          <CircleCheck size={22} className="text-ok" aria-hidden />
+          <p className="text-xs">工作区是干净的</p>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {status.staged.length > 0 && (
+            <>
+              <GroupLabel color="bg-ok" label="已暂存" count={status.staged.length} />
+              {status.staged.map((f) => (
+                <WorkRow
+                  key={"s" + f.path}
+                  file={f}
+                  active={workFile === f.path && workStaged}
+                  onSelect={() => void selectWorkFile(f.path, true)}
+                  actionLabel="取消暂存"
+                  onAction={() => void unstage([f.path])}
+                />
+              ))}
+            </>
+          )}
+          {status.unstaged.length > 0 && (
+            <>
+              <GroupLabel color="bg-warn" label="未暂存" count={status.unstaged.length} />
+              {status.unstaged.map((f) => (
+                <WorkRow
+                  key={"u" + f.path}
+                  file={f}
+                  active={workFile === f.path && !workStaged}
+                  onSelect={() => void selectWorkFile(f.path, false)}
+                  actionLabel="暂存"
+                  onAction={() => void stage([f.path])}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
       <div className="shrink-0 border-t border-brd p-3">
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="提交信息（Ctrl+Enter 提交）"
-          className="h-11 w-full resize-none rounded-lg border border-brd bg-panel2 px-2.5 py-2 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
+          className="h-14 w-full resize-none rounded-lg border border-brd bg-panel2 px-2.5 py-2 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
         />
         <div className="mt-2 flex items-center gap-2">
           <button
@@ -230,9 +241,50 @@ export function ChangesPanel() {
   );
 }
 
+function WorkRow({
+  file,
+  active,
+  onSelect,
+  actionLabel,
+  onAction,
+}: {
+  file: FileEntry;
+  active: boolean;
+  onSelect: () => void;
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <div
+      onClick={onSelect}
+      className={
+        "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors " +
+        (active ? "bg-sel" : "hover:bg-hover")
+      }
+    >
+      <StatusBadge s={file.status} />
+      <span
+        className="truncate text-dim"
+        title={file.old_path ? `${file.old_path} → ${file.path}` : file.path}
+      >
+        {file.path}
+      </span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction();
+        }}
+        className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-accent-ink group-hover:block"
+      >
+        {actionLabel}
+      </button>
+    </div>
+  );
+}
+
 function GroupLabel({ color, label, count }: { color: string; label: string; count: number }) {
   return (
-    <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
+    <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-panel px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
       <span className={`h-1.5 w-1.5 rounded-full ${color}`} aria-hidden />
       {label}
       <span className="tnum text-faint">{count}</span>

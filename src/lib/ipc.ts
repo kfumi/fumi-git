@@ -37,6 +37,9 @@ export const ipc = {
   getLog: (skip: number, limit: number) => cmd<LogPage>("get_log", { skip, limit }),
   getCommitDetail: (hash: string) => cmd<CommitDetail>("get_commit_detail", { hash }),
   getStatus: () => cmd<RepoStatus>("get_status"),
+  /** 工作区单文件 diff：staged=true 读已暂存（diff --cached），否则未暂存 */
+  getWorktreeDiff: (staged: boolean, path: string) =>
+    cmd<string>("get_worktree_diff", { staged, path }),
   getBranchSummary: () => cmd<BranchSummary>("get_branch_summary"),
 
   stage: (paths: string[]) => cmd<void>("stage_paths", { paths }),

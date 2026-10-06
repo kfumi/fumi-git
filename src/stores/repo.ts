@@ -33,6 +33,13 @@ interface RepoState {
   /** 提交详情里已打开的文件 diff tab（路径，有序）与当前激活项 */
   openFiles: string[];
   detailFile: string | null;
+  /** 中栏 tab：历史（图谱）为默认主角 */
+  mainTab: "changes" | "history";
+  /** 改动 tab 中选中的工作区文件及其 diff（staged 区分已暂存/未暂存两个列表的同名文件） */
+  workFile: string | null;
+  workStaged: boolean;
+  workDiff: string | null;
+  workDiffLoading: boolean;
   status: RepoStatus | null;
   summary: BranchSummary | null;
   filter: string;
@@ -49,6 +56,11 @@ interface RepoState {
   openDetailFile: (path: string) => void;
   /** 关闭文件 diff tab；关闭激活项时自动激活相邻 tab */
   closeDetailFile: (path: string) => void;
+  /** 选中改动 tab 的工作区文件（null = 收起 diff）；再次选中同文件则取消选中 */
+  selectWorkFile: (path: string | null, staged?: boolean) => Promise<void>;
+  /** 直接拉取工作区文件 diff（无 toggle 语义，refresh 复用） */
+  reloadWorkDiff: (path: string, staged: boolean) => Promise<void>;
+  setMainTab: (tab: "changes" | "history") => void;
   stage: (paths: string[]) => Promise<void>;
   unstage: (paths: string[]) => Promise<void>;
   commit: (message: string) => Promise<boolean>;
@@ -74,6 +86,11 @@ export const useRepo = create<RepoState>((set, get) => ({
   detailLoading: false,
   openFiles: [],
   detailFile: null,
+  mainTab: "history",
+  workFile: null,
+  workStaged: false,
+  workDiff: null,
+  workDiffLoading: false,
   status: null,
   summary: null,
   filter: "",
@@ -104,6 +121,10 @@ export const useRepo = create<RepoState>((set, get) => ({
         detail: null,
         openFiles: [],
         detailFile: null,
+        workFile: null,
+        workStaged: false,
+        workDiff: null,
+        workDiffLoading: false,
         status: null,
         summary: null,
         filter: "",
@@ -131,6 +152,10 @@ export const useRepo = create<RepoState>((set, get) => ({
       detail: null,
       openFiles: [],
       detailFile: null,
+      workFile: null,
+      workStaged: false,
+      workDiff: null,
+      workDiffLoading: false,
       status: null,
       summary: null,
     }),
@@ -173,6 +198,15 @@ export const useRepo = create<RepoState>((set, get) => ({
         openFiles: stillThere ? get().openFiles : [],
         detailFile: stillThere ? get().detailFile : null,
       });
+      // 工作区选中文件可能已被提交/外部变更移走：仍在对应列表则刷新 diff，否则收起
+      const wf = get().workFile;
+      if (wf) {
+        const inList = (list: { path: string }[]) => list.some((f) => f.path === wf);
+        const still =
+          !!status && (get().workStaged ? inList(status.staged) : inList(status.unstaged));
+        if (still) void get().reloadWorkDiff(wf, get().workStaged);
+        else set({ workFile: null, workDiff: null, workDiffLoading: false });
+      }
     } catch (e) {
       get().pushToast("err", await errText(e));
     }
@@ -186,11 +220,8 @@ export const useRepo = create<RepoState>((set, get) => ({
     set({ selectedId: id, detailLoading: true });
     try {
       const detail = await ipc.getCommitDetail(id);
-      if (get().selectedId === id) {
-        // 换提交后文件 tab 重置为第一个文件
-        const first = detail.files[0]?.path ?? null;
-        set({ detail, detailLoading: false, openFiles: first ? [first] : [], detailFile: first });
-      }
+      // 换提交后文件 tab 清空，点击文件才展开 diff
+      if (get().selectedId === id) set({ detail, detailLoading: false, openFiles: [], detailFile: null });
     } catch (e) {
       if (get().selectedId === id) {
         set({ detail: null, detailLoading: false, openFiles: [], detailFile: null });
@@ -218,6 +249,33 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
     set({ openFiles, detailFile });
   },
+
+  selectWorkFile: async (path, staged = false) => {
+    if (path === null) {
+      set({ workFile: null, workDiff: null, workDiffLoading: false });
+      return;
+    }
+    // 同一文件再次点击 = 收起
+    if (get().workFile === path && get().workStaged === staged && get().workDiff !== null) {
+      set({ workFile: null, workDiff: null, workDiffLoading: false });
+      return;
+    }
+    await get().reloadWorkDiff(path, staged);
+  },
+
+  reloadWorkDiff: async (path, staged) => {
+    set({ workFile: path, workStaged: staged, workDiff: null, workDiffLoading: true });
+    try {
+      const patch = await ipc.getWorktreeDiff(staged, path);
+      if (get().workFile === path && get().workStaged === staged)
+        set({ workDiff: patch ?? null, workDiffLoading: false });
+    } catch (e) {
+      if (get().workFile === path) set({ workDiffLoading: false });
+      get().pushToast("err", await errText(e));
+    }
+  },
+
+  setMainTab: (tab) => set({ mainTab: tab }),
 
   stage: async (paths) => {
     try {

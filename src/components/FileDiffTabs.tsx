@@ -1,7 +1,8 @@
-// 右下：提交详情文件 diff —— 点击右上文件列表打开/切换，多 tab 可关闭
+// 右下（历史 tab）：提交详情文件 diff —— 点击右上文件列表打开/切换，多 tab 可关闭
+// 右栏（改动 tab）：工作区单文件 diff 面板，选中工作区文件时才出现
 import { X } from "lucide-react";
 import { useRepo } from "../stores/repo";
-import { DetailDiff } from "./DiffView";
+import { DiffView, DetailDiff } from "./DiffView";
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
@@ -13,12 +14,8 @@ export function FileDiffTabs() {
   const openDetailFile = useRepo((s) => s.openDetailFile);
   const closeDetailFile = useRepo((s) => s.closeDetailFile);
 
-  if (!detail)
-    return (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        在左侧选择一个提交后，点击上方文件查看 diff
-      </div>
-    );
+  // 父层只在 openFiles 非空时挂载本组件；detail 缺失（理论不可达）时安静退场
+  if (!detail) return null;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
@@ -58,6 +55,42 @@ export function FileDiffTabs() {
           <DetailDiff detail={detail} selectedFile={active} />
         ) : (
           <p className="text-xs text-faint">点击上方文件查看 diff</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 改动 tab 下右栏整体：选中工作区文件时的单文件 diff（父层保证 workFile 非空）
+export function WorkDiffView() {
+  const workFile = useRepo((s) => s.workFile);
+  const workStaged = useRepo((s) => s.workStaged);
+  const workDiff = useRepo((s) => s.workDiff);
+  const loading = useRepo((s) => s.workDiffLoading);
+  if (!workFile) return null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-panel">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-brd px-3">
+        <span
+          className={
+            "rounded px-1.5 py-0.5 text-[10px] font-medium " +
+            (workStaged ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")
+          }
+        >
+          {workStaged ? "已暂存" : "未暂存"}
+        </span>
+        <span className="truncate font-mono text-[11px]" title={workFile}>
+          {workFile}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {loading ? (
+          <p className="text-xs text-faint">加载 diff…</p>
+        ) : workDiff ? (
+          <DiffView patch={workDiff} />
+        ) : (
+          <p className="text-xs text-faint">无文本变更（可能是二进制文件）</p>
         )}
       </div>
     </div>
