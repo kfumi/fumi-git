@@ -51,14 +51,6 @@ pub struct GitOutput {
     pub success: bool,
 }
 
-pub fn git_version() -> GitResult<String> {
-    let out = spawn_git(None, &["--version"], None)?;
-    if !out.success {
-        return Err(GitError::CommandFailed(out.stderr));
-    }
-    Ok(out.stdout.trim().to_string())
-}
-
 fn spawn_git(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> GitResult<GitOutput> {
     use std::io::Write;
     let mut cmd = Command::new("git");
