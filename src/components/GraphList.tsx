@@ -228,14 +228,15 @@ function CommitRow({
       onClick={onSelect}
       style={{ top, height: ROW_H }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_130px_78px_62px] items-center gap-[10px] pl-[112px] pr-[14px] transition-colors " +
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_130px_78px_62px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
         (selected ? "bg-sel" : "hover:bg-hover")
       }
     >
       {selected && <div className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-accent" />}
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-[13px] font-medium">{commit.subject}</span>
-        <RefChips refs={commit.refs} />
+      {/* 主题 + ref 徽章：徽章装不下时换到第二行（display:contents 逐个换行），不再挤压标题 */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="max-w-full truncate text-[13px] font-medium">{commit.subject}</span>
+        <RefChips refs={commit.refs} max={4} />
       </div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-dim">
         <span
