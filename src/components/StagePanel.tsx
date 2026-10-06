@@ -1,5 +1,6 @@
 // 右侧：提交详情（元信息 + 文件列表 + diff）与工作区（暂存/提交）
 import { useEffect, useState } from "react";
+import { Check, LoaderCircle } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { absTime, avatarColor } from "../lib/format";
 import type { FileStat } from "../lib/types";
@@ -15,7 +16,11 @@ const ST_CLASS: Record<string, string> = {
 
 function StatusBadge({ s }: { s: string }) {
   return (
-    <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded text-[9.5px] font-bold ${ST_CLASS[s] ?? ""}`}>
+    <span
+      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9.5px] font-semibold leading-none ${ST_CLASS[s] ?? ""}`}
+      title={{ M: "修改", A: "新增", D: "删除", R: "重命名" }[s]}
+      aria-label={`状态 ${s}`}
+    >
       {s}
     </span>
   );
@@ -37,45 +42,50 @@ export function CommitDetailPanel() {
   }
   const meta = detail.meta;
   return (
-    <div
-      id="detail-panel"
-      tabIndex={-1}
-      className="min-h-0 flex-[1.3] overflow-y-auto border-b border-brd bg-panel p-4 outline-none"
-    >
-      <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
-      {detail.body && <p className="mb-2.5 whitespace-pre-wrap text-xs leading-relaxed text-dim">{detail.body}</p>}
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-dim">
-        <span
-          className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-          style={{ background: avatarColor(meta.author_name) }}
-        >
-          {meta.author_name.slice(0, 1)}
-        </span>
-        <span>{meta.author_name}</span>
-        <span>·</span>
-        <span title={absTime(meta.time)}>{absTime(meta.time)}</span>
-        <span>·</span>
-        <span className="font-mono text-[11px] text-faint">{meta.short_id}</span>
-      </div>
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        <RefChips refs={meta.refs} />
-      </div>
-      {meta.parents.length > 1 && (
-        <p className="mb-3 font-mono text-[11px] text-faint">
-          父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
-        </p>
-      )}
+      <div
+        id="detail-panel"
+        tabIndex={-1}
+        className="min-h-0 flex-[1.3] overflow-y-auto border-b border-brd bg-panel p-4 outline-none"
+      >
+        <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
+        {detail.body && (
+          <p className="mb-2.5 whitespace-pre-wrap text-xs leading-relaxed text-dim">{detail.body}</p>
+        )}
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-dim">
+          <span
+            className="avatar flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+            style={{ background: avatarColor(meta.author_name) }}
+            aria-hidden
+          >
+            {meta.author_name.slice(0, 1)}
+          </span>
+          <span>{meta.author_name}</span>
+          <span className="text-faint">·</span>
+          <span className="tnum" title={absTime(meta.time)}>
+            {absTime(meta.time)}
+          </span>
+          <span className="text-faint">·</span>
+          <span className="tnum font-mono text-[11px] text-faint">{meta.short_id}</span>
+        </div>
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          <RefChips refs={meta.refs} />
+        </div>
+        {meta.parents.length > 1 && (
+          <p className="tnum mb-3 font-mono text-[11px] text-faint">
+            父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
+          </p>
+        )}
 
-      <div className="overflow-hidden rounded-lg border border-brd">
-        {detail.files.map((f) => (
-          <FileRow
-            key={f.path + (f.old_path ?? "")}
-            file={f}
-            active={activeFile === f.path || (activeFile === null && f === detail.files[0])}
-            onClick={() => setActiveFile(f.path)}
-          />
-        ))}
-      </div>
+        <div className="overflow-hidden rounded-lg border border-brd bg-panel2">
+          {detail.files.map((f) => (
+            <FileRow
+              key={f.path + (f.old_path ?? "")}
+              file={f}
+              active={activeFile === f.path || (activeFile === null && f === detail.files[0])}
+              onClick={() => setActiveFile(f.path)}
+            />
+          ))}
+        </div>
       {loading ? (
         <p className="mt-3 text-xs text-faint">加载 diff…</p>
       ) : (
@@ -100,8 +110,8 @@ function FileRow({
     <div
       onClick={onClick}
       className={
-        "flex cursor-pointer items-center gap-2 border-b border-brd px-3 py-[7px] text-xs last:border-b-0 " +
-        (active ? "bg-sel" : "bg-panel2 hover:bg-hover")
+        "flex cursor-pointer items-center gap-2 border-b border-brd-soft px-3 py-[7px] text-xs last:border-b-0 transition-colors " +
+        (active ? "bg-sel" : "hover:bg-hover")
       }
     >
       <StatusBadge s={file.status} />
@@ -111,7 +121,7 @@ function FileRow({
         </span>
       )}
       <span className="truncate font-mono text-[11.5px]">{file.path}</span>
-      <span className="ml-auto shrink-0 text-[10.5px]">
+      <span className="tnum ml-auto shrink-0 text-[10.5px]">
         {file.binary ? (
           <span className="text-faint">二进制</span>
         ) : (
@@ -154,35 +164,41 @@ export function StagePanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-panel">
-      <div className="px-4 pb-1.5 pt-2 text-[11px] font-semibold tracking-wide text-faint">
-        工作区 — {status.staged.length + status.unstaged.length} 个文件
+      <div className="px-4 pb-1.5 pt-3 text-[11px] font-semibold text-dim">
+        工作区 — <span className="tnum">{status.staged.length + status.unstaged.length}</span> 个文件
       </div>
       <div className="min-h-[40px] flex-1 overflow-y-auto px-2">
-        <div className="px-2 pb-1 pt-1 text-[11px] text-ok">已暂存 {status.staged.length}</div>
+        <GroupLabel color="bg-ok" label="已暂存" count={status.staged.length} />
         {status.staged.map((f) => (
-          <div key={"s" + f.path} className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-hover">
+          <div
+            key={"s" + f.path}
+            className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-hover"
+          >
             <StatusBadge s={f.status} />
             <span className="truncate text-dim" title={f.old_path ? `${f.old_path} → ${f.path}` : f.path}>
               {f.path}
             </span>
             <button
               onClick={() => void unstage([f.path])}
-              className="ml-auto hidden shrink-0 text-[10.5px] text-faint hover:text-ink group-hover:block"
+              className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-ink group-hover:block"
             >
               取消暂存
             </button>
           </div>
         ))}
-        <div className="px-2 pb-1 pt-2 text-[11px] text-warn">未暂存 {status.unstaged.length}</div>
+        <GroupLabel color="bg-warn" label="未暂存" count={status.unstaged.length} />
         {status.unstaged.map((f) => (
-          <div key={"u" + f.path} className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-hover">
+          <div
+            key={"u" + f.path}
+            className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-hover"
+          >
             <StatusBadge s={f.status} />
             <span className="truncate text-dim" title={f.path}>
               {f.path}
             </span>
             <button
               onClick={() => void stage([f.path])}
-              className="ml-auto hidden shrink-0 text-[10.5px] text-faint hover:text-accent-ink group-hover:block"
+              className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-accent-ink group-hover:block"
             >
               暂存
             </button>
@@ -194,21 +210,36 @@ export function StagePanel() {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="提交信息（Ctrl+Enter 提交）"
-          className="h-11 w-full resize-none rounded-lg border border-brd bg-panel2 px-2.5 py-2 text-xs text-ink outline-none focus:border-accent"
+          className="h-11 w-full resize-none rounded-lg border border-brd bg-panel2 px-2.5 py-2 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
         />
         <div className="mt-2 flex items-center gap-2">
           <button
             disabled={!canCommit || submitting}
             onClick={() => void doCommit()}
-            className="h-7 rounded-lg bg-accent px-3 text-xs font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            className="btn-primary"
           >
-            ✓ 提交到 {status.branch}
+            {submitting ? (
+              <LoaderCircle size={12} className="animate-spin" aria-hidden />
+            ) : (
+              <Check size={13} aria-hidden />
+            )}
+            提交到 {status.branch}
           </button>
-          <span className="ml-auto text-[11px] text-faint">
+          <span className="tnum ml-auto text-[11px] text-faint">
             {status.staged.length} 个已暂存
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+function GroupLabel({ color, label, count }: { color: string; label: string; count: number }) {
+  return (
+    <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
+      <span className={`h-1.5 w-1.5 rounded-full ${color}`} aria-hidden />
+      {label}
+      <span className="tnum text-faint">{count}</span>
     </div>
   );
 }

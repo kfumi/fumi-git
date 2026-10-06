@@ -1,6 +1,7 @@
 // 中央提交图谱列表：虚拟滚动行 + 视口 Canvas 曲线层（票 02/03）
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { GitCommitHorizontal } from "lucide-react";
 import { computeGraph, laneX, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
 import { avatarColor, relTime } from "../lib/format";
@@ -202,8 +203,9 @@ export function GraphList() {
         ))}
       </div>
       {rows.length === 0 && (
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 text-center text-faint">
-          {filter ? "没有匹配的提交" : "这个仓库还没有提交"}
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 flex-col items-center gap-2 text-center text-faint">
+          <GitCommitHorizontal size={22} strokeWidth={1.5} aria-hidden />
+          <span className="text-xs">{filter ? "没有匹配的提交" : "这个仓库还没有提交"}</span>
         </div>
       )}
     </div>
@@ -226,7 +228,7 @@ function CommitRow({
       onClick={onSelect}
       style={{ top, height: ROW_H }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_130px_78px_62px] items-center gap-[10px] pl-[112px] pr-[14px] " +
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_130px_78px_62px] items-center gap-[10px] pl-[112px] pr-[14px] transition-colors " +
         (selected ? "bg-sel" : "hover:bg-hover")
       }
     >
@@ -237,16 +239,17 @@ function CommitRow({
       </div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-dim">
         <span
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+          className="avatar flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
           style={{ background: avatarColor(commit.author_name) }}
           title={commit.author_name}
+          aria-hidden
         >
           {commit.author_name.slice(0, 1)}
         </span>
         <span className="truncate">{commit.author_name}</span>
       </div>
-      <div className="text-right text-[11.5px] text-faint">{relTime(commit.time)}</div>
-      <div className="text-right font-mono text-[11.5px] text-faint">{commit.short_id}</div>
+      <div className="tnum text-right text-[11.5px] text-faint">{relTime(commit.time)}</div>
+      <div className="tnum text-right font-mono text-[11.5px] text-faint">{commit.short_id}</div>
     </div>
   );
 }
