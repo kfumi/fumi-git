@@ -23,6 +23,10 @@ vi.mock("../lib/ipc", () => {
     push: vi.fn(),
     switchBranch: vi.fn(async () => {}),
     stashPush: vi.fn(async () => {}),
+    createBranch: vi.fn(async () => {}),
+    deleteBranch: vi.fn(async () => {}),
+    branchUnmergedCount: vi.fn(async () => 0),
+    renameBranch: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -320,6 +324,63 @@ describe("checkout 安全模型（票 01）", () => {
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
     expect(ipc.stashPush).toHaveBeenCalledWith("迁出前自动暂存");
     expect(useRepo.getState().dialog).toBeNull();
+  });
+});
+
+describe("分支生命周期（票 02）", () => {
+  const withRepo = () =>
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  };
+
+  it("createBranch：空名返回错误不发起 IPC；成功后提示并刷新", async () => {
+    withRepo();
+    logOk();
+    expect(await useRepo.getState().createBranch("  ", true)).toContain("不能为空");
+    expect(ipc.createBranch).not.toHaveBeenCalled();
+
+    await useRepo.getState().createBranch("feat", true);
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat", true);
+    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok" });
+  });
+
+  it("createBranch：后端校验错误原样返回给对话框", async () => {
+    (ipc.createBranch as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "分支 feat 已存在",
+    });
+    expect(await useRepo.getState().createBranch("feat", false)).toContain("已存在");
+  });
+
+  it("deleteBranchFlow：未合入 N 个 → 强删确认并带 force；已合入 → 普通删除", async () => {
+    withRepo();
+    (ipc.branchUnmergedCount as ReturnType<typeof vi.fn>).mockResolvedValue(3);
+    await useRepo.getState().deleteBranchFlow("feat");
+    let d = useRepo.getState().dialog!;
+    expect(d.message).toContain("3 个提交未合入");
+    expect(d.actions[0].label).toContain("强制删除");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.deleteBranch).toHaveBeenCalledWith("feat", true));
+
+    (ipc.branchUnmergedCount as ReturnType<typeof vi.fn>).mockResolvedValue(0);
+    await useRepo.getState().deleteBranchFlow("temp");
+    d = useRepo.getState().dialog!;
+    expect(d.actions[0].label).toBe("删除分支");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.deleteBranch).toHaveBeenLastCalledWith("temp", false));
+  });
+
+  it("renameBranchFlow：预填原名，同名保持打开，成功后刷新", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().renameBranchFlow("feat");
+    let d = useRepo.getState().dialog!;
+    expect(d.input?.initial).toBe("feat");
+    expect(await d.actions[0].run("feat", false)).toBe(false); // 同名 → 保持打开
+    expect(await d.actions[0].run("feat2", false)).toBeUndefined();
+    expect(ipc.renameBranch).toHaveBeenCalledWith("feat", "feat2");
   });
 });
 

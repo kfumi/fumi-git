@@ -44,6 +44,12 @@ export const ipc = {
 
   switchBranch: (name: string) => cmd<void>("switch_branch", { name }),
   stashPush: (message?: string) => cmd<void>("stash_push", { message }),
+  createBranch: (name: string, checkout: boolean) =>
+    cmd<void>("create_branch", { name, checkout }),
+  deleteBranch: (name: string, force: boolean) => cmd<void>("delete_branch", { name, force }),
+  branchUnmergedCount: (name: string) => cmd<number>("branch_unmerged_count", { name }),
+  renameBranch: (oldName: string, newName: string) =>
+    cmd<void>("rename_branch", { old: oldName, new: newName }),
 
   stage: (paths: string[]) => cmd<void>("stage_paths", { paths }),
   unstage: (paths: string[]) => cmd<void>("unstage_paths", { paths }),

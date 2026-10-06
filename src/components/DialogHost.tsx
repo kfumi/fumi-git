@@ -14,6 +14,8 @@ export function DialogHost() {
 function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void }) {
   const [input, setInput] = useState(desc.input?.initial ?? "");
   const [checked, setChecked] = useState(desc.checkbox?.initial ?? false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const primary = desc.actions.find((a) => a.kind === "primary" || a.kind === "danger");
 
@@ -21,8 +23,21 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
     if (desc.input) inputRef.current?.select();
   }, [desc.input]);
 
-  const run = (action: DialogDesc["actions"][number]) => {
-    if (action.run(input, checked) !== false) onClose();
+  const run = async (action: DialogDesc["actions"][number]) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await action.run(input, checked);
+      if (r === false) return;
+      if (typeof r === "string") {
+        setError(r);
+        return;
+      }
+      onClose();
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -32,13 +47,13 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
         onClose();
       } else if (e.key === "Enter" && primary && !(e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
-        run(primary);
+        void run(primary);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [desc, input, checked]);
+  }, [desc, input, checked, busy]);
 
   return (
     <div
@@ -81,24 +96,30 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
             {desc.checkbox.label}
           </label>
         )}
+        {error && (
+          <p className="mt-2 rounded-md bg-[rgba(242,112,138,0.12)] px-2 py-1.5 text-xs text-bad">
+            {error}
+          </p>
+        )}
         <div className="mt-3.5 flex items-center justify-end gap-2">
           {desc.actions.map((a, i) => (
             <button
               key={i}
-              onClick={() => run(a)}
+              disabled={busy}
+              onClick={() => void run(a)}
               className={
-                a.kind === "primary"
+                (a.kind === "primary"
                   ? "btn-primary"
                   : a.kind === "danger"
                     ? "btn-danger"
-                    : "btn-ghost"
+                    : "btn-ghost") + (busy ? " pointer-events-none opacity-60" : "")
               }
             >
               {a.label}
             </button>
           ))}
           {desc.cancelLabel !== null && (
-            <button className="btn-ghost" onClick={onClose}>
+            <button className="btn-ghost" disabled={busy} onClick={onClose}>
               {desc.cancelLabel ?? "取消"}
             </button>
           )}

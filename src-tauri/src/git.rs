@@ -545,6 +545,77 @@ pub fn stash_push(repo: &GitRepo, message: Option<&str>) -> GitResult<()> {
     Ok(())
 }
 
+/// 分支名预检：空名 / 非法名 / 已存在时给出面向用户的中文错误。
+/// 合法性复用 git 自身的 check-ref-format（与命令行行为完全一致）。
+fn ensure_branch_name_valid(repo: &GitRepo, name: &str) -> GitResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("分支名不能为空".into()));
+    }
+    if name.ends_with(".lock") || name.contains("..") || name.starts_with('-') {
+        return Err(GitError::CommandFailed(format!("非法分支名：{name}")));
+    }
+    if repo
+        .run(&["check-ref-format", "--branch", name])
+        .is_err()
+    {
+        return Err(GitError::CommandFailed(format!(
+            "非法分支名：{name}（不能含空格、~ ^ : ? * [ \\ 等）"
+        )));
+    }
+    if repo.run_ok(&["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")]) {
+        return Err(GitError::CommandFailed(format!("分支 {name} 已存在")));
+    }
+    Ok(())
+}
+
+/// 新建分支；checkout=true 时建完即迁出。
+pub fn create_branch(repo: &GitRepo, name: &str, checkout: bool) -> GitResult<()> {
+    ensure_branch_name_valid(repo, name)?;
+    let name = name.trim();
+    if checkout {
+        repo.run(&["switch", "--create", name])?;
+    } else {
+        repo.run(&["branch", name])?;
+    }
+    Ok(())
+}
+
+/// 删除本地分支。force=false 时 git 拒绝未合入分支（-d），force=true 强删（-D）。
+/// 删除当前分支由 git 自身拦截。
+pub fn delete_branch(repo: &GitRepo, name: &str, force: bool) -> GitResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    let flag = if force { "-D" } else { "-d" };
+    repo.run(&["branch", flag, name])?;
+    Ok(())
+}
+
+/// 分支上尚未合入当前 HEAD 的提交数（0 = 已合入）。供删除前的防丢确认。
+pub fn branch_unmerged_count(repo: &GitRepo, name: &str) -> GitResult<u32> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    let out = repo.run(&["rev-list", "--count", &format!("HEAD..{name}")])?;
+    out.trim()
+        .parse()
+        .map_err(|_| GitError::CommandFailed(format!("无法解析提交计数：{out}")))
+}
+
+/// 分支改名（old 不存在 / new 非法或已存在时由预检或 git 拦截）。
+pub fn rename_branch(repo: &GitRepo, old: &str, new: &str) -> GitResult<()> {
+    let old = old.trim();
+    if old.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    ensure_branch_name_valid(repo, new)?;
+    repo.run(&["branch", "--move", old, new.trim()])?;
+    Ok(())
+}
+
 // ── 远程同步 ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1161,6 +1232,72 @@ mod tests {
         assert!(matches!(
             stash_push(&r, None),
             Err(GitError::NothingToCommit(_))
+        ));
+    }
+
+    #[test]
+    fn branch_create_delete_rename_and_unmerged_count() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 新建：默认仅创建；checkout=true 则建完即迁出
+        create_branch(&r, "feat", false).unwrap();
+        assert_eq!(r.current_branch(), "main");
+        create_branch(&r, "topic", true).unwrap();
+        assert_eq!(r.current_branch(), "topic");
+
+        // 重名 / 非法名被预检拦截
+        assert!(matches!(
+            create_branch(&r, "feat", false),
+            Err(GitError::CommandFailed(m)) if m.contains("已存在")
+        ));
+        assert!(matches!(
+            create_branch(&r, "bad name", false),
+            Err(GitError::CommandFailed(m)) if m.contains("非法分支名")
+        ));
+        assert!(matches!(
+            create_branch(&r, "", false),
+            Err(GitError::CommandFailed(m)) if m.contains("不能为空")
+        ));
+
+        // 未合入计数：topic 上有独立提交 → 相对 main 为 2；main 相对自身为 0
+        switch_branch(&r, "main").unwrap();
+        commit_file(t.path(), "f1.txt", "1", "topic one");
+        switch_branch(&r, "topic").unwrap();
+        commit_file(t.path(), "f1.txt", "2", "topic one");
+        commit_file(t.path(), "f2.txt", "1", "topic two");
+        switch_branch(&r, "main").unwrap();
+        assert_eq!(branch_unmerged_count(&r, "topic").unwrap(), 2);
+        assert_eq!(branch_unmerged_count(&r, "main").unwrap(), 0);
+
+        // 删除未合入：-d 拒绝、-D 强删
+        assert!(matches!(
+            delete_branch(&r, "topic", false),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/topic"]));
+        delete_branch(&r, "topic", true).unwrap();
+        assert!(!r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/topic"]));
+
+        // 已合入分支 -d 直接删除成功
+        create_branch(&r, "temp", false).unwrap();
+        delete_branch(&r, "temp", false).unwrap();
+        assert!(!r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/temp"]));
+
+        // 改名：成功 / 重名拦截
+        create_branch(&r, "old-name", false).unwrap();
+        rename_branch(&r, "old-name", "new-name").unwrap();
+        assert!(r.run_ok(&["show-ref", "--verify", "--quiet", "refs/heads/new-name"]));
+        assert!(matches!(
+            rename_branch(&r, "new-name", "main"),
+            Err(GitError::CommandFailed(m)) if m.contains("已存在")
+        ));
+
+        // 删除当前分支由 git 拦截
+        assert!(matches!(
+            delete_branch(&r, "main", true),
+            Err(GitError::CommandFailed(_))
         ));
     }
 

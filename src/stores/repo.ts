@@ -19,11 +19,15 @@ export interface Toast {
   text: string;
 }
 
-/** 对话框动作按钮；run 返回 false = 校验失败保持打开（表单场景） */
+/**
+ * 对话框动作按钮。run 的返回值约定（由 DialogHost 解释）：
+ * undefined/void = 关闭；false = 保持打开（无提示）；string = 保持打开并显示错误。
+ * 可为 Promise（异步校验期间按钮禁用）。
+ */
 export interface DialogAction {
   label: string;
   kind?: "primary" | "danger" | "ghost";
-  run: (input: string, checked: boolean) => boolean | void;
+  run: (input: string, checked: boolean) => string | false | void | Promise<string | false | void>;
 }
 
 /** 通用对话框描述（ui-spec §4）：确认 / 多选去向 / 输入表单统一走这一槽位 */
@@ -103,6 +107,14 @@ interface RepoState {
   closeDialog: () => void;
   /** 迁出到本地分支；脏工作树时先经安全拦截对话框（ui-spec §4） */
   checkout: (branch: string) => Promise<void>;
+  /** 新建分支（对话框表单：名称 + 建完即迁出勾选）；返回校验错误给对话框显示 */
+  createBranch: (name: string, checkoutAfter: boolean) => Promise<string | void>;
+  /** 新建分支对话框入口（基于当前 HEAD） */
+  createBranchFlow: () => void;
+  /** 删除分支入口：先取未合入计数，按结果弹一次确认或强制删除确认 */
+  deleteBranchFlow: (branch: string) => Promise<void>;
+  /** 分支改名（对话框表单，预填原名） */
+  renameBranchFlow: (branch: string) => void;
 }
 
 const errText = async (e: unknown): Promise<string> =>
@@ -176,6 +188,96 @@ export const useRepo = create<RepoState>((set, get) => ({
       return;
     }
     await doSwitch();
+  },
+
+  createBranch: async (name, checkoutAfter) => {
+    const trimmed = name.trim();
+    if (!trimmed) return "分支名不能为空";
+    try {
+      await ipc.createBranch(trimmed, checkoutAfter);
+      get().pushToast(
+        "ok",
+        checkoutAfter ? `已创建并迁出到 ${trimmed}` : `已创建分支 ${trimmed}`,
+      );
+      await get().refresh();
+    } catch (e) {
+      return (await asGitError(e)).message;
+    }
+  },
+
+  createBranchFlow: () => {
+    get().openDialog({
+      title: "新建分支",
+      message: "基于当前 HEAD 创建新分支。",
+      input: { placeholder: "分支名，如 feat/login" },
+      checkbox: { label: "创建后立即迁出", initial: true },
+      actions: [
+        {
+          label: "创建",
+          kind: "primary",
+          run: (name, checkoutAfter) => get().createBranch(name, checkoutAfter),
+        },
+      ],
+    });
+  },
+
+  deleteBranchFlow: async (branch) => {
+    let unmerged = 0;
+    try {
+      unmerged = await ipc.branchUnmergedCount(branch);
+    } catch (e) {
+      get().pushToast("err", await errText(e));
+      return;
+    }
+    get().openDialog({
+      title: `删除分支 ${branch}`,
+      message:
+        unmerged > 0
+          ? `该分支有 ${unmerged} 个提交未合入当前分支。强制删除后，这些提交将只存在于 reflog 中，很难找回。`
+          : "该分支已全部合入当前分支。删除后分支引用不可恢复。",
+      actions: [
+        {
+          label: unmerged > 0 ? `强制删除（丢弃 ${unmerged} 个提交）` : "删除分支",
+          kind: "danger",
+          run: () => {
+            void (async () => {
+              const id = get().pushToast("busy", `删除分支 ${branch}…`);
+              try {
+                await ipc.deleteBranch(branch, unmerged > 0);
+                get().updateToast(id, { kind: "ok", text: `已删除分支 ${branch}` });
+                await get().refresh();
+              } catch (e) {
+                get().updateToast(id, { kind: "err", text: await errText(e) });
+              }
+            })();
+          },
+        },
+      ],
+    });
+  },
+
+  renameBranchFlow: (branch) => {
+    get().openDialog({
+      title: "重命名分支",
+      input: { initial: branch },
+      actions: [
+        {
+          label: "重命名",
+          kind: "primary",
+          run: async (name) => {
+            const newName = name.trim();
+            if (!newName || newName === branch) return false;
+            try {
+              await ipc.renameBranch(branch, newName);
+              get().pushToast("ok", `已重命名分支：${branch} → ${newName}`);
+              await get().refresh();
+            } catch (e) {
+              return (await asGitError(e)).message;
+            }
+          },
+        },
+      ],
+    });
   },
 
   pushToast: (kind, text) => {

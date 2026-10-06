@@ -7,6 +7,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  Plus,
   Tag,
   X,
 } from "lucide-react";
@@ -35,7 +36,10 @@ export function Sidebar() {
   const selectRefTip = useRepo((s) => s.selectRefTip);
   const summary = useRepo((s) => s.summary);
   const checkout = useRepo((s) => s.checkout);
-  // 分支右键菜单：{ 位置, 分支全名 }；操作项随批次增长（新建/删除/改名在后续票接入）
+  const createBranchFlow = useRepo((s) => s.createBranchFlow);
+  const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
+  const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
+  // 分支右键菜单：{ 位置, 分支全名 }
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; branch: string } | null>(
     null,
   );
@@ -48,6 +52,15 @@ export function Sidebar() {
         hint: current ? "当前分支" : undefined,
         disabled: current,
         onSelect: () => void checkout(branch),
+      },
+      { label: "新建分支…", onSelect: () => createBranchFlow() },
+      { label: "重命名…", onSelect: () => renameBranchFlow(branch) },
+      {
+        label: "删除…",
+        hint: current ? "当前分支" : undefined,
+        disabled: current,
+        danger: true,
+        onSelect: () => void deleteBranchFlow(branch),
       },
     ];
   };
@@ -127,7 +140,17 @@ export function Sidebar() {
         );
       })}
 
-      <h4 className="section-label pb-1.5 pt-4">分支</h4>
+      <div className="flex items-center justify-between pr-1">
+        <h4 className="section-label pb-1.5 pt-4">分支</h4>
+        <button
+          title="新建分支"
+          aria-label="新建分支"
+          onClick={() => createBranchFlow()}
+          className="mb-1 rounded p-1 text-faint transition-colors hover:bg-hover hover:text-ink"
+        >
+          <Plus size={12} aria-hidden />
+        </button>
+      </div>
       {tree.roots.map(([name, id]) => (
         <BranchRow
           key={name}

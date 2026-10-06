@@ -167,3 +167,35 @@ pub fn stash_push(
 ) -> Result<(), GitError> {
     with_active(&state, |repo| git::stash_push(repo, message.as_deref()))
 }
+
+#[tauri::command]
+pub fn create_branch(
+    state: State<'_, AppState>,
+    name: String,
+    checkout: bool,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::create_branch(repo, &name, checkout))
+}
+
+#[tauri::command]
+pub fn delete_branch(
+    state: State<'_, AppState>,
+    name: String,
+    force: bool,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::delete_branch(repo, &name, force))
+}
+
+#[tauri::command]
+pub fn branch_unmerged_count(state: State<'_, AppState>, name: String) -> Result<u32, GitError> {
+    with_active(&state, |repo| git::branch_unmerged_count(repo, &name))
+}
+
+#[tauri::command]
+pub fn rename_branch(
+    state: State<'_, AppState>,
+    old: String,
+    new: String,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::rename_branch(repo, &old, &new))
+}

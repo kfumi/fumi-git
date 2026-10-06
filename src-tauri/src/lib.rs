@@ -40,6 +40,10 @@ pub fn run() {
             commands::get_branch_summary,
             commands::switch_branch,
             commands::stash_push,
+            commands::create_branch,
+            commands::delete_branch,
+            commands::branch_unmerged_count,
+            commands::rename_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
