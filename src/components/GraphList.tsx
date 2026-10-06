@@ -4,7 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommitHorizontal } from "lucide-react";
 import { computeGraph, laneX, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
-import { avatarColor, relTime } from "../lib/format";
+import { absTime, avatarColor, relTime } from "../lib/format";
 import type { CommitEntry } from "../lib/types";
 import { RefChips } from "./RefChips";
 
@@ -228,29 +228,41 @@ function CommitRow({
       onClick={onSelect}
       style={{ top, height: ROW_H }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_130px_78px_62px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_112px_70px_56px] items-center gap-[10px] overflow-hidden pl-[112px] pr-[14px] transition-colors " +
         (selected ? "bg-sel" : "hover:bg-hover")
       }
     >
       {selected && <div className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-accent" />}
-      {/* 主题 + ref 徽章：徽章装不下时换到第二行（display:contents 逐个换行），不再挤压标题 */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="max-w-full truncate text-[13px] font-medium">{commit.subject}</span>
-        <RefChips refs={commit.refs} max={4} />
+      {/* IDEA 式两行：主题独占一行；ref 徽章固定第二行（无引用时不占位，不再与标题互相挤压） */}
+      <div className="min-w-0">
+        <div className="truncate text-[13px] font-medium leading-[18px]" title={commit.subject}>
+          {commit.subject}
+        </div>
+        {commit.refs.length > 0 && (
+          <div className="mt-1 flex items-center overflow-hidden whitespace-nowrap">
+            <RefChips refs={commit.refs} max={4} />
+          </div>
+        )}
       </div>
-      <div className="flex min-w-0 items-center gap-2 text-xs text-dim">
+      <div
+        className="flex min-w-0 items-center gap-1.5 text-xs text-dim"
+        title={commit.author_name}
+      >
         <span
-          className="avatar flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+          className="avatar flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
           style={{ background: avatarColor(commit.author_name) }}
-          title={commit.author_name}
           aria-hidden
         >
           {commit.author_name.slice(0, 1)}
         </span>
         <span className="truncate">{commit.author_name}</span>
       </div>
-      <div className="tnum text-right text-[11.5px] text-faint">{relTime(commit.time)}</div>
-      <div className="tnum text-right font-mono text-[11.5px] text-faint">{commit.short_id}</div>
+      <div className="tnum truncate text-right text-[11.5px] text-faint" title={absTime(commit.time)}>
+        {relTime(commit.time)}
+      </div>
+      <div className="tnum truncate text-right font-mono text-[11.5px] text-faint" title={commit.id}>
+        {commit.short_id}
+      </div>
     </div>
   );
 }
