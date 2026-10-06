@@ -37,7 +37,7 @@ export function Sidebar() {
   }, [commits]);
 
   return (
-    <aside className="min-h-0 overflow-y-auto border-r border-brd bg-panel px-2 py-3">
+    <aside className="h-full min-h-0 overflow-y-auto bg-panel px-2 py-3">
       <h4 className="section-label pb-1.5 pt-1">仓库</h4>
       {(config?.recent_repos ?? []).map((e) => {
         const active = meta?.path === e.path;

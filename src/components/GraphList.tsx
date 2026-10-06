@@ -171,7 +171,7 @@ export function GraphList() {
   return (
     <div
       ref={scrollRef}
-      className="relative min-h-0 flex-1 overflow-y-auto outline-none"
+      className="relative h-full min-h-0 overflow-y-auto outline-none"
       tabIndex={0}
       onScroll={onScroll}
       onKeyDown={onKeyDown}

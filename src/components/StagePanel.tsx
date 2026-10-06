@@ -35,7 +35,7 @@ export function CommitDetailPanel() {
   }, [detail?.meta.id]);
   if (!detail) {
     return (
-      <div className="flex flex-1 items-center justify-center overflow-hidden border-b border-brd bg-panel text-xs text-faint">
+      <div className="flex h-full items-center justify-center overflow-hidden bg-panel text-xs text-faint">
         在左侧选择一个提交查看详情
       </div>
     );
@@ -45,7 +45,7 @@ export function CommitDetailPanel() {
       <div
         id="detail-panel"
         tabIndex={-1}
-        className="min-h-0 flex-[1.3] overflow-y-auto border-b border-brd bg-panel p-4 outline-none"
+        className="h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
       >
         <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
         {detail.body && (
@@ -163,7 +163,7 @@ export function StagePanel() {
   const canCommit = status.staged.length > 0 && message.trim().length > 0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-panel">
+    <div className="flex h-full min-h-0 flex-col bg-panel">
       <div className="px-4 pb-1.5 pt-3 text-[11px] font-semibold text-dim">
         工作区 — <span className="tnum">{status.staged.length + status.unstaged.length}</span> 个文件
       </div>
