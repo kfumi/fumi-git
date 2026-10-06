@@ -1,8 +1,29 @@
-// 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰）/ 远程
-import { useMemo } from "react";
-import { ChevronRight, Cloud, GitBranch, Tag, X } from "lucide-react";
+// 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰，按 "/" 前缀分组折叠）/ 远程
+import { useMemo, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Cloud,
+  Folder,
+  FolderOpen,
+  GitBranch,
+  Tag,
+  X,
+} from "lucide-react";
 import { useRepo } from "../stores/repo";
-import { classifyRef } from "../lib/refs";
+import { classifyRef, groupBranches } from "../lib/refs";
+import type { BranchSummary } from "../lib/types";
+
+const GROUPS_KEY = "fumigit.expanded-branch-groups";
+
+function loadExpandedGroups(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? "[]");
+    return Array.isArray(raw) ? new Set(raw.filter((x) => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 export function Sidebar() {
   const config = useRepo((s) => s.config);
@@ -35,6 +56,22 @@ export function Sidebar() {
     }
     return { branches: b, remotes: r, tags: t };
   }, [commits]);
+
+  // 分支按 "/" 前缀分组；折叠状态持久化到 localStorage
+  const tree = useMemo(() => groupBranches(branches), [branches]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(loadExpandedGroups);
+  const toggleGroup = (prefix: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(prefix)) next.delete(prefix);
+      else next.add(prefix);
+      try {
+        localStorage.setItem(GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        // 持久化失败只影响下次启动的展开状态
+      }
+      return next;
+    });
 
   return (
     <aside className="h-full min-h-0 overflow-y-auto bg-panel px-2 py-3">
@@ -73,26 +110,55 @@ export function Sidebar() {
       })}
 
       <h4 className="section-label pb-1.5 pt-4">分支</h4>
-      {[...branches.entries()].map(([name, id]) => (
-        <button
+      {tree.roots.map(([name, id]) => (
+        <BranchRow
           key={name}
-          onClick={() => selectRefTip(id)}
-          className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
-        >
-          <GitBranch size={11} aria-hidden className="shrink-0 text-faint" />
-          <span className="truncate">
-            {name}
-            {summary?.branch === name &&
-              summary.upstream &&
-              (summary.ahead > 0 || summary.behind > 0) && (
-                <span className="tnum ml-1 text-[10px]">
-                  {summary.ahead > 0 && <span className="text-ok">↑{summary.ahead}</span>}
-                  {summary.behind > 0 && <span className="text-warn">↓{summary.behind}</span>}
-                </span>
-              )}
-          </span>
-        </button>
+          name={name}
+          fullName={name}
+          tip={id}
+          current={summary?.branch === name}
+          summary={summary}
+          onSelect={() => selectRefTip(id)}
+        />
       ))}
+      {tree.groups.map(([prefix, members]) => {
+        const open = expandedGroups.has(prefix);
+        return (
+          <div key={prefix}>
+            <button
+              onClick={() => toggleGroup(prefix)}
+              aria-expanded={open}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+            >
+              {open ? (
+                <ChevronDown size={11} aria-hidden className="shrink-0 text-faint" />
+              ) : (
+                <ChevronRight size={11} aria-hidden className="shrink-0 text-faint" />
+              )}
+              {open ? (
+                <FolderOpen size={11} aria-hidden className="shrink-0 text-faint" />
+              ) : (
+                <Folder size={11} aria-hidden className="shrink-0 text-faint" />
+              )}
+              <span className="truncate">{prefix}</span>
+              <span className="tnum ml-auto text-[10px] text-faint">{members.length}</span>
+            </button>
+            {open &&
+              members.map(([rest, id]) => (
+                <BranchRow
+                  key={prefix + "/" + rest}
+                  name={rest}
+                  fullName={prefix + "/" + rest}
+                  tip={id}
+                  indent
+                  current={summary?.branch === prefix + "/" + rest}
+                  summary={summary}
+                  onSelect={() => selectRefTip(id)}
+                />
+              ))}
+          </div>
+        );
+      })}
 
       {tags.size > 0 && (
         <>
@@ -126,5 +192,45 @@ export function Sidebar() {
         </>
       )}
     </aside>
+  );
+}
+
+function BranchRow({
+  name,
+  fullName,
+  tip,
+  indent,
+  current,
+  summary,
+  onSelect,
+}: {
+  name: string;
+  fullName: string;
+  tip: string;
+  indent?: boolean;
+  current: boolean;
+  summary: BranchSummary | null;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      title={`${fullName} → ${tip.slice(0, 7)}`}
+      className={
+        "flex w-full items-center gap-1.5 rounded-md pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink " +
+        (indent ? "pl-7" : "pl-2")
+      }
+    >
+      <GitBranch size={11} aria-hidden className="shrink-0 text-faint" />
+      <span className="truncate">
+        {name}
+        {current && summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
+          <span className="tnum ml-1 text-[10px]">
+            {summary.ahead > 0 && <span className="text-ok">↑{summary.ahead}</span>}
+            {summary.behind > 0 && <span className="text-warn">↓{summary.behind}</span>}
+          </span>
+        )}
+      </span>
+    </button>
   );
 }
