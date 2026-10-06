@@ -111,10 +111,22 @@ export function GraphList() {
   const selectedId = useRepo((s) => s.selectedId);
   const select = useRepo((s) => s.select);
   const loadMore = useRepo((s) => s.loadMore);
+  const scrollToId = useRepo((s) => s.scrollToId);
+  const scrollNonce = useRepo((s) => s.scrollNonce);
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);
   const graph = useMemo(() => computeGraph(rows), [rows]);
   const graphW = graphWidth(graph.laneCount);
+
+  // 侧栏点击分支/标签/远程 → 将其 tip 提交滚动到列表顶部（行高恒定，直接换算 scrollTop）
+  useEffect(() => {
+    if (!scrollToId || !scrollNonce) return;
+    const idx = rows.findIndex((r) => r.id === scrollToId);
+    const el = scrollRef.current;
+    if (idx >= 0 && el) el.scrollTop = idx * ROW_H;
+    // 只在显式点击引用时触发，不随 rows 变化重滚
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollNonce]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);

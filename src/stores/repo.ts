@@ -40,6 +40,9 @@ interface RepoState {
   workStaged: boolean;
   workDiff: string | null;
   workDiffLoading: boolean;
+  /** 侧栏引用点击跳转：目标提交 id + 触发序号（GraphList 据此滚动置顶） */
+  scrollToId: string | null;
+  scrollNonce: number;
   status: RepoStatus | null;
   summary: BranchSummary | null;
   filter: string;
@@ -61,6 +64,10 @@ interface RepoState {
   /** 直接拉取工作区文件 diff（无 toggle 语义，refresh 复用） */
   reloadWorkDiff: (path: string, staged: boolean) => Promise<void>;
   setMainTab: (tab: "changes" | "history") => void;
+  /** 侧栏点击分支/标签/远程：选中其 tip 提交并让列表滚动置顶 */
+  selectRefTip: (id: string) => void;
+  /** 关闭右栏面板：改动 tab 收起工作文件 diff，历史 tab 取消选中提交 */
+  closeRightPane: () => void;
   stage: (paths: string[]) => Promise<void>;
   unstage: (paths: string[]) => Promise<void>;
   commit: (message: string) => Promise<boolean>;
@@ -91,6 +98,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   workStaged: false,
   workDiff: null,
   workDiffLoading: false,
+  scrollToId: null,
+  scrollNonce: 0,
   status: null,
   summary: null,
   filter: "",
@@ -276,6 +285,16 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   setMainTab: (tab) => set({ mainTab: tab }),
+
+  selectRefTip: (id) => {
+    set({ scrollToId: id, scrollNonce: get().scrollNonce + 1 });
+    void get().select(id);
+  },
+
+  closeRightPane: () => {
+    if (get().mainTab === "changes") void get().selectWorkFile(null);
+    else void get().select(null);
+  },
 
   stage: async (paths) => {
     try {

@@ -10,7 +10,7 @@ export function Sidebar() {
   const commits = useRepo((s) => s.commits);
   const openRepo = useRepo((s) => s.openRepo);
   const removeRecent = useRepo((s) => s.removeRecent);
-  const select = useRepo((s) => s.select);
+  const selectRefTip = useRepo((s) => s.selectRefTip);
   const summary = useRepo((s) => s.summary);
 
   const { branches, remotes, tags } = useMemo(() => {
@@ -76,7 +76,7 @@ export function Sidebar() {
       {[...branches.entries()].map(([name, id]) => (
         <button
           key={name}
-          onClick={() => void select(id)}
+          onClick={() => selectRefTip(id)}
           className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
         >
           <GitBranch size={11} aria-hidden className="shrink-0 text-faint" />
@@ -100,7 +100,7 @@ export function Sidebar() {
           {[...tags.entries()].slice(0, 20).map(([name, id]) => (
             <button
               key={name}
-              onClick={() => void select(id)}
+              onClick={() => selectRefTip(id)}
               className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               <Tag size={11} aria-hidden className="shrink-0 text-warn/80" />
@@ -116,7 +116,7 @@ export function Sidebar() {
           {[...remotes.entries()].slice(0, 20).map(([name, id]) => (
             <button
               key={name}
-              onClick={() => void select(id)}
+              onClick={() => selectRefTip(id)}
               className="flex w-full items-center gap-1.5 rounded-md px-2 py-[5px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               <Cloud size={11} aria-hidden className="shrink-0 text-faint" />

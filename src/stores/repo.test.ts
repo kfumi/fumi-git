@@ -270,3 +270,47 @@ describe("工作区文件 diff", () => {
     expect(useRepo.getState().workDiff).toBe("+fresh\n");
   });
 });
+
+describe("侧栏引用跳转与右栏关闭", () => {
+  it("selectRefTip：记录跳转信号（nonce 递增）并选中提交", async () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      scrollToId: null,
+      scrollNonce: 0,
+    });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { id: "tip1", short_id: "tip1", subject: "s", author_name: "林", author_email: "a@b.c", time: 1, parents: [], refs: [] },
+      files: [],
+      patch: "",
+    });
+
+    useRepo.getState().selectRefTip("tip1");
+    const s = useRepo.getState();
+    expect(s.scrollToId).toBe("tip1");
+    expect(s.scrollNonce).toBe(1);
+    await vi.waitFor(() => expect(useRepo.getState().selectedId).toBe("tip1"));
+
+    useRepo.getState().selectRefTip("tip1"); // 同一引用再点 → nonce 仍递增，重复跳转生效
+    expect(useRepo.getState().scrollNonce).toBe(2);
+  });
+
+  it("closeRightPane：改动 tab 收起工作文件 diff，历史 tab 取消选中提交", async () => {
+    useRepo.setState({ mainTab: "changes", workFile: "a.ts", workStaged: false, workDiff: "+x" });
+    await useRepo.getState().closeRightPane();
+    expect(useRepo.getState().workFile).toBeNull();
+
+    useRepo.setState({
+      mainTab: "history",
+      selectedId: "a",
+      detail: { meta: { id: "a" } } as never,
+      openFiles: ["a.ts"],
+      detailFile: "a.ts",
+    });
+    useRepo.getState().closeRightPane();
+    const s = useRepo.getState();
+    expect(s.selectedId).toBeNull();
+    expect(s.detail).toBeNull();
+    expect(s.openFiles).toEqual([]);
+    expect(s.detailFile).toBeNull();
+  });
+});
