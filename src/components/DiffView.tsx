@@ -57,17 +57,19 @@ export function DiffView({ patch }: { patch: string }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
   return (
     <div className="overflow-x-auto rounded-lg font-mono text-[11.5px] leading-[1.65]">
-      {lines.map((l, i) => (
-        <div key={i} className={`flex whitespace-pre ${KIND_CLASS[l.kind]}`}>
-          <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
-            {l.oldNo ?? ""}
-          </span>
-          <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
-            {l.newNo ?? ""}
-          </span>
-          <span className="pr-3">{l.text}</span>
-        </div>
-      ))}
+      <div className="w-fit min-w-full">
+        {lines.map((l, i) => (
+          <div key={i} className={'flex whitespace-pre ' + KIND_CLASS[l.kind]}>
+            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
+              {l.oldNo ?? ""}
+            </span>
+            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
+              {l.newNo ?? ""}
+            </span>
+            <span className="pr-3">{l.text}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -84,7 +86,7 @@ export function DetailDiff({
     // 从整段 patch 中截取该文件的段落：按各段头部 `+++ b/<path>` 精确匹配，避免前缀重名错配
     const marker = "diff --git";
     const sections = detail.patch.split(marker).filter((s) => s.trim());
-    const hit = sections.find((s) => s.split("\n").some((l) => l === `+++ b/${selectedFile}`));
+    const hit = sections.find((s) => s.split("\n").some((l) => l === '+++ b/' + selectedFile));
     return hit ? marker + hit : null;
   }, [detail.patch, selectedFile]);
 
