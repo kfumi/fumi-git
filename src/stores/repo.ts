@@ -177,6 +177,8 @@ interface RepoState {
   cherryPickFlow: (commitId: string) => Promise<void>;
   /** 还原提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
   revertFlow: (commitId: string) => Promise<void>;
+  /** 把本地分支合并进当前分支（冲突进 operation=merge 流程） */
+  mergeBranchFlow: (branch: string) => Promise<void>;
   /**
    * 丢弃工作区改动（US22–25，支持批量多选）：未暂存组 M/D → 从 index 恢复，
    * 'A'（未跟踪）→ 删除文件；均带不可恢复确认。
@@ -811,7 +813,7 @@ export const useRepo = create<RepoState>((set, get) => ({
             void (async () => {
               const id = get().pushToast("busy", `合并 ${refName}…`);
               try {
-                await ipc.mergeUpstream(refName);
+                await ipc.mergeRef(refName);
                 get().updateToast(id, { kind: "ok", text: "合并完成" });
                 await get().refresh();
               } catch (e) {
@@ -1124,6 +1126,42 @@ export const useRepo = create<RepoState>((set, get) => ({
                 await get().refresh();
                 if (get().status?.operation === "revert") {
                   get().pushToast("err", `还原产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`);
+                  return;
+                }
+                throw e;
+              }
+            });
+          },
+        },
+      ],
+    });
+  },
+
+  mergeBranchFlow: async (branch) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
+    const current = get().summary?.branch ?? get().meta?.branch ?? "";
+    if (!current || branch === current) return;
+    get().openDialog({
+      title: "合并分支",
+      message: `把 ${branch} 合并到当前分支 ${current}。产生冲突时会进入冲突解决流程。`,
+      actions: [
+        {
+          label: `合并 ${branch}`,
+          kind: "primary",
+          run: () => {
+            void runWrite(set, get, `合并 ${branch}…`, `已合并 ${branch} 到 ${current}`, async () => {
+              try {
+                await ipc.mergeRef(branch);
+              } catch (e) {
+                await get().refresh();
+                if (get().status?.operation === "merge") {
+                  get().pushToast(
+                    "err",
+                    `合并产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`,
+                  );
                   return;
                 }
                 throw e;

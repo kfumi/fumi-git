@@ -30,7 +30,7 @@ vi.mock("../lib/ipc", () => {
     resetBranch: vi.fn(async () => {}),
     pushUpstream: vi.fn(async () => ""),
     listRemotes: vi.fn(async () => ["origin"]),
-    mergeUpstream: vi.fn(async () => ""),
+    mergeRef: vi.fn(async () => ""),
     abortOperation: vi.fn(async () => {}),
     stashList: vi.fn(async () => []),
     stashDiff: vi.fn(async () => ""),
@@ -528,13 +528,13 @@ describe("远程同步补全（票 04）", () => {
     expect(d.title).toBe("本地与远程分叉");
     expect(d.message).toContain("origin/feat");
     d.actions[0].run("", false);
-    await vi.waitFor(() => expect(ipc.mergeUpstream).toHaveBeenCalledWith("origin/feat"));
+    await vi.waitFor(() => expect(ipc.mergeRef).toHaveBeenCalledWith("origin/feat"));
   });
 
   it("merge 冲突：刷新后处于合并中 → 错误提示带冲突文件数", async () => {
     withRepo();
     logOk();
-    (ipc.mergeUpstream as ReturnType<typeof vi.fn>).mockRejectedValue({
+    (ipc.mergeRef as ReturnType<typeof vi.fn>).mockRejectedValue({
       kind: "CommandFailed",
       message: "CONFLICT (content): Merge conflict in a.txt",
     });
@@ -645,6 +645,58 @@ describe("stash 管理（票 05）", () => {
     expect(d.actions[0].kind).toBe("danger");
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.stashDrop).toHaveBeenCalledWith(0));
+  });
+});
+
+describe("合并分支（通用入口）", () => {
+  const withRepo = () =>
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      summary: { branch: "main", upstream: null, ahead: 0, behind: 0 },
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+  };
+
+  it("确认后把所选分支合并进当前分支", async () => {
+    withRepo();
+    logOk();
+    await useRepo.getState().mergeBranchFlow("feat");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toBe("合并分支");
+    expect(d.message).toContain("feat");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.mergeRef).toHaveBeenCalledWith("feat"));
+  });
+
+  it("冲突：刷新后 operation=merge → 冲突提示，横幅与冲突清单接管", async () => {
+    withRepo();
+    logOk();
+    (ipc.mergeRef as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "CONFLICT (content): Merge conflict in a.txt",
+    });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [{ path: "a.txt", old_path: null, status: "U" }],
+      operation: "merge",
+      branch: "main",
+    });
+    await useRepo.getState().mergeBranchFlow("feat");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => {
+      const toasts = useRepo.getState().toasts;
+      expect(toasts[toasts.length - 1]?.text).toContain("合并产生冲突");
+    });
   });
 });
 

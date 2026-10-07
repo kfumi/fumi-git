@@ -41,6 +41,7 @@ export function Sidebar() {
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
   const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
   const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
+  const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
   const stashes = useRepo((s) => s.stashes);
   const stashView = useRepo((s) => s.stashView);
   const selectStash = useRepo((s) => s.selectStash);
@@ -70,6 +71,12 @@ export function Sidebar() {
         hint: current ? "当前分支" : undefined,
         disabled: current,
         onSelect: () => void checkout(branch),
+      },
+      {
+        label: "合并到当前分支…",
+        hint: current ? "当前分支" : undefined,
+        disabled: current,
+        onSelect: () => void mergeBranchFlow(branch),
       },
       { label: "新建分支…", onSelect: () => createBranchFlow() },
       { label: "重命名…", onSelect: () => renameBranchFlow(branch) },

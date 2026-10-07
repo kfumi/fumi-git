@@ -81,7 +81,7 @@ export const ipc = {
   pushUpstream: (remote: string, branch: string) =>
     cmd<string>("push_upstream", { remote, branch }),
   listRemotes: () => cmd<string[]>("list_remotes"),
-  mergeUpstream: (refName: string) => cmd<string>("merge_upstream", { refName }),
+  mergeRef: (refName: string) => cmd<string>("merge_upstream", { refName }),
   abortOperation: (op: GitOperation) => cmd<void>("abort_operation", { op }),
   conflictVersions: (path: string) => cmd<ConflictVersions>("conflict_versions", { path }),
   /** 工作区文件原文（冲突解决视图展示结果用） */
