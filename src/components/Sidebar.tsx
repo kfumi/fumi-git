@@ -58,35 +58,48 @@ export function Sidebar() {
   );
 
   const stashMenuItems = (entry: StashEntry): MenuItem[] => [
-    { label: "恢复（弹出）", hint: "成功后移除", onSelect: () => void stashRestore(entry.index, true) },
-    { label: "恢复（保留副本）", onSelect: () => void stashRestore(entry.index, false) },
+    { label: "恢复并从列表移除", hint: "stash pop", onSelect: () => void stashRestore(entry.index, true) },
+    { label: "恢复并保留副本", hint: "stash apply", onSelect: () => void stashRestore(entry.index, false) },
+    { kind: "separator" },
     { label: "删除…", danger: true, onSelect: () => stashDropFlow(entry.index) },
   ];
 
+// 三组动作：把当前分支指到该分支 / 该分支自身的增删改名 / 破坏性
   const branchMenuItems = (branch: string): MenuItem[] => {
     const current = summary?.branch === branch;
-    return [
+    const moveItems: MenuItem[] = [
       {
-        label: "迁出",
-        hint: current ? "当前分支" : undefined,
+        label: "迁出到该分支",
         disabled: current,
+        hint: current ? "当前分支" : undefined,
         onSelect: () => void checkout(branch),
       },
       {
         label: "合并到当前分支…",
-        hint: current ? "当前分支" : undefined,
         disabled: current,
+        hint: current ? "当前分支" : undefined,
         onSelect: () => void mergeBranchFlow(branch),
       },
-      { label: "新建分支…", onSelect: () => createBranchFlow() },
+    ];
+    const manageItems: MenuItem[] = [
+      { label: "新建分支…", hint: "基于当前 HEAD", onSelect: () => createBranchFlow() },
       { label: "重命名…", onSelect: () => renameBranchFlow(branch) },
+    ];
+    const destructiveItems: MenuItem[] = [
       {
-        label: "删除…",
-        hint: current ? "当前分支" : undefined,
+        label: "删除该分支…",
         disabled: current,
+        hint: current ? "当前分支" : undefined,
         danger: true,
-        onSelect: () => void deleteBranchFlow(branch),
+        onSelect: () => deleteBranchFlow(branch),
       },
+    ];
+    return [
+      ...moveItems,
+      { kind: "separator" },
+      ...manageItems,
+      { kind: "separator" },
+      ...destructiveItems,
     ];
   };
 

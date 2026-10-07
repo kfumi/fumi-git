@@ -173,7 +173,7 @@ interface RepoState {
   openConflictInEditor: (path: string) => Promise<void>;
   /** 冲突块逐块取舍：把第 index 块替换为所选一侧内容并写回工作区（不自动 add） */
   applyConflictBlock: (path: string, blockIndex: number, side: "ours" | "theirs") => Promise<void>;
-  /** 择取提交到当前分支（脏树拒绝；空提交给跳过/放弃选择） */
+  /** 摘取提交到当前分支（脏树拒绝；空提交给跳过/放弃选择） */
   cherryPickFlow: (commitId: string) => Promise<void>;
   /** 还原提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
   revertFlow: (commitId: string) => Promise<void>;
@@ -1037,15 +1037,15 @@ export const useRepo = create<RepoState>((set, get) => ({
     if (!(await ensureCleanTree(get))) return;
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     get().openDialog({
-      title: "择取此提交（cherry-pick）",
-      message: `把 ${commitId.slice(0, 7)} 应用到当前分支 ${branch}。`,
+      title: "摘取此提交",
+      message: `把 ${commitId.slice(0, 7)} 的改动摘取到当前分支 ${branch}（git cherry-pick）。`,
       actions: [
         {
-          label: "择取",
+          label: "摘取",
           kind: "primary",
           run: () => {
             void (async () => {
-              await runWrite(set, get, "择取提交…", "已择取该提交", async () => {
+              await runWrite(set, get, "摘取提交…", "已摘取该提交", async () => {
                 await ipc.cherryPick(commitId);
               });
               // runWrite 的失败分支不刷新——先拉取最新状态再做语义分类
@@ -1112,8 +1112,8 @@ export const useRepo = create<RepoState>((set, get) => ({
     if (!(await ensureCleanTree(get))) return;
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     get().openDialog({
-      title: "还原此提交（revert）",
-      message: `生成一个反向提交撤销 ${commitId.slice(0, 7)} 的改动，落在分支 ${branch} 上（不改写历史）。`,
+      title: "还原此提交",
+      message: `生成一个反向提交撤销 ${commitId.slice(0, 7)} 的改动，落在分支 ${branch} 上（git revert，不改写历史）。`,
       actions: [
         {
           label: "还原",

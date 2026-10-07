@@ -819,12 +819,12 @@ pub fn revert_commit(repo: &GitRepo, hash: &str) -> GitResult<String> {
     Ok("已还原该提交".into())
 }
 
-/// 择取单提交到当前分支。失败时的语义由前端按仓库状态分类：
+/// 摘取单提交到当前分支。失败时的语义由前端按仓库状态分类：
 /// operation=cherry-pick 且无未合入文件 = 空提交；有未合入文件 = 冲突。
 pub fn cherry_pick(repo: &GitRepo, hash: &str) -> GitResult<String> {
     let target = validate_hash(hash)?;
     repo.run(&["-c", "core.editor=true", "cherry-pick", &target])?;
-    Ok("已择取该提交".into())
+    Ok("已摘取该提交".into())
 }
 
 /// 跳过当前卡住的 cherry-pick（空提交场景）。

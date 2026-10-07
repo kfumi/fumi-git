@@ -2,13 +2,25 @@
 // 点击外部 / Escape / 滚动 / 窗口失焦自动关闭；出现位置避让视口边缘。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-export interface MenuItem {
+export type MenuItem = MenuAction | MenuSeparator;
+
+export interface MenuAction {
+  kind?: "item";
   label: string;
   /** 右侧灰字提示（如快捷键 / 说明） */
   hint?: string;
   disabled?: boolean;
   danger?: boolean;
   onSelect?: () => void;
+}
+
+/** 分组分隔线：把「移动引用 / 派生改动 / 破坏性」几类动作隔开 */
+export interface MenuSeparator {
+  kind: "separator";
+}
+
+function isSeparator(item: MenuItem): item is MenuSeparator {
+  return item.kind === "separator";
 }
 
 const MARGIN = 6;
@@ -72,7 +84,13 @@ export function ContextMenu({
       className="fixed z-50 min-w-[150px] rounded-lg border border-brd bg-panel py-1 shadow-card"
     >
       {items.map((item, i) =>
-        item.disabled ? (
+        isSeparator(item) ? (
+          <div
+            key={i}
+            role="separator"
+            className="mx-2.5 my-1 h-px bg-brd-soft"
+          />
+        ) : item.disabled ? (
           <button
             key={i}
             disabled

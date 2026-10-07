@@ -127,12 +127,14 @@ export function GraphList() {
     null,
   );
 
+  // 三组动作：把本地分支指到该提交 / 基于该提交派生改动 / 破坏性改写指针
   const commitMenuItems = (commit: CommitEntry): MenuItem[] => {
     const branches = commit.refs.filter((r) => classifyRef(r) === "branch");
-    const items: MenuItem[] = [];
+    const short = commit.short_id.slice(0, 7);
+    const moveItems: MenuItem[] = [];
     for (const b of branches) {
       const isCurrent = b === summary?.branch;
-      items.push({
+      moveItems.push({
         label: `迁出到 ${b}`,
         disabled: isCurrent,
         hint: isCurrent ? "当前分支" : undefined,
@@ -140,22 +142,29 @@ export function GraphList() {
       });
       // 提交挂着别的分支尖 → 可直接把它合并进当前分支
       if (!isCurrent) {
-        items.push({
+        moveItems.push({
           label: `合并 ${b} 到当前分支…`,
           onSelect: () => void mergeBranchFlow(b),
         });
       }
     }
-    items.push(
-      { label: "在此新建分支…", onSelect: () => createBranchFlow(commit.id) },
+
+    const deriveItems: MenuItem[] = [
+      { label: "新建分支…", hint: "基于此提交", onSelect: () => createBranchFlow(commit.id) },
+      { label: "摘取此提交…", hint: "cherry-pick", onSelect: () => void cherryPickFlow(commit.id) },
+      { label: "还原此提交…", hint: "revert", onSelect: () => void revertFlow(commit.id) },
+    ];
+
+    const destructiveItems: MenuItem[] = [
       {
-        label: "重置当前分支到此…",
+        label: `重置当前分支到 ${short}…`,
+        danger: true,
         onSelect: () => resetBranchTo(commit.id),
       },
-      { label: "择取此提交（cherry-pick）…", onSelect: () => void cherryPickFlow(commit.id) },
-      { label: "还原此提交（revert）…", onSelect: () => void revertFlow(commit.id) },
-    );
-    return items;
+    ];
+
+    const groups = [moveItems, deriveItems, destructiveItems].filter((g) => g.length > 0);
+    return groups.flatMap((g, i) => (i === 0 ? g : [{ kind: "separator" } as const, ...g]));
   };
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);

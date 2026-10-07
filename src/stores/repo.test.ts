@@ -977,7 +977,7 @@ describe("revert 与 cherry-pick（二阶段票 04/05）", () => {
       branch: "main",
     });
     await useRepo.getState().cherryPickFlow("normal1");
-    useRepo.getState().dialog!.actions[0].run("", false); // 择取
+    useRepo.getState().dialog!.actions[0].run("", false); // 摘取
     await new Promise((r) => setTimeout(r, 50));
     await vi.waitFor(() => expect(useRepo.getState().dialog?.title).toBe("空提交"));
     const empty = useRepo.getState().dialog!;
