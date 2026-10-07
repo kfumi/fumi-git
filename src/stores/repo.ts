@@ -429,11 +429,11 @@ export const useRepo = create<RepoState>((set, get) => ({
     };
     get().openDialog({
       title: "重置当前分支到此提交",
-      message: `分支 ${branch} 将指向 ${short}，其后的提交从分支历史移除。三种模式决定这些改动放哪里：`,
+      message: `分支 ${branch} 将指向 ${short}，其后的提交从分支历史移除。软重置：改动保留在暂存区；混合重置：改动保留在工作区；硬重置：改动全部丢弃（脏工作树会先拦截确认）。`,
       actions: [
-        { label: "软重置（改动保留在暂存区）", run: () => doReset("soft") },
-        { label: "混合重置（改动保留在工作区）", run: () => doReset("mixed") },
-        { label: "硬重置（全部丢弃）", kind: "danger", run: () => void confirmHard() },
+        { label: "软重置", run: () => doReset("soft") },
+        { label: "混合重置", run: () => doReset("mixed") },
+        { label: "硬重置", kind: "danger", run: () => void confirmHard() },
       ],
     });
   },

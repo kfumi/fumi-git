@@ -110,25 +110,27 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
         {error && (
           <p className="mt-2 rounded-md bg-bad-soft px-2 py-1.5 text-xs text-bad">{error}</p>
         )}
-        <div className="mt-3.5 flex items-center justify-end gap-2">
+        <div className="mt-3.5 flex flex-wrap items-center justify-end gap-2">
           {desc.actions.map((a, i) => (
             <button
               key={i}
               disabled={busy}
               onClick={() => void run(a)}
               className={
+                "whitespace-nowrap " +
                 (a.kind === "primary"
                   ? "btn-primary"
                   : a.kind === "danger"
                     ? "btn-danger"
-                    : "btn-ghost") + (busy ? " pointer-events-none opacity-60" : "")
+                    : "btn-ghost") +
+                (busy ? " pointer-events-none opacity-60" : "")
               }
             >
               {a.label}
             </button>
           ))}
           {desc.cancelLabel !== null && (
-            <button className="btn-ghost" disabled={busy} onClick={onClose}>
+            <button className="btn-ghost whitespace-nowrap" disabled={busy} onClick={onClose}>
               {desc.cancelLabel ?? "取消"}
             </button>
           )}
