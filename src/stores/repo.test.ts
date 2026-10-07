@@ -656,35 +656,47 @@ describe("丢弃改动（spec US22–25）", () => {
     });
   };
 
-  it("未暂存丢弃与未跟踪删除走对应 IPC", async () => {
+  const fe = (path: string, status: "M" | "A" | "D" | "R", old_path: string | null = null) => ({
+    path,
+    old_path,
+    status,
+  });
+
+  it("丢弃（批量）：未暂存 M/D → restore，未跟踪 → 删除；单文件不带清单", async () => {
     withRepo();
     logOk();
-    useRepo.getState().discardUnstagedFlow("a.ts");
+    useRepo.getState().discardWorktreeFlow([fe("a.ts", "M")]);
     let d = useRepo.getState().dialog!;
     expect(d.actions[0].kind).toBe("danger");
+    expect(d.files).toBeUndefined(); // 单文件不展示文件清单
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.discardWorktree).toHaveBeenCalledWith(["a.ts"]));
     await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
 
-    useRepo.getState().discardUntrackedFlow("b.ts");
+    // 混合批量：M 走 restore、未跟踪走删除，一次确认
+    useRepo.getState().discardWorktreeFlow([fe("u.ts", "M"), fe("n.ts", "A"), fe("v.ts", "D")]);
     d = useRepo.getState().dialog!;
+    expect(d.files).toEqual(["u.ts", "n.ts", "v.ts"]);
     d.actions[0].run("", false);
-    await vi.waitFor(() => expect(ipc.deleteUntracked).toHaveBeenCalledWith(["b.ts"]));
+    await vi.waitFor(() => expect(ipc.deleteUntracked).toHaveBeenCalledWith(["n.ts"]));
+    expect(ipc.discardWorktree).toHaveBeenLastCalledWith(["u.ts", "v.ts"]);
   });
 
-  it("已暂存丢弃：M 附带 old_path；新增文件走 rm", async () => {
+  it("丢弃（批量）：已暂存 M/R 附 old_path；新增走 rm", async () => {
     withRepo();
     logOk();
-    useRepo.getState().discardStagedFlow("renamed.txt", "old.txt");
-    useRepo.getState().dialog!.actions[0].run("", false);
+    useRepo.getState().discardStagedFlow([
+      fe("renamed.txt", "R", "old.txt"),
+      fe("s.ts", "M"),
+      fe("new.ts", "A"),
+    ]);
+    const d = useRepo.getState().dialog!;
+    expect(d.files).toEqual(["old.txt → renamed.txt", "s.ts", "new.ts"]);
+    d.actions[0].run("", false);
     await vi.waitFor(() =>
-      expect(ipc.discardStaged).toHaveBeenCalledWith(["old.txt", "renamed.txt"]),
+      expect(ipc.discardStaged).toHaveBeenCalledWith(["old.txt", "renamed.txt", "s.ts"]),
     );
-    await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
-
-    useRepo.getState().discardStagedNewFlow("new.ts");
-    useRepo.getState().dialog!.actions[0].run("", false);
-    await vi.waitFor(() => expect(ipc.discardStagedNew).toHaveBeenCalledWith(["new.ts"]));
+    expect(ipc.discardStagedNew).toHaveBeenCalledWith(["new.ts"]);
   });
 
   it("全部丢弃：列出受影响文件；确认后 discardAll", async () => {

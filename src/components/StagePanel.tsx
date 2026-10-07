@@ -137,13 +137,17 @@ export function ChangesPanel() {
   const workFile = useRepo((s) => s.workFile);
   const workStaged = useRepo((s) => s.workStaged);
   const abortMerge = useRepo((s) => s.abortMerge);
-  const discardUnstagedFlow = useRepo((s) => s.discardUnstagedFlow);
-  const discardUntrackedFlow = useRepo((s) => s.discardUntrackedFlow);
+  const discardWorktreeFlow = useRepo((s) => s.discardWorktreeFlow);
   const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
-  const discardStagedNewFlow = useRepo((s) => s.discardStagedNewFlow);
   const discardAllFlow = useRepo((s) => s.discardAllFlow);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 多选（VS Code 源代码管理风格）：选择只在一个分组内；u:/s: 前缀区分同名文件
+  const [selected, setSelected] = useState<{
+    group: "staged" | "unstaged";
+    paths: Set<string>;
+  } | null>(null);
+  const [anchor, setAnchor] = useState<string | null>(null);
   // 工作区文件行右键菜单：{ 位置, 文件, 所在分组 }
   const [rowMenu, setRowMenu] = useState<{
     x: number;
@@ -152,28 +156,117 @@ export function ChangesPanel() {
     group: "staged" | "unstaged";
   } | null>(null);
 
+  const rowKey = (group: "staged" | "unstaged", path: string) =>
+    (group === "staged" ? "s:" : "u:") + path;
+
+  const handleRowClick = (
+    e: React.MouseEvent,
+    file: FileEntry,
+    group: "staged" | "unstaged",
+    list: FileEntry[],
+  ) => {
+    const key = rowKey(group, file.path);
+    // Ctrl/Cmd：toggle 所选（不开 diff）
+    if (e.ctrlKey || e.metaKey) {
+      setSelected((prev) => {
+        const base = prev && prev.group === group ? prev : { group, paths: new Set<string>() };
+        const paths = new Set(base.paths);
+        if (paths.has(key)) paths.delete(key);
+        else paths.add(key);
+        return paths.size ? { group, paths } : null;
+      });
+      setAnchor(key);
+      return;
+    }
+    // Shift：组内范围选择（自上次锚点）
+    if (e.shiftKey && anchor?.startsWith(group === "staged" ? "s:" : "u:")) {
+      const idxA = list.findIndex((f) => rowKey(group, f.path) === anchor);
+      const idxB = list.findIndex((f) => rowKey(group, f.path) === key);
+      if (idxA >= 0 && idxB >= 0) {
+        const [lo, hi] = idxA < idxB ? [idxA, idxB] : [idxB, idxA];
+        const paths = new Set(list.slice(lo, hi + 1).map((f) => rowKey(group, f.path)));
+        setSelected({ group, paths });
+        return;
+      }
+    }
+    // 普通点击：清空选择，保留「点击查看 diff」行为
+    setSelected(null);
+    setAnchor(key);
+    void selectWorkFile(file.path, group === "staged");
+  };
+
+  // 状态刷新后修剪选择：已不在对应列表的文件移出所选
+  useEffect(() => {
+    if (!selected) return;
+    const list = selected.group === "staged" ? status?.staged : status?.unstaged;
+    const alive = new Set((list ?? []).map((f) => rowKey(selected.group, f.path)));
+    const next = new Set([...selected.paths].filter((p) => alive.has(p)));
+    if (next.size === 0) setSelected(null);
+    else if (next.size !== selected.paths.size) setSelected({ group: selected.group, paths: next });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   const rowMenuItems = (file: FileEntry, group: "staged" | "unstaged"): MenuItem[] => {
+    const key = rowKey(group, file.path);
+    // 右键的行在多选里 → 批量菜单（VS Code 行为：未选中的行则单选它）
+    const multi =
+      selected && selected.group === group && selected.paths.has(key) && selected.paths.size > 1;
+    if (multi && status) {
+      const files = (group === "staged" ? status.staged : status.unstaged).filter((f) =>
+        selected.paths.has(rowKey(group, f.path)),
+      );
+      const n = files.length;
+      const items: MenuItem[] = [];
+      if (group === "staged") {
+        items.push({
+          label: `取消暂存所选（${n}）`,
+          onSelect: () => {
+            void unstage(files.map((f) => f.path));
+            setSelected(null);
+          },
+        });
+        items.push({
+          label: `丢弃所选（${n}）…`,
+          danger: true,
+          onSelect: () => {
+            discardStagedFlow(files);
+            setSelected(null);
+          },
+        });
+      } else {
+        items.push({
+          label: `暂存所选（${n}）`,
+          onSelect: () => {
+            void stage(files.map((f) => f.path));
+            setSelected(null);
+          },
+        });
+        items.push({
+          label: `丢弃所选（${n}）…`,
+          danger: true,
+          onSelect: () => {
+            discardWorktreeFlow(files);
+            setSelected(null);
+          },
+        });
+      }
+      return items;
+    }
     if (group === "staged") {
       return file.status === "A"
-        ? [
-            {
-              label: "丢弃新增文件…",
-              danger: true,
-              onSelect: () => discardStagedNewFlow(file.path),
-            },
-          ]
+        ? [{ label: "丢弃新增文件…", danger: true, onSelect: () => discardStagedFlow([file]) }]
         : [
             {
               label: "丢弃改动（含暂存状态）…",
               danger: true,
-              onSelect: () => discardStagedFlow(file.path, file.old_path ?? undefined),
+              onSelect: () => discardStagedFlow([file]),
             },
           ];
     }
     // 未暂存组：状态 'A' = 未跟踪文件
     return file.status === "A"
-      ? [{ label: "删除文件…", danger: true, onSelect: () => discardUntrackedFlow(file.path) }]
-      : [{ label: "丢弃改动…", danger: true, onSelect: () => discardUnstagedFlow(file.path) }];
+      ? [{ label: "删除文件…", danger: true, onSelect: () => discardWorktreeFlow([file]) }]
+      : [{ label: "丢弃改动…", danger: true, onSelect: () => discardWorktreeFlow([file]) }];
   };
 
   useEffect(() => {
@@ -264,11 +357,17 @@ export function ChangesPanel() {
                   key={"s" + f.path}
                   file={f}
                   active={workFile === f.path && workStaged}
-                  onSelect={() => void selectWorkFile(f.path, true)}
+                  selected={!!selected && selected.group === "staged" && selected.paths.has(rowKey("staged", f.path))}
+                  onSelect={(e) => handleRowClick(e, f, "staged", status.staged)}
                   actionLabel="取消暂存"
                   onAction={() => void unstage([f.path])}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    const key = rowKey("staged", f.path);
+                    if (!selected || selected.group !== "staged" || !selected.paths.has(key)) {
+                      setSelected({ group: "staged", paths: new Set([key]) });
+                    }
+                    setAnchor(key);
                     setRowMenu({ x: e.clientX, y: e.clientY, file: f, group: "staged" });
                   }}
                 />
@@ -289,11 +388,21 @@ export function ChangesPanel() {
                   key={"u" + f.path}
                   file={f}
                   active={workFile === f.path && !workStaged}
-                  onSelect={() => void selectWorkFile(f.path, false)}
+                  selected={
+                    !!selected &&
+                    selected.group === "unstaged" &&
+                    selected.paths.has(rowKey("unstaged", f.path))
+                  }
+                  onSelect={(e) => handleRowClick(e, f, "unstaged", status.unstaged)}
                   actionLabel="暂存"
                   onAction={() => void stage([f.path])}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    const key = rowKey("unstaged", f.path);
+                    if (!selected || selected.group !== "unstaged" || !selected.paths.has(key)) {
+                      setSelected({ group: "unstaged", paths: new Set([key]) });
+                    }
+                    setAnchor(key);
                     setRowMenu({ x: e.clientX, y: e.clientY, file: f, group: "unstaged" });
                   }}
                 />
@@ -351,6 +460,7 @@ export function ChangesPanel() {
 function WorkRow({
   file,
   active,
+  selected,
   onSelect,
   actionLabel,
   onAction,
@@ -358,7 +468,9 @@ function WorkRow({
 }: {
   file: FileEntry;
   active: boolean;
-  onSelect: () => void;
+  /** 多选选中（bg-sel）；与 active（diff 查看中）可同时成立 */
+  selected?: boolean;
+  onSelect: (e: React.MouseEvent) => void;
   actionLabel: string;
   onAction: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -369,7 +481,7 @@ function WorkRow({
       onContextMenu={onContextMenu}
       className={
         "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors " +
-        (active ? "bg-sel" : "hover:bg-hover")
+        (selected || active ? "bg-sel" : "hover:bg-hover")
       }
     >
       <StatusBadge s={file.status} />
@@ -379,12 +491,13 @@ function WorkRow({
       >
         {file.path}
       </span>
+      {/* 悬停出现但始终占位（invisible→visible），避免出现/消失挤压路径文本造成行跳动 */}
       <button
         onClick={(e) => {
           e.stopPropagation();
           onAction();
         }}
-        className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors hover:text-accent-ink group-hover:block"
+        className="invisible ml-auto shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors group-hover:visible hover:text-accent-ink"
       >
         {actionLabel}
       </button>

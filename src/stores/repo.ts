@@ -7,6 +7,7 @@ import type {
   BranchSummary,
   CommitDetail,
   CommitEntry,
+  FileEntry,
   RepoMeta,
   RepoStatus,
   StashEntry,
@@ -143,11 +144,16 @@ interface RepoState {
   stashRestore: (index: number, pop: boolean) => Promise<void>;
   /** 删除 stash 条目（带确认） */
   stashDropFlow: (index: number) => void;
-  /** 丢弃工作区改动（US22–25：右键单文件 / 全部丢弃，均带不可恢复确认） */
-  discardUnstagedFlow: (path: string) => void;
-  discardUntrackedFlow: (path: string) => void;
-  discardStagedFlow: (path: string, oldPath?: string) => void;
-  discardStagedNewFlow: (path: string) => void;
+  /**
+   * 丢弃工作区改动（US22–25，支持批量多选）：未暂存组 M/D → 从 index 恢复，
+   * 'A'（未跟踪）→ 删除文件；均带不可恢复确认。
+   */
+  discardWorktreeFlow: (files: FileEntry[]) => void;
+  /**
+   * 丢弃已暂存改动（支持批量多选）：'A' → 从 index 移除并删文件，
+   * M/D/R → index+工作区一起退回 HEAD（重命名连带 old_path）；带不可恢复确认。
+   */
+  discardStagedFlow: (files: FileEntry[]) => void;
   discardAllFlow: () => void;
 }
 
@@ -854,19 +860,28 @@ export const useRepo = create<RepoState>((set, get) => ({
     });
   },
 
-  // ── 丢弃工作区改动（spec US22–25；均带不可恢复确认，US31 由 runWrite 守卫） ──
+  // ── 丢弃工作区改动（spec US22–25；批量多选；均带不可恢复确认，US31 由 runWrite 守卫） ──
 
-  discardUnstagedFlow: (path) => {
+  discardWorktreeFlow: (files) => {
+    if (files.length === 0) return;
+    const names = files.map((f) => f.path);
+    const batch = files.length > 1;
+    const restore = files.filter((f) => f.status !== "A").map((f) => f.path);
+    const untracked = files.filter((f) => f.status === "A").map((f) => f.path);
     get().openDialog({
-      title: `丢弃 ${path} 的改动？`,
-      message: "该文件将从暂存区内容恢复，未暂存的改动不可恢复。",
+      title: batch ? `丢弃 ${files.length} 个文件的改动？` : `丢弃 ${names[0]} 的改动？`,
+      message: batch
+        ? "所选文件将从暂存区内容恢复（未跟踪文件将被删除），均不可恢复。"
+        : "该文件将从暂存区内容恢复，未暂存的改动不可恢复。",
+      files: batch ? names : undefined,
       actions: [
         {
-          label: "丢弃改动",
+          label: batch ? `丢弃所选（${files.length} 个文件）` : "丢弃改动",
           kind: "danger",
           run: () => {
-            void runWrite(set, get, `丢弃 ${path}…`, `已丢弃 ${path} 的改动`, async () => {
-              await ipc.discardWorktree([path]);
+            void runWrite(set, get, "丢弃改动…", "已丢弃所选改动", async () => {
+              if (restore.length) await ipc.discardWorktree(restore);
+              if (untracked.length) await ipc.deleteUntracked(untracked);
             });
           },
         },
@@ -874,54 +889,28 @@ export const useRepo = create<RepoState>((set, get) => ({
     });
   },
 
-  discardUntrackedFlow: (path) => {
+  discardStagedFlow: (files) => {
+    if (files.length === 0) return;
+    const names = files.map((f) => (f.old_path ? `${f.old_path} → ${f.path}` : f.path));
+    const batch = files.length > 1;
+    const restore = files
+      .filter((f) => f.status !== "A")
+      .flatMap((f) => (f.old_path ? [f.old_path, f.path] : [f.path]));
+    const added = files.filter((f) => f.status === "A").map((f) => f.path);
     get().openDialog({
-      title: `删除 ${path}？`,
-      message: "这是未跟踪的新文件，删除后不可恢复。",
+      title: batch ? `丢弃 ${files.length} 个文件的改动？` : `丢弃 ${names[0]} 的改动？`,
+      message: batch
+        ? "所选文件的已暂存改动会连同暂存状态一起消失，恢复到 HEAD（新增文件将从磁盘删除），均不可恢复。"
+        : "已暂存的改动会连同暂存状态一起消失，文件恢复到 HEAD，不可恢复。",
+      files: batch ? names : undefined,
       actions: [
         {
-          label: "删除文件",
+          label: batch ? `丢弃所选（${files.length} 个文件）` : "丢弃（含暂存状态）",
           kind: "danger",
           run: () => {
-            void runWrite(set, get, `删除 ${path}…`, `已删除 ${path}`, async () => {
-              await ipc.deleteUntracked([path]);
-            });
-          },
-        },
-      ],
-    });
-  },
-
-  discardStagedFlow: (path, oldPath) => {
-    const label = oldPath ? `${oldPath} → ${path}` : path;
-    get().openDialog({
-      title: `丢弃 ${label} 的改动？`,
-      message: "已暂存的改动会连同暂存状态一起消失，文件恢复到 HEAD，不可恢复。",
-      actions: [
-        {
-          label: "丢弃（含暂存状态）",
-          kind: "danger",
-          run: () => {
-            void runWrite(set, get, `丢弃 ${label}…`, `已丢弃 ${label} 的改动`, async () => {
-              await ipc.discardStaged(oldPath ? [oldPath, path] : [path]);
-            });
-          },
-        },
-      ],
-    });
-  },
-
-  discardStagedNewFlow: (path) => {
-    get().openDialog({
-      title: `丢弃 ${path}？`,
-      message: "新暂存的文件将从暂存区移除并从磁盘删除，不可恢复。",
-      actions: [
-        {
-          label: "丢弃新增文件",
-          kind: "danger",
-          run: () => {
-            void runWrite(set, get, `丢弃 ${path}…`, `已丢弃 ${path}`, async () => {
-              await ipc.discardStagedNew([path]);
+            void runWrite(set, get, "丢弃改动…", "已丢弃所选改动", async () => {
+              if (restore.length) await ipc.discardStaged(restore);
+              if (added.length) await ipc.discardStagedNew(added);
             });
           },
         },
