@@ -120,6 +120,7 @@ export function GraphList() {
   const resetBranchTo = useRepo((s) => s.resetBranchTo);
   const cherryPickFlow = useRepo((s) => s.cherryPickFlow);
   const revertFlow = useRepo((s) => s.revertFlow);
+  const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
   const summary = useRepo((s) => s.summary);
   // 提交右键菜单：挂本地分支才出现迁出项（ui-spec 决策：不做 detached HEAD）
   const [commitMenu, setCommitMenu] = useState<{ x: number; y: number; commit: CommitEntry } | null>(
@@ -128,12 +129,23 @@ export function GraphList() {
 
   const commitMenuItems = (commit: CommitEntry): MenuItem[] => {
     const branches = commit.refs.filter((r) => classifyRef(r) === "branch");
-    const items: MenuItem[] = branches.map((b) => ({
-      label: `迁出到 ${b}`,
-      disabled: b === summary?.branch,
-      hint: b === summary?.branch ? "当前分支" : undefined,
-      onSelect: () => void checkout(b),
-    }));
+    const items: MenuItem[] = [];
+    for (const b of branches) {
+      const isCurrent = b === summary?.branch;
+      items.push({
+        label: `迁出到 ${b}`,
+        disabled: isCurrent,
+        hint: isCurrent ? "当前分支" : undefined,
+        onSelect: () => void checkout(b),
+      });
+      // 提交挂着别的分支尖 → 可直接把它合并进当前分支
+      if (!isCurrent) {
+        items.push({
+          label: `合并 ${b} 到当前分支…`,
+          onSelect: () => void mergeBranchFlow(b),
+        });
+      }
+    }
     items.push(
       { label: "在此新建分支…", onSelect: () => createBranchFlow(commit.id) },
       {
