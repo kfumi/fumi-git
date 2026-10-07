@@ -741,6 +741,63 @@ pub fn conflict_versions(repo: &GitRepo, path: &str) -> GitResult<ConflictVersio
     })
 }
 
+/// 读取工作区文件原文（冲突解决视图展示结果用）。拒绝仓库外路径。
+pub fn read_worktree_file(repo: &GitRepo, path: &str) -> GitResult<String> {
+    let path = validate_repo_path(path)?;
+    let full = repo.root.join(&path);
+    if !full.is_file() {
+        return Err(GitError::CommandFailed(format!("文件不存在：{path}")));
+    }
+    std::fs::read_to_string(&full).map_err(|e| GitError::Io(e.to_string()))
+}
+
+/// 把内容写回工作区文件（冲突块取舍的拼装结果）。拒绝仓库外路径；不 touch index。
+pub fn write_worktree_file(repo: &GitRepo, path: &str, content: &str) -> GitResult<()> {
+    let path = validate_repo_path(path)?;
+    std::fs::write(repo.root.join(&path), content).map_err(|e| GitError::Io(e.to_string()))
+}
+
+/// 路径守卫：拒绝空路径、目录穿越、绝对路径。
+fn validate_repo_path(path: &str) -> GitResult<String> {
+    let path = path.trim();
+    if path.is_empty() || path.contains("..") || path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
+        return Err(GitError::CommandFailed("非法文件路径".into()));
+    }
+    Ok(path.to_string())
+}
+
+/// 选边解决：整个文件采用我方/对方版本（checkout --ours/--theirs 后 add 标记已解决）。
+pub fn resolve_take(repo: &GitRepo, path: &str, ours: bool) -> GitResult<()> {
+    let path = validate_repo_path(path)?;
+    let side = if ours { "--ours" } else { "--theirs" };
+    repo.run(&["checkout", side, "--", &path])?;
+    repo.run(&["add", "--", &path])?;
+    Ok(())
+}
+
+/// 完成进行中的操作（--continue）。冲突未清空时拒绝；
+/// 以内置空 editor 运行，沿用 git 生成的默认提交信息，不弹交互编辑器。
+pub fn continue_operation(repo: &GitRepo, op: Operation) -> GitResult<String> {
+    let current = read_operation(repo);
+    if current != Some(op) {
+        return Err(GitError::CommandFailed("当前没有进行中的对应操作".into()));
+    }
+    let st = get_status(repo)?;
+    if !st.unmerged.is_empty() {
+        return Err(GitError::CommandFailed(format!(
+            "还有 {} 个冲突文件未解决",
+            st.unmerged.len()
+        )));
+    }
+    let cmd = match op {
+        Operation::Merge => "merge",
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
+    };
+    repo.run(&["-c", "core.editor=true", cmd, "--continue"])?;
+    Ok("已完成".into())
+}
+
 // ── stash 管理 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1811,6 +1868,73 @@ mod tests {
         assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "base\n");
         assert!(!t.path().join("e.txt").exists());
         assert!(!t.path().join("sub").exists());
+    }
+
+    #[test]
+    fn resolve_take_continue_and_read_worktree_file() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t.path(), "a.txt", "feat\n", "feat side");
+        commit_file(t.path(), "f.txt", "feat work\n", "feat work");
+        git(t.path(), &["checkout", "-q", "main"]);
+        commit_file(t.path(), "a.txt", "main\n", "main side");
+        let feat_tip = git(t.path(), &["rev-parse", "feat"]).trim().to_string();
+        // 制造 merge 冲突（夹具命令允许失败）
+        let out = Command::new("git")
+            .current_dir(t.path())
+            .args(["merge", "--no-ff", &feat_tip])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "夹具必须真冲突");
+        let r = GitRepo::open(t.path()).unwrap();
+        assert!(get_status(&r).unwrap().unmerged.iter().any(|f| f.path == "a.txt"));
+
+        // 冲突未解决时 continue 被拒
+        assert!(matches!(
+            continue_operation(&r, Operation::Merge),
+            Err(GitError::CommandFailed(m)) if m.contains("冲突文件未解决")
+        ));
+
+        // 选边（我方）：内容恢复为 main 侧并直接进入已暂存
+        resolve_take(&r, "a.txt", true).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "main\n");
+        let st = get_status(&r).unwrap();
+        assert!(st.unmerged.is_empty()); // 我方版本与 HEAD 一致，无差异即无暂存条目
+        // 继续合并 → 产生合并提交
+        continue_operation(&r, Operation::Merge).unwrap();
+        let page = get_log(&r, 0, 3).unwrap();
+        assert_eq!(page.commits[0].parents.len(), 2);
+        assert!(get_status(&r).unwrap().operation.is_none());
+
+        // read_worktree_file：原文与穿越守卫
+        assert_eq!(read_worktree_file(&r, "f.txt").unwrap(), "feat work\n");
+        assert!(matches!(
+            read_worktree_file(&r, "../escape"),
+            Err(GitError::CommandFailed(m)) if m.contains("非法文件路径")
+        ));
+        assert!(matches!(
+            read_worktree_file(&r, "no-such.txt"),
+            Err(GitError::CommandFailed(m)) if m.contains("文件不存在")
+        ));
+
+        // 选边（对方）单文件场景
+        let t2 = repo();
+        commit_file(t2.path(), "a.txt", "base\n", "base");
+        git(t2.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t2.path(), "a.txt", "feat\n", "feat side");
+        git(t2.path(), &["checkout", "-q", "main"]);
+        commit_file(t2.path(), "a.txt", "main\n", "main side");
+        let feat_tip2 = git(t2.path(), &["rev-parse", "feat"]).trim().to_string();
+        let out2 = Command::new("git")
+            .current_dir(t2.path())
+            .args(["merge", "--no-ff", &feat_tip2])
+            .output()
+            .unwrap();
+        assert!(!out2.status.success(), "夹具必须真冲突");
+        let r2 = GitRepo::open(t2.path()).unwrap();
+        resolve_take(&r2, "a.txt", false).unwrap();
+        assert_eq!(fs::read_to_string(t2.path().join("a.txt")).unwrap(), "feat\n");
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

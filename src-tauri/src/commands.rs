@@ -189,6 +189,45 @@ pub fn conflict_versions(
 }
 
 #[tauri::command]
+pub fn read_worktree_file(state: State<'_, AppState>, path: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::read_worktree_file(repo, &path))
+}
+
+#[tauri::command]
+pub fn write_worktree_file(
+    state: State<'_, AppState>,
+    path: String,
+    content: String,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::write_worktree_file(repo, &path, &content))
+}
+
+#[tauri::command]
+pub fn resolve_take(
+    state: State<'_, AppState>,
+    path: String,
+    ours: bool,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::resolve_take(repo, &path, ours))
+}
+
+#[tauri::command]
+pub fn continue_operation(state: State<'_, AppState>, op: String) -> Result<String, GitError> {
+    let op = match op.as_str() {
+        "merge" => git::Operation::Merge,
+        "cherry-pick" => git::Operation::CherryPick,
+        "revert" => git::Operation::Revert,
+        other => return Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
+    };
+    with_active(&state, |repo| git::continue_operation(repo, op))
+}
+
+#[tauri::command]
+pub fn open_file_in_editor(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_branch_summary(state: State<'_, AppState>) -> Result<BranchSummary, GitError> {
     with_active(&state, git::get_branch_summary)
 }

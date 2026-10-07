@@ -37,7 +37,8 @@ export interface CommitDetail {
 export interface FileEntry {
   path: string;
   old_path: string | null;
-  status: 'M' | 'A' | 'D' | 'R';
+  /** M / A / D / R；冲突（未合入）条目一律记 'U' */
+  status: 'M' | 'A' | 'D' | 'R' | 'U';
 }
 
 /** 进行中的多提交操作（决定横幅文案与中止路由） */

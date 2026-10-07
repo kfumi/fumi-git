@@ -2,11 +2,13 @@
 // IPC 返回视为类型化契约（见 docs/agents 域规则），本模块是前端唯一业务状态源。
 import { create } from "zustand";
 import { asGitError, ipc } from "../lib/ipc";
+import { applyBlockChoice } from "../lib/conflict";
 import type {
   AppConfig,
   BranchSummary,
   CommitDetail,
   CommitEntry,
+  ConflictVersions,
   FileEntry,
   RepoMeta,
   RepoStatus,
@@ -86,6 +88,13 @@ interface RepoState {
   stashes: StashEntry[];
   /** 正在查看的 stash 条目及其 diff；null = 收起 */
   stashView: { index: number; patch: string | null; loading: boolean } | null;
+  /** 冲突解决视图：{ 路径, 三方版本, 工作区结果原文 }；null = 收起 */
+  conflictView: {
+    path: string;
+    versions: ConflictVersions | null;
+    result: string | null;
+    loading: boolean;
+  } | null;
 
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
@@ -144,6 +153,18 @@ interface RepoState {
   stashRestore: (index: number, pop: boolean) => Promise<void>;
   /** 删除 stash 条目（带确认） */
   stashDropFlow: (index: number) => void;
+  /** 打开/收起冲突文件的三方解决视图 */
+  openConflict: (path: string) => Promise<void>;
+  /** 选边解决：整个文件采用我方/对方版本（选边即标记已解决） */
+  resolveTakeFlow: (path: string, ours: boolean) => Promise<void>;
+  /** 标记冲突文件已解决（仍有冲突标记时先警示） */
+  markResolvedFlow: (path: string) => Promise<void>;
+  /** 完成进行中的操作（冲突清空后可用） */
+  continueOperationFlow: () => Promise<void>;
+  /** 在系统默认应用中打开文件（手动编辑冲突） */
+  openConflictInEditor: (path: string) => Promise<void>;
+  /** 冲突块逐块取舍：把第 index 块替换为所选一侧内容并写回工作区（不自动 add） */
+  applyConflictBlock: (path: string, blockIndex: number, side: "ours" | "theirs") => Promise<void>;
   /**
    * 丢弃工作区改动（US22–25，支持批量多选）：未暂存组 M/D → 从 index 恢复，
    * 'A'（未跟踪）→ 删除文件；均带不可恢复确认。
@@ -237,6 +258,7 @@ export const useRepo = create<RepoState>((set, get) => ({
   writeBusy: false,
   stashes: [],
   stashView: null,
+  conflictView: null,
 
   openDialog: (desc) => set({ dialog: desc }),
   closeDialog: () => set({ dialog: null }),
@@ -479,6 +501,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         dialog: null,
         stashes: [],
         stashView: null,
+        conflictView: null,
       });
       await get().refresh();
       // 刷新最近列表
@@ -512,6 +535,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       dialog: null,
       stashes: [],
       stashView: null,
+      conflictView: null,
     }),
 
   loadMore: async () => {
@@ -566,6 +590,10 @@ export const useRepo = create<RepoState>((set, get) => ({
       // 查看中的 stash 条目已消失（被 pop/drop）→ 收起
       const sv = get().stashView;
       if (sv && !stashes.some((s) => s.index === sv.index)) set({ stashView: null });
+      // 查看中的冲突文件已被解决 → 收起
+      const cv = get().conflictView;
+      if (cv && !(status?.unmerged ?? []).some((f) => f.path === cv.path))
+        set({ conflictView: null });
     } catch (e) {
       get().pushToast("err", await errText(e));
     }
@@ -643,7 +671,11 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   closeRightPane: () => {
-    // stash diff 查看优先收起；否则按 tab 语义移除触发条件
+    // 冲突视图 > stash 查看 > 按 tab 语义移除触发条件
+    if (get().conflictView) {
+      set({ conflictView: null });
+      return;
+    }
     if (get().stashView) {
       set({ stashView: null });
       return;
@@ -863,6 +895,110 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   // ── 丢弃工作区改动（spec US22–25；批量多选；均带不可恢复确认，US31 由 runWrite 守卫） ──
+
+  // ── 冲突解决视图（二阶段票 02；ui-spec §4 安全模型沿用） ──
+
+  openConflict: async (path) => {
+    const cur = get().conflictView;
+    if (cur?.path === path) {
+      set({ conflictView: null });
+      return;
+    }
+    set({ conflictView: { path, versions: null, result: null, loading: true } });
+    try {
+      const [versions, result] = await Promise.all([
+        ipc.conflictVersions(path),
+        ipc.readWorktreeFile(path),
+      ]);
+      if (get().conflictView?.path === path)
+        set({ conflictView: { path, versions, result, loading: false } });
+    } catch (e) {
+      if (get().conflictView?.path === path)
+        set({ conflictView: { path, versions: null, result: null, loading: false } });
+      get().pushToast("err", await errText(e));
+    }
+  },
+
+  resolveTakeFlow: async (path, ours) => {
+    await runWrite(
+      set,
+      get,
+      `采用${ours ? "我方" : "对方"}版本…`,
+      `已采用${ours ? "我方" : "对方"}版本并标记已解决`,
+      async () => {
+        await ipc.resolveTake(path, ours);
+      },
+    );
+    // 文件已解决 → 收起视图（refresh 已修剪，这里直接关）
+    if (!get().status?.unmerged.some((f) => f.path === path)) set({ conflictView: null });
+  },
+
+  markResolvedFlow: async (path) => {
+    const doResolve = () =>
+      runWrite(set, get, `标记已解决 ${path}…`, `已标记 ${path} 已解决`, async () => {
+        await ipc.stage([path]);
+      });
+    // 仍有冲突标记时先警示（可能没改完）
+    let result = get().conflictView?.path === path ? get().conflictView?.result : null;
+    try {
+      result = await ipc.readWorktreeFile(path);
+    } catch {
+      // 读不到（如已删除）不阻断标记
+    }
+    if (result && result.includes("<<<<<<<")) {
+      get().openDialog({
+        title: "文件仍含冲突标记",
+        message: `${path} 里还有 <<<<<<< 标记，直接标记已解决会把冲突标记提交进版本库。确定要继续吗？`,
+        actions: [
+          { label: "仍要标记已解决", kind: "danger", run: () => void doResolve() },
+        ],
+      });
+      return;
+    }
+    await doResolve();
+    if (!get().status?.unmerged.some((f) => f.path === path)) set({ conflictView: null });
+  },
+
+  continueOperationFlow: async () => {
+    const op = get().status?.operation;
+    if (!op) return;
+    if ((get().status?.unmerged.length ?? 0) > 0) {
+      get().pushToast("err", "还有冲突文件未解决，无法继续");
+      return;
+    }
+    const label = op === "merge" ? "继续合并" : op === "cherry-pick" ? "继续摘取" : "继续还原";
+    await runWrite(set, get, `${label}…`, `${label}完成`, async () => {
+      await ipc.continueOperation(op);
+    });
+    set({ conflictView: null });
+  },
+
+  openConflictInEditor: async (path) => {
+    try {
+      await ipc.openInEditor(path);
+    } catch (e) {
+      get().pushToast("err", await errText(e));
+    }
+  },
+
+  applyConflictBlock: async (path, blockIndex, side) => {
+    // 以视图中的工作区结果为基准拼装，写回后同步刷新视图内容
+    const base = get().conflictView?.path === path ? get().conflictView?.result : null;
+    if (base === null || base === undefined) return;
+    const next = applyBlockChoice(base, blockIndex, side);
+    if (next === base) {
+      get().pushToast("err", "冲突处理失败：标记结构异常或块已不存在");
+      return;
+    }
+    try {
+      // 写回工作区文件（不 add）；走后端守卫路径
+      await ipc.writeWorktreeFile(path, next);
+      if (get().conflictView?.path === path)
+        set({ conflictView: { ...get().conflictView!, result: next } });
+    } catch (e) {
+      get().pushToast("err", await errText(e));
+    }
+  },
 
   discardWorktreeFlow: (files) => {
     if (files.length === 0) return;

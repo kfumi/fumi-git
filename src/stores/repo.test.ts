@@ -41,6 +41,12 @@ vi.mock("../lib/ipc", () => {
     discardStaged: vi.fn(async () => {}),
     discardStagedNew: vi.fn(async () => {}),
     discardAll: vi.fn(async () => {}),
+    conflictVersions: vi.fn(async () => ({ base: "base\n", ours: "ours\n", theirs: "theirs\n" })),
+    readWorktreeFile: vi.fn(async () => ""),
+    writeWorktreeFile: vi.fn(async () => {}),
+    resolveTake: vi.fn(async () => {}),
+    continueOperation: vi.fn(async () => ""),
+    openInEditor: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -83,6 +89,7 @@ beforeEach(() => {
     filter: "",
     toasts: [],
     dialog: null,
+    conflictView: null,
   });
 });
 
@@ -735,6 +742,118 @@ describe("丢弃改动（spec US22–25）", () => {
     });
     await useRepo.getState().checkout("feat");
     expect(ipc.switchBranch).toHaveBeenCalledWith("feat");
+  });
+});
+
+describe("冲突解决视图与逐块取舍（二阶段票 02/03）", () => {
+  const withConflict = () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      status: {
+        staged: [],
+        unstaged: [],
+        unmerged: [{ path: "a.txt", old_path: null, status: "U" }],
+        operation: "merge",
+        branch: "main",
+      },
+      conflictView: null,
+    });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [{ path: "a.txt", old_path: null, status: "U" }],
+      operation: "merge",
+      branch: "main",
+    });
+  };
+
+  it("openConflict 拉取三方与结果；再次点击收起", async () => {
+    withConflict();
+    (ipc.readWorktreeFile as ReturnType<typeof vi.fn>).mockResolvedValue("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feat\n");
+    await useRepo.getState().openConflict("a.txt");
+    expect(useRepo.getState().conflictView).toMatchObject({
+      path: "a.txt",
+      result: expect.stringContaining("<<<<<<<"),
+    });
+    await useRepo.getState().openConflict("a.txt");
+    expect(useRepo.getState().conflictView).toBeNull();
+  });
+
+  it("resolveTakeFlow 后文件已解决 → 视图收起", async () => {
+    withConflict();
+    useRepo.setState({
+      conflictView: { path: "a.txt", versions: null, result: "x", loading: false },
+    });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [{ path: "a.txt", old_path: null, status: "M" }],
+      unstaged: [],
+      unmerged: [],
+      operation: "merge",
+      branch: "main",
+    });
+    await useRepo.getState().resolveTakeFlow("a.txt", true);
+    expect(ipc.resolveTake).toHaveBeenCalledWith("a.txt", true);
+    expect(useRepo.getState().conflictView).toBeNull();
+  });
+
+  it("markResolvedFlow：仍有冲突标记先警示；干净则直接 add", async () => {
+    withConflict();
+    useRepo.setState({
+      conflictView: { path: "a.txt", versions: null, result: "<<<<<<< HEAD\nx\n>>>>>>> f\n", loading: false },
+    });
+    (ipc.readWorktreeFile as ReturnType<typeof vi.fn>).mockResolvedValue("<<<<<<< HEAD\nx\n>>>>>>> f\n");
+    await useRepo.getState().markResolvedFlow("a.txt");
+    let d = useRepo.getState().dialog!;
+    expect(d.title).toContain("仍含冲突标记");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.stage).toHaveBeenCalledWith(["a.txt"]));
+
+    (ipc.readWorktreeFile as ReturnType<typeof vi.fn>).mockResolvedValue("resolved\n");
+    await useRepo.getState().markResolvedFlow("a.txt");
+    await vi.waitFor(() => expect(ipc.stage).toHaveBeenLastCalledWith(["a.txt"]));
+  });
+
+  it("continueOperationFlow：冲突未清空拒绝；清空后按 operation 调用", async () => {
+    withConflict(); // unmerged = 1
+    await useRepo.getState().continueOperationFlow();
+    expect(ipc.continueOperation).not.toHaveBeenCalled();
+
+    useRepo.setState({
+      status: {
+        staged: [],
+        unstaged: [],
+        unmerged: [],
+        operation: "cherry-pick",
+        branch: "main",
+      },
+    });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: "cherry-pick",
+      branch: "main",
+    });
+    await useRepo.getState().continueOperationFlow();
+    expect(ipc.continueOperation).toHaveBeenCalledWith("cherry-pick");
+  });
+
+  it("applyConflictBlock：拼装写回并刷新视图内容", async () => {
+    withConflict();
+    useRepo.setState({
+      conflictView: {
+        path: "a.txt",
+        versions: null,
+        result: "h\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> f\ntail\n",
+        loading: false,
+      },
+    });
+    await useRepo.getState().applyConflictBlock("a.txt", 0, "theirs");
+    expect(ipc.writeWorktreeFile).toHaveBeenCalledWith("a.txt", "h\ntheirs\ntail\n");
+    expect(useRepo.getState().conflictView?.result).toBe("h\ntheirs\ntail\n");
   });
 });
 

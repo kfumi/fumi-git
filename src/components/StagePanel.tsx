@@ -140,6 +140,8 @@ export function ChangesPanel() {
   const discardWorktreeFlow = useRepo((s) => s.discardWorktreeFlow);
   const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
   const discardAllFlow = useRepo((s) => s.discardAllFlow);
+  const openConflict = useRepo((s) => s.openConflict);
+  const conflictPath = useRepo((s) => s.conflictView?.path ?? null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // 多选（VS Code 源代码管理风格）：选择只在一个分组内；u:/s: 前缀区分同名文件
@@ -343,8 +345,8 @@ export function ChangesPanel() {
                 <WorkRow
                   key={"c" + f.path}
                   file={f}
-                  active={workFile === f.path && !workStaged}
-                  onSelect={() => void selectWorkFile(f.path, false)}
+                  active={conflictPath === f.path}
+                  onSelect={() => void openConflict(f.path)}
                   actionLabel="标记暂存"
                   onAction={() => void stage([f.path])}
                 />

@@ -84,6 +84,17 @@ export const ipc = {
   mergeUpstream: (refName: string) => cmd<string>("merge_upstream", { refName }),
   abortOperation: (op: GitOperation) => cmd<void>("abort_operation", { op }),
   conflictVersions: (path: string) => cmd<ConflictVersions>("conflict_versions", { path }),
+  /** 工作区文件原文（冲突解决视图展示结果用） */
+  readWorktreeFile: (path: string) => cmd<string>("read_worktree_file", { path }),
+  /** 写回工作区文件（冲突块取舍拼装结果；不 touch index） */
+  writeWorktreeFile: (path: string, content: string) =>
+    cmd<void>("write_worktree_file", { path, content }),
+  /** 选边解决：整文件采用我方/对方并标记已解决 */
+  resolveTake: (path: string, ours: boolean) => cmd<void>("resolve_take", { path, ours }),
+  /** 完成进行中的操作（--continue，沿用默认提交信息） */
+  continueOperation: (op: GitOperation) => cmd<string>("continue_operation", { op }),
+  /** 用系统默认应用打开文件（手动编辑冲突） */
+  openInEditor: (path: string) => cmd<void>("open_file_in_editor", { path }),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {
