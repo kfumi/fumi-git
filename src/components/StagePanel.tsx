@@ -252,7 +252,13 @@ export function ChangesPanel() {
           )}
           {status.staged.length > 0 && (
             <>
-              <GroupLabel color="bg-ok" label="已暂存" count={status.staged.length} />
+              <GroupLabel
+                color="bg-ok"
+                label="已暂存"
+                count={status.staged.length}
+                actionLabel="全部取消暂存"
+                onAction={() => void unstage(status.staged.map((f) => f.path))}
+              />
               {status.staged.map((f) => (
                 <WorkRow
                   key={"s" + f.path}
@@ -271,7 +277,13 @@ export function ChangesPanel() {
           )}
           {status.unstaged.length > 0 && (
             <>
-              <GroupLabel color="bg-warn" label="未暂存" count={status.unstaged.length} />
+              <GroupLabel
+                color="bg-warn"
+                label="未暂存"
+                count={status.unstaged.length}
+                actionLabel="全部暂存"
+                onAction={() => void stage(status.unstaged.map((f) => f.path))}
+              />
               {status.unstaged.map((f) => (
                 <WorkRow
                   key={"u" + f.path}
@@ -380,12 +392,37 @@ function WorkRow({
   );
 }
 
-function GroupLabel({ color, label, count }: { color: string; label: string; count: number }) {
+function GroupLabel({
+  color,
+  label,
+  count,
+  actionLabel,
+  onAction,
+}: {
+  color: string;
+  label: string;
+  count: number;
+  /** 批量动作（悬停组头出现）：全部暂存 / 全部取消暂存 */
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
-    <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-panel px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
+    <div className="group sticky top-0 z-10 flex items-center gap-1.5 bg-panel px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
       <span className={`h-1.5 w-1.5 rounded-full ${color}`} aria-hidden />
       {label}
       <span className="tnum text-faint">{count}</span>
+      {actionLabel && onAction && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction();
+          }}
+          title={actionLabel}
+          className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] font-normal text-faint transition-colors hover:text-accent-ink group-hover:block"
+        >
+          {actionLabel}
+        </button>
+      )}
     </div>
   );
 }
