@@ -1,10 +1,19 @@
 // ref 分类（HEAD / 远程 / 标签 / 本地分支）—— RefChips 与 Sidebar 共用，避免散点分支
 export type RefKind = "head" | "remote" | "tag" | "branch";
 
-export function classifyRef(ref: string): RefKind {
+/** 默认远程名：未加载到真实远程列表时的兜底（保持单远程仓库的历史行为） */
+const FALLBACK_REMOTES = ["origin"];
+
+/**
+ * ref 分类。多远程仓库下 `gitee/main` 与 `origin/main` 同为远程 ref，
+ * 因此远程名前缀取自真实远程列表（store 的 remotes），不写死 origin。
+ */
+export function classifyRef(ref: string, remotes: Iterable<string> = FALLBACK_REMOTES): RefKind {
   if (ref === "HEAD") return "head";
-  if (ref.startsWith("origin/")) return "remote";
   if (ref.startsWith("tag:")) return "tag";
+  for (const remote of remotes) {
+    if (remote && ref.startsWith(`${remote}/`)) return "remote";
+  }
   return "branch";
 }
 

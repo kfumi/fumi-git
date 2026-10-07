@@ -86,6 +86,8 @@ interface RepoState {
   scrollNonce: number;
   status: RepoStatus | null;
   summary: BranchSummary | null;
+  /** 仓库已配置的远程名（git remote）：多远程推送选择框与 ref 分类共用 */
+  remotes: string[];
   filter: string;
   toasts: Toast[];
   /** 当前打开的通用对话框；null = 关闭 */
@@ -147,8 +149,14 @@ interface RepoState {
   renameBranchFlow: (branch: string) => void;
   /** 重置当前分支到指定提交（图谱右键入口）：先选模式，硬重置必过脏树拦截 */
   resetBranchTo: (commitId: string) => void;
+  /** 当前分支名；分离 HEAD / 空仓库返回 null（无法作为 push 目标） */
+  currentBranch: () => string | null;
   /** push 无上游时的建立关联弹框（选远程 → push -u） */
   pushUpstreamFlow: () => Promise<void>;
+  /** 推到指定远程（不建立上游）；remote 为空则走「选远程」弹框 */
+  pushToFlow: (remote?: string) => Promise<void>;
+  /** 当前分支推到所有远程 */
+  pushAllRemotesFlow: () => Promise<void>;
   /** 分叉拉取：把上游分支合并进当前分支（确认后由 remote('pull') 错误处理触发） */
   mergeUpstreamFlow: (refName: string) => Promise<void>;
   /** 中止进行中的合并，恢复到合并前状态 */
@@ -276,6 +284,7 @@ export const useRepo = create<RepoState>((set, get) => ({
   scrollNonce: 0,
   status: null,
   summary: null,
+  remotes: [],
   filter: "",
   toasts: [],
   dialog: null,
@@ -521,6 +530,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         workDiffLoading: false,
         status: null,
         summary: null,
+        remotes: [],
         filter: "",
         dialog: null,
         stashes: [],
@@ -556,6 +566,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       workDiffLoading: false,
       status: null,
       summary: null,
+      remotes: [],
       dialog: null,
       stashes: [],
       stashView: null,
@@ -584,11 +595,12 @@ export const useRepo = create<RepoState>((set, get) => ({
     const { meta, selectedId } = get();
     if (!meta) return;
     try {
-      const [page, status, summary, stashes] = await Promise.all([
+      const [page, status, summary, stashes, remotes] = await Promise.all([
         ipc.getLog(0, Math.max(PAGE, get().commits.length || PAGE)),
         ipc.getStatus().catch(() => null),
         ipc.getBranchSummary().catch(() => null),
         ipc.stashList().catch(() => []),
+        ipc.listRemotes().catch(() => [] as string[]),
       ]);
       const stillThere = selectedId && page.commits.some((c) => c.id === selectedId);
       set({
@@ -597,6 +609,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         status,
         summary,
         stashes,
+        remotes,
         selectedId: stillThere ? selectedId : null,
         detail: stillThere ? get().detail : null,
         openFiles: stillThere ? get().openFiles : [],
@@ -766,9 +779,15 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  pushUpstreamFlow: async () => {
+  /** 当前分支名；分离 HEAD / 空仓库返回 null（无法作为 push 目标） */
+  currentBranch: () => {
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
-    if (!branch || branch.startsWith("(HEAD detached")) {
+    return branch && !branch.startsWith("(") ? branch : null;
+  },
+
+  pushUpstreamFlow: async () => {
+    const branch = get().currentBranch();
+    if (!branch) {
       get().pushToast("err", "当前不在常规分支上，无法建立上游关联");
       return;
     }
@@ -794,6 +813,69 @@ export const useRepo = create<RepoState>((set, get) => ({
         },
       })),
     });
+  },
+
+  pushToFlow: async (remote) => {
+    const branch = get().currentBranch();
+    if (!branch) {
+      get().pushToast("err", "当前不在常规分支上，无法推送");
+      return;
+    }
+    let remotes = get().remotes;
+    if (!remote) {
+      try {
+        remotes = await ipc.listRemotes();
+      } catch (e) {
+        get().pushToast("err", await errText(e));
+        return;
+      }
+      if (remotes.length === 0) {
+        get().pushToast("err", "仓库没有配置远程，请先在终端 git remote add");
+        return;
+      }
+      const upstreamRemote = get().summary?.upstream?.split("/")[0];
+      get().openDialog({
+        title: "推送到指定远程",
+        message: `把分支 ${branch} 推送到所选远程的同名分支，不改变已有的上游关联：`,
+        actions: [
+          ...remotes.map((r) => ({
+            label: r === upstreamRemote ? `推送到 ${r}（当前上游）` : `推送到 ${r}`,
+            kind: r === upstreamRemote ? ("primary" as const) : ("ghost" as const),
+            run: () => void get().pushToFlow(r),
+          })),
+          ...(remotes.length > 1
+            ? [
+                {
+                  label: `推送到全部远程（${remotes.join("、")}）`,
+                  run: () => void get().pushAllRemotesFlow(),
+                },
+              ]
+            : []),
+        ],
+      });
+      return;
+    }
+    await runWrite(set, get, `推送到 ${remote}…`, "", async () => await ipc.pushTo(remote, branch));
+  },
+
+  pushAllRemotesFlow: async () => {
+    const branch = get().currentBranch();
+    if (!branch) {
+      get().pushToast("err", "当前不在常规分支上，无法推送");
+      return;
+    }
+    const remotes = get().remotes;
+    if (remotes.length === 0) {
+      get().pushToast("err", "仓库没有配置远程，请先在终端 git remote add");
+      return;
+    }
+    await runWrite(
+      set,
+      get,
+      `推送到 ${remotes.join("、")}…`,
+      "",
+      async () => await ipc.pushAllRemotes(branch),
+    );
   },
 
   mergeUpstreamFlow: async (refName) => {

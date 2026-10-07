@@ -29,6 +29,8 @@ vi.mock("../lib/ipc", () => {
     renameBranch: vi.fn(async () => {}),
     resetBranch: vi.fn(async () => {}),
     pushUpstream: vi.fn(async () => ""),
+    pushTo: vi.fn(async () => ""),
+    pushAllRemotes: vi.fn(async () => ""),
     listRemotes: vi.fn(async () => ["origin"]),
     mergeRef: vi.fn(async () => ""),
     abortOperation: vi.fn(async () => {}),
@@ -506,6 +508,65 @@ describe("远程同步补全（票 04）", () => {
     expect(d.actions).toHaveLength(1); // 单远程 → 只有一个目标
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.pushUpstream).toHaveBeenCalledWith("origin", "feat"));
+  });
+
+  it("pushToFlow 无参：弹远程选择框，含上游标注与「推到全部」", async () => {
+    withRepo();
+    logOk();
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin", "gitee"]);
+
+    await useRepo.getState().pushToFlow();
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toBe("推送到指定远程");
+    expect(d.actions.map((a) => a.label)).toEqual([
+      "推送到 origin（当前上游）",
+      "推送到 gitee",
+      "推送到全部远程（origin、gitee）",
+    ]);
+  });
+
+  it("pushToFlow 指定远程：直接 pushTo，不改上游", async () => {
+    withRepo();
+    logOk();
+
+    await useRepo.getState().pushToFlow("gitee");
+    await vi.waitFor(() => expect(ipc.pushTo).toHaveBeenCalledWith("gitee", "feat"));
+    expect(ipc.pushUpstream).not.toHaveBeenCalled();
+    expect(useRepo.getState().dialog).toBeNull();
+  });
+
+  it("pushAllRemotesFlow：多远程时逐个推送", async () => {
+    withRepo();
+    logOk();
+    useRepo.setState({ remotes: ["origin", "gitee"] });
+
+    await useRepo.getState().pushAllRemotesFlow();
+    await vi.waitFor(() => expect(ipc.pushAllRemotes).toHaveBeenCalledWith("feat"));
+  });
+
+  it("pushAllRemotesFlow：无远程仓库给引导错误而不是静默成功", async () => {
+    withRepo();
+    logOk();
+    useRepo.setState({ remotes: [] });
+
+    await useRepo.getState().pushAllRemotesFlow();
+    expect(ipc.pushAllRemotes).not.toHaveBeenCalled();
+    const last = useRepo.getState().toasts[useRepo.getState().toasts.length - 1];
+    expect(last.text).toContain("没有配置远程");
+  });
+
+  it("分离 HEAD：推送动作给出提示而不是推空分支名", async () => {
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "(HEAD detached at abc1234)" },
+      summary: { branch: "(HEAD detached at abc1234)", upstream: null, ahead: 0, behind: 0 },
+      remotes: ["origin", "gitee"],
+    });
+    logOk();
+
+    await useRepo.getState().pushAllRemotesFlow();
+    expect(ipc.pushAllRemotes).not.toHaveBeenCalled();
+    const last = useRepo.getState().toasts[useRepo.getState().toasts.length - 1];
+    expect(last.text).toContain("不在常规分支");
   });
 
   it("pull 分叉：报错转为合并确认，确认后执行 merge", async () => {

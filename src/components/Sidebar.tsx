@@ -37,6 +37,7 @@ export function Sidebar() {
   const removeRecent = useRepo((s) => s.removeRecent);
   const selectRefTip = useRepo((s) => s.selectRefTip);
   const summary = useRepo((s) => s.summary);
+  const remoteNames = useRepo((s) => s.remotes);
   const checkout = useRepo((s) => s.checkout);
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
   const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
@@ -103,13 +104,13 @@ export function Sidebar() {
     ];
   };
 
-  const { branches, remotes, tags } = useMemo(() => {
+  const { branches, remoteRefs, tags } = useMemo(() => {
     const b = new Map<string, string>(); // name -> tip commit id
     const r = new Map<string, string>();
     const t = new Map<string, string>();
     for (const c of commits) {
       for (const ref of c.refs) {
-        switch (classifyRef(ref)) {
+        switch (classifyRef(ref, remoteNames)) {
           case "head":
             break;
           case "remote":
@@ -123,8 +124,8 @@ export function Sidebar() {
         }
       }
     }
-    return { branches: b, remotes: r, tags: t };
-  }, [commits]);
+    return { branches: b, remoteRefs: r, tags: t };
+  }, [commits, remoteNames]);
 
   // 分支按 "/" 前缀分组；折叠状态持久化到 localStorage
   const tree = useMemo(() => groupBranches(branches), [branches]);
@@ -322,10 +323,10 @@ export function Sidebar() {
         </>
       )}
 
-      {remotes.size > 0 && (
+      {remoteRefs.size > 0 && (
         <>
           <h4 className="section-label pb-1.5 pt-4">远程</h4>
-          {[...remotes.entries()].slice(0, 20).map(([name, id]) => (
+          {[...remoteRefs.entries()].slice(0, 20).map(([name, id]) => (
             <button
               key={name}
               onClick={() => selectRefTip(id)}

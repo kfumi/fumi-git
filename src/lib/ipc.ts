@@ -80,6 +80,10 @@ export const ipc = {
   push: () => cmd<string>("push_remote"),
   pushUpstream: (remote: string, branch: string) =>
     cmd<string>("push_upstream", { remote, branch }),
+  /** 推到指定远程的同名分支（不建立上游）——多远程仓库用 */
+  pushTo: (remote: string, branch: string) => cmd<string>("push_to", { remote, branch }),
+  /** 当前分支推到所有远程 */
+  pushAllRemotes: (branch: string) => cmd<string>("push_all_remotes", { branch }),
   listRemotes: () => cmd<string[]>("list_remotes"),
   mergeRef: (refName: string) => cmd<string>("merge_upstream", { refName }),
   abortOperation: (op: GitOperation) => cmd<void>("abort_operation", { op }),

@@ -1010,8 +1010,9 @@ pub fn get_branch_summary(repo: &GitRepo) -> GitResult<BranchSummary> {
     })
 }
 
+/// 抓取：多远程仓库下 `--all` 覆盖每个远程（裸 fetch 只动当前上游那一个）。
 pub fn fetch(repo: &GitRepo) -> GitResult<String> {
-    repo.run(&["fetch"]).map(|_| "抓取完成".into())
+    repo.run(&["fetch", "--all"]).map(|_| "抓取完成".into())
 }
 
 pub fn pull(repo: &GitRepo) -> GitResult<String> {
@@ -1055,6 +1056,69 @@ pub fn push(repo: &GitRepo) -> GitResult<String> {
         other => other,
     })?;
     Ok("推送完成".into())
+}
+
+/// 推到指定远程（不建立上游）：把当前分支显式推到某个 remote 的同名分支，
+/// 用于「一个仓库挂多个远程（gitee + github）」的场景。带 refspec 避免歧义。
+pub fn push_to(repo: &GitRepo, remote: &str, branch: &str) -> GitResult<String> {
+    let remote = remote.trim();
+    let branch = branch.trim();
+    if remote.is_empty() || branch.is_empty() {
+        return Err(GitError::CommandFailed("远程或分支名为空".into()));
+    }
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    repo.run(&["push", "--quiet", remote, &refspec])
+        .map_err(|e| match e {
+            GitError::CommandFailed(stderr) => map_push_err(stderr),
+            other => other,
+        })?;
+    Ok(format!("已推送 {branch} 到 {remote}/{branch}"))
+}
+
+/// 推到所有远程：逐个推送当前分支，收集成功与失败远程后一并回报
+/// （部分失败仍视为整体成功，让 UI 能提示「哪几个没推上」）。
+pub fn push_all_remotes(repo: &GitRepo, branch: &str) -> GitResult<String> {
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    let remotes = list_remotes(repo)?;
+    if remotes.is_empty() {
+        return Err(GitError::CommandFailed(
+            "仓库没有配置远程，请先在终端 git remote add".into(),
+        ));
+    }
+    let mut pushed = Vec::new();
+    let mut failed = Vec::new();
+    for remote in remotes {
+        match push_to(repo, &remote, branch) {
+            Ok(_) => pushed.push(remote),
+            Err(GitError::CommandFailed(msg)) => failed.push((remote, msg)),
+            Err(e) => return Err(e),
+        }
+    }
+    if pushed.is_empty() {
+        let detail = failed
+            .iter()
+            .map(|(r, m)| format!("{r}：{m}"))
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(GitError::CommandFailed(format!(
+            "全部远程推送失败：{detail}"
+        )));
+    }
+    let mut msg = format!("已推送到 {}", pushed.join("、"));
+    if !failed.is_empty() {
+        msg.push_str(&format!(
+            "；未推送 {}",
+            failed
+                .iter()
+                .map(|(r, _)| r.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    Ok(msg)
 }
 
 /// 本地分支还没有上游时：让用户选远程，一次性建立关联并推送（push -u）。
@@ -1749,6 +1813,113 @@ mod tests {
             Err(GitError::CommandFailed(_))
         ));
         let _ = origin;
+    }
+
+    /// 两个 bare 远端（origin + gitee）+ 已推 origin/main 的工作仓。
+    fn repo_with_two_remotes() -> (TempDir, TempDir, TempDir) {
+        let gitee = TempDir::new().unwrap();
+        git(gitee.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let (origin, work) = repo_with_origin();
+        git(
+            work.path(),
+            &["remote", "add", "gitee", gitee.path().to_str().unwrap()],
+        );
+        (origin, gitee, work)
+    }
+
+    #[test]
+    fn push_to_second_remote_keeps_upstream_intact() {
+        let (_origin, gitee, work) = repo_with_two_remotes();
+        let r = GitRepo::open(work.path()).unwrap();
+        // git remote 按名称字母序输出
+        assert_eq!(
+            list_remotes(&r).unwrap(),
+            vec!["gitee".to_string(), "origin".to_string()]
+        );
+
+        commit_file(work.path(), "b.txt", "1", "only on gitee");
+        let msg = push_to(&r, "gitee", "main").unwrap();
+        assert!(msg.contains("gitee/main"), "{msg}");
+
+        // 上游仍指向 origin，gitee 上分支内容一致
+        assert_eq!(
+            get_branch_summary(&r).unwrap().upstream.as_deref(),
+            Some("origin/main")
+        );
+        let head = r.run(&["rev-parse", "HEAD"]).unwrap();
+        let remote_head = r
+            .run(&[
+                "ls-remote",
+                gitee.path().to_str().unwrap(),
+                "refs/heads/main",
+            ])
+            .unwrap();
+        assert_eq!(remote_head.split_whitespace().next(), Some(head.trim()));
+
+        // 上游未变 → 本地 ahead 计数仍按 origin 计（gitee 推送不改写它）
+        assert_eq!(get_branch_summary(&r).unwrap().ahead, 1);
+    }
+
+    #[test]
+    fn push_to_rejects_unknown_remote_and_empty_args() {
+        let (_origin, _gitee, work) = repo_with_two_remotes();
+        let r = GitRepo::open(work.path()).unwrap();
+        assert!(matches!(
+            push_to(&r, "github", "main"),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            push_to(&r, "gitee", " "),
+            Err(GitError::CommandFailed(_))
+        ));
+    }
+
+    #[test]
+    fn push_all_remotes_hits_every_remote() {
+        let (_origin, gitee, work) = repo_with_two_remotes();
+        let r = GitRepo::open(work.path()).unwrap();
+        commit_file(work.path(), "c.txt", "1", "fan out");
+        let msg = push_all_remotes(&r, "main").unwrap();
+        assert!(msg.contains("origin") && msg.contains("gitee"), "{msg}");
+
+        let head = r.run(&["rev-parse", "HEAD"]).unwrap();
+        for url in [
+            _origin.path().to_str().unwrap(),
+            gitee.path().to_str().unwrap(),
+        ] {
+            let out = r.run(&["ls-remote", url, "refs/heads/main"]).unwrap();
+            assert_eq!(out.split_whitespace().next(), Some(head.trim()));
+        }
+
+        // 无远程仓库 → 结构化错误而不是静默成功
+        let bare = repo();
+        commit_file(bare.path(), "a.txt", "1", "init");
+        assert!(matches!(
+            push_all_remotes(&GitRepo::open(bare.path()).unwrap(), "main"),
+            Err(GitError::CommandFailed(m)) if m.contains("没有配置远程")
+        ));
+    }
+
+    #[test]
+    fn fetch_all_pulls_every_remote() {
+        let (_origin, gitee, work) = repo_with_two_remotes();
+        let r = GitRepo::open(work.path()).unwrap();
+        assert!(!r.run_ok(&["rev-parse", "--verify", "-q", "refs/remotes/gitee/main"]));
+
+        // 另一个工作仓往 gitee 推 main：本地 fetch --all 后应出现 gitee/main
+        let side = repo();
+        git(
+            side.path(),
+            &["remote", "add", "gitee", gitee.path().to_str().unwrap()],
+        );
+        commit_file(side.path(), "g.txt", "1", "gitee side");
+        git(
+            side.path(),
+            &["push", "-q", "gitee", "HEAD:refs/heads/main"],
+        );
+
+        fetch(&r).unwrap();
+        assert!(r.run_ok(&["rev-parse", "--verify", "refs/remotes/gitee/main"]));
     }
 
     #[test]

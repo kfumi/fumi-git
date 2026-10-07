@@ -3,15 +3,17 @@
 import { Cloud, GitBranch, Tag } from "lucide-react";
 import type { CommitEntry } from "../lib/types";
 import { classifyRef } from "../lib/refs";
+import { useRepo } from "../stores/repo";
 
 export function RefChips({ refs, max }: { refs: CommitEntry["refs"]; max?: number }) {
+  const remotes = useRepo((s) => s.remotes);
   if (!refs.length) return null;
   const overflow = max && refs.length > max ? refs.length - max : 0;
   const shown = overflow ? refs.slice(0, max) : refs;
   return (
     <span className="contents">
       {shown.map((r) => {
-        switch (classifyRef(r)) {
+        switch (classifyRef(r, remotes)) {
           case "head":
             return (
               <span

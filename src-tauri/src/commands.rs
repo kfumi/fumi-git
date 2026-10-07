@@ -170,6 +170,20 @@ pub fn push_upstream(
 }
 
 #[tauri::command]
+pub fn push_to(
+    state: State<'_, AppState>,
+    remote: String,
+    branch: String,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| git::push_to(repo, &remote, &branch))
+}
+
+#[tauri::command]
+pub fn push_all_remotes(state: State<'_, AppState>, branch: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::push_all_remotes(repo, &branch))
+}
+
+#[tauri::command]
 pub fn list_remotes(state: State<'_, AppState>) -> Result<Vec<String>, GitError> {
     with_active(&state, git::list_remotes)
 }

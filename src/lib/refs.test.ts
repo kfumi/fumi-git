@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { groupBranches } from "./refs";
+import { classifyRef, groupBranches } from "./refs";
+
+describe("classifyRef", () => {
+  it("HEAD / 标签 / 本地分支各归各类", () => {
+    expect(classifyRef("HEAD")).toBe("head");
+    expect(classifyRef("tag:v1.0", ["origin"])).toBe("tag");
+    expect(classifyRef("feat/login", ["origin"])).toBe("branch");
+  });
+
+  it("多远程：各远程前缀都判为远程 ref", () => {
+    const remotes = ["origin", "gitee"];
+    expect(classifyRef("origin/main", remotes)).toBe("remote");
+    expect(classifyRef("gitee/main", remotes)).toBe("remote");
+    // 同名本地分支不受远程列表影响
+    expect(classifyRef("gitee", remotes)).toBe("branch");
+    // 未列出的前缀仍按本地分支处理
+    expect(classifyRef("upstream/main", remotes)).toBe("branch");
+  });
+
+  it("缺省沿用 origin 兜底（远程列表未就绪时）", () => {
+    expect(classifyRef("origin/main")).toBe("remote");
+    expect(classifyRef("gitee/main")).toBe("branch");
+  });
+});
 
 describe("groupBranches", () => {
   it("无 / 的根分支留在 roots；同前缀分组并排序", () => {

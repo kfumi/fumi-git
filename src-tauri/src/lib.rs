@@ -55,6 +55,8 @@ pub fn run() {
             commands::rename_branch,
             commands::reset_branch,
             commands::push_upstream,
+            commands::push_to,
+            commands::push_all_remotes,
             commands::list_remotes,
             commands::merge_upstream,
             commands::abort_operation,

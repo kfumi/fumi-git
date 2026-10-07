@@ -5,6 +5,7 @@ import {
   ArrowDownToLine,
   ArrowUp,
   ArrowUpFromLine,
+  ChevronDown,
   Download,
   GitBranch,
   LoaderCircle,
@@ -15,6 +16,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
 import type { ThemeMode } from "../lib/types";
@@ -33,10 +35,15 @@ export function Toolbar() {
   const filter = useRepo((s) => s.filter);
   const setFilter = useRepo((s) => s.setFilter);
   const remote = useRepo((s) => s.remote);
+  const remotes = useRepo((s) => s.remotes);
+  const pushToFlow = useRepo((s) => s.pushToFlow);
+  const pushAllRemotesFlow = useRepo((s) => s.pushAllRemotesFlow);
   const refresh = useRepo((s) => s.refresh);
   const { mode, setMode } = useTheme();
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // 推送下拉：{ 锚点 }，菜单挂在 caret 按钮下方
+  const [pushMenu, setPushMenu] = useState<{ x: number; y: number } | null>(null);
 
   if (!meta) return null;
 
@@ -46,18 +53,45 @@ export function Toolbar() {
     setBusy(null);
   };
 
+  // 推送去向菜单：当前上游置顶 + 其余远程 + 全部远程
+  const pushMenuItems = (): MenuItem[] => {
+    const upstreamRemote = summary?.upstream?.split("/")[0];
+    const items: MenuItem[] = [];
+    if (upstreamRemote) {
+      items.push({
+        label: `推送到 ${upstreamRemote}`,
+        hint: "当前上游",
+        onSelect: () => void run("push"),
+      });
+    } else {
+      items.push({ label: "建立上游关联并推送…", onSelect: () => void pushToFlow() });
+    }
+    const others = remotes.filter((r) => r !== upstreamRemote);
+    if (others.length > 0) {
+      if (items.length > 0) items.push({ kind: "separator" });
+      for (const r of others) {
+        items.push({ label: `推送到 ${r}`, onSelect: () => void pushToFlow(r) });
+      }
+    }
+    if (remotes.length > 1) {
+      if (items.length > 0) items.push({ kind: "separator" });
+      items.push({
+        label: `推送到全部远程（${remotes.join("、")}）`,
+        onSelect: () => void pushAllRemotesFlow(),
+      });
+    }
+    return items;
+  };
+
   const doRefresh = async () => {
     setRefreshing(true);
     await refresh();
     setRefreshing(false);
   };
 
-  const ops: { op: "fetch" | "pull" | "push"; label: string; Icon: typeof Download }[] = [
-    { op: "pull", label: "拉取", Icon: ArrowDownToLine },
-    { op: "push", label: "推送", Icon: ArrowUpFromLine },
-    { op: "fetch", label: "抓取", Icon: Download },
-  ];
   const ThemeIcon = THEME_ICON[mode];
+  // 推送目标 = 上游远程（无上游时留空，由点击后的弹框引导）
+  const pushTarget = summary?.upstream?.split("/")[0] ?? "";
 
   return (
     <div className="flex h-[42px] shrink-0 items-center gap-1.5 border-b border-brd bg-panel px-3">
@@ -83,21 +117,66 @@ export function Toolbar() {
           </span>
         )}
       </span>
-      {ops.map(({ op, label, Icon }) => (
+      <button
+        disabled={busy !== null}
+        onClick={() => void run("pull")}
+        className="btn-ghost disabled:opacity-50"
+      >
+        {busy === "pull" ? (
+          <LoaderCircle size={13} className="animate-spin" aria-hidden />
+        ) : (
+          <ArrowDownToLine size={13} aria-hidden />
+        )}
+        拉取
+      </button>
+      {/* 推送 = 分裂按钮：主体推上游，caret 选远程（多远程仓库需要） */}
+      <div className="relative flex items-center">
         <button
-          key={op}
           disabled={busy !== null}
-          onClick={() => void run(op)}
-          className="btn-ghost disabled:opacity-50"
+          onClick={() => void run("push")}
+          title={pushTarget ? `推送到 ${pushTarget}` : "推送（尚未建立上游关联）"}
+          className="btn-ghost rounded-r-none border-r border-brd-soft disabled:opacity-50"
         >
-          {busy === op ? (
+          {busy === "push" ? (
             <LoaderCircle size={13} className="animate-spin" aria-hidden />
           ) : (
-            <Icon size={13} aria-hidden />
+            <ArrowUpFromLine size={13} aria-hidden />
           )}
-          {label}
+          推送
         </button>
-      ))}
+        <button
+          disabled={busy !== null || remotes.length === 0}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setPushMenu({ x: r.left, y: r.bottom + 4 });
+          }}
+          title="选择推送目标远程"
+          aria-label="选择推送目标远程"
+          className="btn-ghost icon-btn rounded-l-none pl-0 disabled:opacity-50"
+        >
+          <ChevronDown size={11} aria-hidden />
+        </button>
+        {pushMenu && (
+          <ContextMenu
+            x={pushMenu.x}
+            y={pushMenu.y}
+            items={pushMenuItems()}
+            onClose={() => setPushMenu(null)}
+          />
+        )}
+      </div>
+      <button
+        disabled={busy !== null}
+        onClick={() => void run("fetch")}
+        className="btn-ghost disabled:opacity-50"
+      >
+        {busy === "fetch" ? (
+          <LoaderCircle size={13} className="animate-spin" aria-hidden />
+        ) : (
+          <Download size={13} aria-hidden />
+        )}
+        抓取
+      </button>
       <div className="ml-auto flex h-7 min-w-[200px] items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs text-faint transition-colors focus-within:border-accent">
         <Search size={12} className="shrink-0" aria-hidden />
         <input
