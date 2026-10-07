@@ -51,6 +51,13 @@ pub struct GitOutput {
     pub success: bool,
 }
 
+/// Windows release 构建本进程是 GUI 子系统（main.rs 的 windows_subsystem），没有控制台。
+/// 此时 CreateProcess 会给每个 git.exe 新分配一个控制台窗口 —— 打开仓库时几十条命令就会
+/// 闪几十个黑框。CREATE_NO_WINDOW 让子进程无窗口运行；stdout/stderr 本来就管道化，
+/// 不依赖控制台，所以无副作用。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn spawn_git(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> GitResult<GitOutput> {
     use std::io::Write;
     let mut cmd = Command::new("git");
@@ -64,6 +71,11 @@ fn spawn_git(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> GitResul
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_OPTIONAL_LOCKS", "0");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = cmd.spawn()?;
     if let Some(input) = stdin {
         child
