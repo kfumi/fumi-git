@@ -83,8 +83,14 @@ function CanvasGraph({
       ctx.strokeStyle = bg;
       ctx.stroke();
       if (rows[row].id === selectedId) {
+        // 选中：背景色间隙圈盖住连线 + accent 细圈（无半透明填充，避免连线透出显脏）
         ctx.beginPath();
-        ctx.arc(x, cy, 8.5, 0, Math.PI * 2);
+        ctx.arc(x, cy, 7.5, 0, Math.PI * 2);
+        ctx.strokeStyle = bg;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, cy, 7.5, 0, Math.PI * 2);
         ctx.strokeStyle = accent;
         ctx.lineWidth = 1.6;
         ctx.stroke();
@@ -312,11 +318,10 @@ function CommitRow({
       onContextMenu={onContextMenu}
       style={{ top, height: ROW_H, paddingLeft: graphW + 16 }}
       className={
-        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_92px_70px_56px] items-center gap-[10px] overflow-hidden pr-[14px] transition-colors " +
-        (selected ? "bg-sel" : "hover:bg-hover")
+        "absolute left-0 right-0 grid cursor-pointer grid-cols-[1fr_76px_70px_56px] items-center gap-[10px] overflow-hidden pr-[14px] transition-colors " +
+        (selected ? "bg-sel-strong" : "hover:bg-hover")
       }
     >
-      {selected && <div className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-accent" />}
       {/* IDEA 式两行：主题独占一行；ref 徽章固定第二行（无引用时不占位，不再与标题互相挤压） */}
       <div className="min-w-0">
         <div className="truncate text-[13px] font-medium leading-[18px]" title={commit.subject}>
