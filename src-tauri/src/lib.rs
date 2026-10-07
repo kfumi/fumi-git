@@ -67,6 +67,7 @@ pub fn run() {
             commands::revert_commit,
             commands::cherry_pick,
             commands::cherry_pick_skip,
+            commands::cherry_pick_keep,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

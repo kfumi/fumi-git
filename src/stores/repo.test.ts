@@ -50,6 +50,7 @@ vi.mock("../lib/ipc", () => {
     revertCommit: vi.fn(async () => ""),
     cherryPick: vi.fn(async () => ""),
     cherryPickSkip: vi.fn(async () => {}),
+    cherryPickKeep: vi.fn(async () => ""),
   };
   return {
     ipc: ipcMock,
@@ -911,23 +912,28 @@ describe("revert 与 cherry-pick（二阶段票 04/05）", () => {
     const toasts = useRepo.getState().toasts;
     expect(toasts[toasts.length - 1]?.text ?? "").toContain("工作区不干净");
 
-    // 干净树 → 确认 → 空提交错误 → 选择对话框
+    // 干净树 → 确认 → 失败但停在 cherry-pick 状态（无未合入文件 = 空提交）→ 选择对话框
     (ipc.cherryPick as ReturnType<typeof vi.fn>).mockRejectedValue({
-      kind: "NothingToCommit",
-      message: "该提交的改动已包含在当前分支（应用后为空提交）",
+      kind: "CommandFailed",
+      message: "The previous cherry-pick is now empty",
     });
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
       staged: [],
       unstaged: [],
       unmerged: [],
-      operation: null,
+      operation: "cherry-pick",
       branch: "main",
     });
     await useRepo.getState().cherryPickFlow("normal1");
     useRepo.getState().dialog!.actions[0].run("", false); // 择取
+    await new Promise((r) => setTimeout(r, 50));
     await vi.waitFor(() => expect(useRepo.getState().dialog?.title).toBe("空提交"));
     const empty = useRepo.getState().dialog!;
-    expect(empty.actions.map((a) => a.label)).toEqual(["跳过并继续", "放弃本次摘取"]);
+    expect(empty.actions.map((a) => a.label)).toEqual([
+      "跳过并继续",
+      "仍然提交（空提交）",
+      "放弃本次摘取",
+    ]);
     empty.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.cherryPickSkip).toHaveBeenCalled());
   });

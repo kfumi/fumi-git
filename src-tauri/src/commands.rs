@@ -19,6 +19,16 @@ pub struct AppState {
     pub repo_watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
+/// operation 字符串 → 枚举（abort/continue 共用）
+fn parse_operation(op: &str) -> Result<git::Operation, GitError> {
+    match op {
+        "merge" => Ok(git::Operation::Merge),
+        "cherry-pick" => Ok(git::Operation::CherryPick),
+        "revert" => Ok(git::Operation::Revert),
+        other => Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
+    }
+}
+
 fn with_active<T>(
     state: &AppState,
     f: impl FnOnce(&GitRepo) -> Result<T, GitError>,
@@ -171,13 +181,7 @@ pub fn merge_upstream(state: State<'_, AppState>, ref_name: String) -> Result<St
 
 #[tauri::command]
 pub fn abort_operation(state: State<'_, AppState>, op: String) -> Result<(), GitError> {
-    let op = match op.as_str() {
-        "merge" => git::Operation::Merge,
-        "cherry-pick" => git::Operation::CherryPick,
-        "revert" => git::Operation::Revert,
-        other => return Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
-    };
-    with_active(&state, |repo| git::abort_operation(repo, op))
+    with_active(&state, |repo| git::abort_operation(repo, parse_operation(&op)?))
 }
 
 #[tauri::command]
@@ -213,18 +217,13 @@ pub fn resolve_take(
 
 #[tauri::command]
 pub fn continue_operation(state: State<'_, AppState>, op: String) -> Result<String, GitError> {
-    let op = match op.as_str() {
-        "merge" => git::Operation::Merge,
-        "cherry-pick" => git::Operation::CherryPick,
-        "revert" => git::Operation::Revert,
-        other => return Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
-    };
-    with_active(&state, |repo| git::continue_operation(repo, op))
+    with_active(&state, |repo| git::continue_operation(repo, parse_operation(&op)?))
 }
 
 #[tauri::command]
-pub fn open_file_in_editor(path: String) -> Result<(), String> {
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+pub fn open_file_in_editor(path: String) -> Result<(), GitError> {
+    tauri_plugin_opener::open_path(&path, None::<&str>)
+        .map_err(|e| GitError::Io(e.to_string()))
 }
 
 #[tauri::command]
@@ -240,6 +239,11 @@ pub fn cherry_pick(state: State<'_, AppState>, hash: String) -> Result<String, G
 #[tauri::command]
 pub fn cherry_pick_skip(state: State<'_, AppState>) -> Result<(), GitError> {
     with_active(&state, git::cherry_pick_skip)
+}
+
+#[tauri::command]
+pub fn cherry_pick_keep(state: State<'_, AppState>) -> Result<String, GitError> {
+    with_active(&state, git::cherry_pick_keep)
 }
 
 #[tauri::command]

@@ -677,6 +677,16 @@ pub enum Operation {
     Revert,
 }
 
+impl Operation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Operation::Merge => "merge",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        }
+    }
+}
+
 /// 依据 sequencer 状态文件识别进行中的操作（互斥，优先级即检出顺序）。
 fn read_operation(repo: &GitRepo) -> Option<Operation> {
     let has = |name: &str| repo.run_ok(&["rev-parse", "--verify", "--quiet", name]);
@@ -710,12 +720,8 @@ pub fn abort_operation(repo: &GitRepo, op: Operation) -> GitResult<()> {
     if current != Some(op) {
         return Err(GitError::CommandFailed("当前没有进行中的对应操作".into()));
     }
-    let cmd = match op {
-        Operation::Merge => "merge",
-        Operation::CherryPick => "cherry-pick",
-        Operation::Revert => "revert",
-    };
-    repo.run(&[cmd, "--abort"])?;
+    let cmd = op.as_str();
+    repo.run(&["-c", "core.editor=true", cmd, "--abort"])?;
     Ok(())
 }
 
@@ -729,10 +735,7 @@ pub struct ConflictVersions {
 }
 
 pub fn conflict_versions(repo: &GitRepo, path: &str) -> GitResult<ConflictVersions> {
-    let path = path.trim();
-    if path.is_empty() || path.contains("..") || path.starts_with('/') {
-        return Err(GitError::CommandFailed("非法文件路径".into()));
-    }
+    let path = validate_repo_path(path)?;
     let stage = |n: u8| repo.run(&["show", &format!(":{n}:{path}")]).ok();
     Ok(ConflictVersions {
         base: stage(1),
@@ -789,12 +792,7 @@ pub fn continue_operation(repo: &GitRepo, op: Operation) -> GitResult<String> {
             st.unmerged.len()
         )));
     }
-    let cmd = match op {
-        Operation::Merge => "merge",
-        Operation::CherryPick => "cherry-pick",
-        Operation::Revert => "revert",
-    };
-    repo.run(&["-c", "core.editor=true", cmd, "--continue"])?;
+    repo.run(&["-c", "core.editor=true", op.as_str(), "--continue"])?;
     Ok("已完成".into())
 }
 
@@ -821,21 +819,11 @@ pub fn revert_commit(repo: &GitRepo, hash: &str) -> GitResult<String> {
     Ok("已还原该提交".into())
 }
 
-/// 择取单提交到当前分支。改动已在当前分支（空提交）时返回 NothingToCommit，
-/// 由前端给出「跳过 / 放弃」选择；冲突时进入 operation=cherry-pick 流程。
+/// 择取单提交到当前分支。失败时的语义由前端按仓库状态分类：
+/// operation=cherry-pick 且无未合入文件 = 空提交；有未合入文件 = 冲突。
 pub fn cherry_pick(repo: &GitRepo, hash: &str) -> GitResult<String> {
     let target = validate_hash(hash)?;
-    repo.run(&["-c", "core.editor=true", "cherry-pick", &target])
-        .map_err(|e| match &e {
-            GitError::CommandFailed(stderr)
-                if stderr.contains("now empty") || stderr.contains("is empty") =>
-            {
-                GitError::NothingToCommit(
-                    "该提交的改动已包含在当前分支（应用后为空提交）".into(),
-                )
-            }
-            _ => e,
-        })?;
+    repo.run(&["-c", "core.editor=true", "cherry-pick", &target])?;
     Ok("已择取该提交".into())
 }
 
@@ -843,6 +831,15 @@ pub fn cherry_pick(repo: &GitRepo, hash: &str) -> GitResult<String> {
 pub fn cherry_pick_skip(repo: &GitRepo) -> GitResult<()> {
     repo.run(&["-c", "core.editor=true", "cherry-pick", "--skip"])?;
     Ok(())
+}
+
+/// 空提交场景下「仍然提交」（--allow-empty，沿用 CHERRY_PICK_MSG）。仅在摘取进行中可用。
+pub fn cherry_pick_keep(repo: &GitRepo) -> GitResult<String> {
+    if read_operation(repo) != Some(Operation::CherryPick) {
+        return Err(GitError::CommandFailed("当前没有进行中的摘取操作".into()));
+    }
+    repo.run(&["-c", "core.editor=true", "commit", "--allow-empty", "--no-edit"])?;
+    Ok("已保留空提交".into())
 }
 
 // ── stash 管理 ──────────────────────────────────────────────────────────────
@@ -2033,13 +2030,22 @@ mod tests {
             .subject
             .contains("fix: something"));
 
-        // 空提交：把同一提交再摘一次 → NothingToCommit 结构化错误
-        assert!(matches!(
-            cherry_pick(&r, &fix),
-            Err(GitError::NothingToCommit(m)) if m.contains("空提交")
-        ));
+        // 空提交：把同一提交再摘一次 → 失败但停在 cherry-pick 状态、无未合入文件
+        //（语义分类在前端按状态判断，不匹配 stderr 文案）
+        assert!(cherry_pick(&r, &fix).is_err());
+        let st_empty = get_status(&r).unwrap();
+        assert_eq!(st_empty.operation, Some(Operation::CherryPick));
+        assert!(st_empty.unmerged.is_empty());
         cherry_pick_skip(&r).unwrap();
         assert!(get_status(&r).unwrap().operation.is_none());
+
+        // 仍然提交（--allow-empty）路径
+        assert!(cherry_pick(&r, &fix).is_err());
+        cherry_pick_keep(&r).unwrap();
+        assert!(get_status(&r).unwrap().operation.is_none());
+        assert!(get_log(&r, 0, 1).unwrap().commits[0]
+            .subject
+            .contains("fix: something"));
 
         // 冲突：构造分叉后摘取对同一文件的改动
         git(t.path(), &["checkout", "-q", "feat"]);

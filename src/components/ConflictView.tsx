@@ -25,8 +25,6 @@ function VersionPane({ title, content }: { title: string; content: string | null
 
 export function ConflictView() {
   const cv = useRepo((s) => s.conflictView);
-  const operation = useRepo((s) => s.status?.operation ?? null);
-  const unmergedCount = useRepo((s) => s.status?.unmerged.length ?? 0);
   const resolveTakeFlow = useRepo((s) => s.resolveTakeFlow);
   const markResolvedFlow = useRepo((s) => s.markResolvedFlow);
   const openConflictInEditor = useRepo((s) => s.openConflictInEditor);
@@ -89,6 +87,16 @@ export function ConflictView() {
               <VersionPane title="我方（当前分支 :2）" content={cv.versions?.ours ?? null} />
               <VersionPane title="对方（传入 :3）" content={cv.versions?.theirs ?? null} />
             </div>
+            {cv.versions?.base != null && (
+              <details className="shrink-0 rounded-lg border border-brd-soft bg-panel2">
+                <summary className="cursor-pointer px-2.5 py-1.5 text-[10.5px] font-medium text-faint">
+                  共同祖先（:1）参考
+                </summary>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-faint">
+                  {cv.versions.base}
+                </pre>
+              </details>
+            )}
             <div className="shrink-0 text-[10.5px] text-faint">
               工作区结果中的冲突块（{blocks.length} 个）——逐块取舍或到编辑器手动修改：
             </div>
@@ -106,9 +114,6 @@ export function ConflictView() {
           </>
         )}
       </div>
-      {operation && unmergedCount === 0 && (
-        <ContinueBar />
-      )}
     </div>
   );
 }
@@ -153,22 +158,3 @@ function ConflictBlockRow({
   );
 }
 
-// 冲突全部解决后出现在视图底部的收尾条
-function ContinueBar() {
-  const operation = useRepo((s) => s.status?.operation);
-  const continueOperationFlow = useRepo((s) => s.continueOperationFlow);
-  if (!operation) return null;
-  const label =
-    operation === "merge" ? "继续合并" : operation === "cherry-pick" ? "继续摘取" : "继续还原";
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-t border-brd bg-warn-soft px-3 py-2">
-      <span className="text-xs text-dim">冲突已全部标记解决。</span>
-      <button
-        onClick={() => void continueOperationFlow()}
-        className="btn-primary ml-auto !h-6 !px-2.5 text-[10.5px]"
-      >
-        {label}
-      </button>
-    </div>
-  );
-}

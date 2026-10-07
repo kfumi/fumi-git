@@ -101,6 +101,8 @@ export const ipc = {
   cherryPick: (hash: string) => cmd<string>("cherry_pick", { hash }),
   /** 跳过卡住的空 cherry-pick */
   cherryPickSkip: () => cmd<void>("cherry_pick_skip"),
+  /** 空提交场景下仍然提交（--allow-empty） */
+  cherryPickKeep: () => cmd<string>("cherry_pick_keep"),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

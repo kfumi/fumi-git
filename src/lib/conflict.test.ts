@@ -28,6 +28,25 @@ describe("parseConflictBlocks", () => {
     expect(blocks[1].oursLines).toEqual(["ours B"]);
   });
 
+  it("CRLF 行尾的标记也能解析", () => {
+    const CR = String.fromCharCode(13);
+    const LF = String.fromCharCode(10);
+    const crlf = ["h" + CR, "<<<<<<< HEAD" + CR, "ours" + CR, "=======" + CR, "theirs" + CR, ">>>>>>> f" + CR, "" + CR].join(LF);
+    const { blocks, wellFormed } = parseConflictBlocks(crlf);
+    expect(wellFormed).toBe(true);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].oursLines).toEqual(["ours" + CR]);
+  });
+
+  it("空块（两侧都无内容）解析与取舍", () => {
+    const LF = String.fromCharCode(10);
+    const empty = ["a", "<<<<<<< HEAD", "=======", ">>>>>>> f", "b"].join(LF) + LF;
+    const { blocks } = parseConflictBlocks(empty);
+    expect(blocks[0].oursLines).toEqual([]);
+    expect(applyBlockChoice(empty, 0, "theirs")).toBe("a" + LF + "b" + LF);
+    expect(applyBlockChoice(empty, 0, "ours")).toBe("a" + LF + "b" + LF);
+  });
+
   it("无标记 / 标记不配对：blocks 为空或 wellFormed=false", () => {
     expect(parseConflictBlocks("no markers here").blocks).toHaveLength(0);
     const broken = ["<<<<<<< HEAD", "ours", "footer"].join("\n");

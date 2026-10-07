@@ -2,7 +2,7 @@
 // 中栏「改动」tab：工作区（暂存/提交）
 import { useEffect, useState } from "react";
 import { Check, CircleCheck, LoaderCircle } from "lucide-react";
-import { useRepo } from "../stores/repo";
+import { useRepo, OPERATION_LABEL } from "../stores/repo";
 import { absTime, avatarColor } from "../lib/format";
 import type { FileEntry, FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
@@ -137,10 +137,12 @@ export function ChangesPanel() {
   const workFile = useRepo((s) => s.workFile);
   const workStaged = useRepo((s) => s.workStaged);
   const abortOperation = useRepo((s) => s.abortOperation);
+  const continueOperationFlow = useRepo((s) => s.continueOperationFlow);
   const discardWorktreeFlow = useRepo((s) => s.discardWorktreeFlow);
   const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
   const discardAllFlow = useRepo((s) => s.discardAllFlow);
   const openConflict = useRepo((s) => s.openConflict);
+  const markResolvedFlow = useRepo((s) => s.markResolvedFlow);
   const conflictPath = useRepo((s) => s.conflictView?.path ?? null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -301,19 +303,21 @@ export function ChangesPanel() {
     <div className="flex h-full min-h-0 flex-col bg-panel">
       {status.operation && (
         <div className="flex shrink-0 items-center gap-2 border-b border-brd bg-warn-soft px-4 py-2 text-xs">
-          <span className="font-medium text-warn">
-            {status.operation === "merge"
-              ? "合并进行中"
-              : status.operation === "cherry-pick"
-                ? "摘取（cherry-pick）进行中"
-                : "还原（revert）进行中"}
-          </span>
+          <span className="font-medium text-warn">{OPERATION_LABEL[status.operation].progress}</span>
           {status.unmerged.length > 0 ? (
             <span className="text-dim">
               {status.unmerged.length} 个冲突文件，点开处理后暂存提交；或中止操作
             </span>
           ) : (
-            <span className="text-dim">冲突已全部标记解决，可继续完成本次操作</span>
+            <span className="text-dim">冲突已全部标记解决</span>
+          )}
+          {status.unmerged.length === 0 && (
+            <button
+              onClick={() => void continueOperationFlow()}
+              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-ink transition-colors hover:bg-hover"
+            >
+              {OPERATION_LABEL[status.operation].cont}
+            </button>
           )}
           <button
             onClick={() => void abortOperation()}
@@ -347,8 +351,8 @@ export function ChangesPanel() {
                   file={f}
                   active={conflictPath === f.path}
                   onSelect={() => void openConflict(f.path)}
-                  actionLabel="标记暂存"
-                  onAction={() => void stage([f.path])}
+                  actionLabel="标记已解决"
+                  onAction={() => void markResolvedFlow(f.path)}
                 />
               ))}
             </>

@@ -2,7 +2,7 @@
 // IPC 返回视为类型化契约（见 docs/agents 域规则），本模块是前端唯一业务状态源。
 import { create } from "zustand";
 import { asGitError, ipc } from "../lib/ipc";
-import { applyBlockChoice } from "../lib/conflict";
+import { applyBlockChoice, parseConflictBlocks } from "../lib/conflict";
 import type {
   AppConfig,
   BranchSummary,
@@ -10,10 +10,18 @@ import type {
   CommitEntry,
   ConflictVersions,
   FileEntry,
+  GitOperation,
   RepoMeta,
   RepoStatus,
   StashEntry,
 } from "../lib/types";
+
+/** operation 文案单一来源（横幅 / 继续按钮 / toast 共用） */
+export const OPERATION_LABEL: Record<GitOperation, { progress: string; cont: string }> = {
+  merge: { progress: "合并进行中", cont: "继续合并" },
+  "cherry-pick": { progress: "摘取（cherry-pick）进行中", cont: "继续摘取" },
+  revert: { progress: "还原（revert）进行中", cont: "继续还原" },
+};
 
 const PAGE = 200;
 
@@ -952,14 +960,15 @@ export const useRepo = create<RepoState>((set, get) => ({
       runWrite(set, get, `标记已解决 ${path}…`, `已标记 ${path} 已解决`, async () => {
         await ipc.stage([path]);
       });
-    // 仍有冲突标记时先警示（可能没改完）
+    // 仍有冲突标记时先警示（可能没改完）——用与视图一致的权威解析器
     let result = get().conflictView?.path === path ? get().conflictView?.result : null;
     try {
       result = await ipc.readWorktreeFile(path);
     } catch {
       // 读不到（如已删除）不阻断标记
     }
-    if (result && result.includes("<<<<<<<")) {
+    const parsed = result !== null && result !== undefined ? parseConflictBlocks(result) : null;
+    if (parsed && (parsed.blocks.length > 0 || !parsed.wellFormed)) {
       get().openDialog({
         title: "文件仍含冲突标记",
         message: `${path} 里还有 <<<<<<< 标记，直接标记已解决会把冲突标记提交进版本库。确定要继续吗？`,
@@ -980,7 +989,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       get().pushToast("err", "还有冲突文件未解决，无法继续");
       return;
     }
-    const label = op === "merge" ? "继续合并" : op === "cherry-pick" ? "继续摘取" : "继续还原";
+    const label = OPERATION_LABEL[op].cont;
     await runWrite(set, get, `${label}…`, `${label}完成`, async () => {
       await ipc.continueOperation(op);
     });
@@ -996,6 +1005,10 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   applyConflictBlock: async (path, blockIndex, side) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
     // 以视图中的工作区结果为基准拼装，写回后同步刷新视图内容
     const base = get().conflictView?.path === path ? get().conflictView?.result : null;
     if (base === null || base === undefined) return;
@@ -1021,58 +1034,59 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
     if (!(await ensureCleanTree(get))) return;
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
-    const doPick = async () => {
-      set({ writeBusy: true });
-      const id = get().pushToast("busy", "择取提交…");
-      try {
-        await ipc.cherryPick(commitId);
-        get().updateToast(id, { kind: "ok", text: "已择取该提交" });
-        await get().refresh();
-      } catch (e) {
-        const err = await asGitError(e);
-        await get().refresh();
-        if (get().status?.operation === "cherry-pick") {
-          get().updateToast(id, {
-            kind: "err",
-            text: `择取产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`,
-          });
-        } else if (err.kind === "NothingToCommit") {
-          get().updateToast(id, { kind: "err", text: err.message });
-          get().openDialog({
-            title: "空提交",
-            message: "该提交的改动已经包含在当前分支里，应用它不会产生任何变化。",
-            actions: [
-              {
-                label: "跳过并继续",
-                run: () => {
-                  void runWrite(set, get, "跳过空提交…", "已跳过空提交", async () => {
-                    await ipc.cherryPickSkip();
-                  });
-                },
-              },
-              {
-                label: "放弃本次摘取",
-                kind: "danger",
-                run: () => {
-                  void runWrite(set, get, "放弃摘取…", "已放弃本次摘取", async () => {
-                    await ipc.abortOperation("cherry-pick");
-                  });
-                },
-              },
-            ],
-          });
-        } else {
-          get().updateToast(id, { kind: "err", text: err.message });
-        }
-      } finally {
-        set({ writeBusy: false });
-      }
-    };
     get().openDialog({
       title: "择取此提交（cherry-pick）",
       message: `把 ${commitId.slice(0, 7)} 应用到当前分支 ${branch}。`,
       actions: [
-        { label: "择取", kind: "primary", run: () => void doPick() },
+        {
+          label: "择取",
+          kind: "primary",
+          run: () => {
+            void (async () => {
+              await runWrite(set, get, "择取提交…", "已择取该提交", async () => {
+                await ipc.cherryPick(commitId);
+              });
+              // runWrite 的失败分支不刷新——先拉取最新状态再做语义分类
+              await get().refresh();
+              // 失败语义按仓库状态分类（不匹配 stderr 文案，locale 无关）：
+              // 停在 cherry-pick 且无未合入文件 = 空提交；有未合入文件 = 冲突（横幅已接管）
+              const st = get().status;
+              if (st?.operation === "cherry-pick" && st.unmerged.length === 0) {
+                get().openDialog({
+                  title: "空提交",
+                  message: "该提交的改动已经包含在当前分支里，应用它不会产生任何变化。",
+                  actions: [
+                    {
+                      label: "跳过并继续",
+                      run: () => {
+                        void runWrite(set, get, "跳过空提交…", "已跳过空提交", async () => {
+                          await ipc.cherryPickSkip();
+                        });
+                      },
+                    },
+                    {
+                      label: "仍然提交（空提交）",
+                      run: () => {
+                        void runWrite(set, get, "提交空提交…", "已保留空提交", async () => {
+                          await ipc.cherryPickKeep();
+                        });
+                      },
+                    },
+                    {
+                      label: "放弃本次摘取",
+                      kind: "danger",
+                      run: () => {
+                        void runWrite(set, get, "放弃摘取…", "已放弃本次摘取", async () => {
+                          await ipc.abortOperation("cherry-pick");
+                        });
+                      },
+                    },
+                  ],
+                });
+              }
+            })();
+          },
+        },
       ],
     });
   },

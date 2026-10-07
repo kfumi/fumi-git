@@ -3,6 +3,12 @@
 
 export type ConflictSide = "ours" | "theirs";
 
+/** 标记行判定容忍行尾 CR（CRLF 文件，autocrlf 下 Windows 常见） */
+const trimCr = (line: string) => line.replace(String.fromCharCode(13), "");
+const isSep = (line: string) => trimCr(line) === "=======";
+const isStart = (line: string) => trimCr(line).startsWith("<<<<<<<");
+const isEnd = (line: string) => trimCr(line).startsWith(">>>>>>>");
+
 export interface ConflictBlock {
   /** 冲突块我方内容（不含 <<<<<<< / ======= 标记行） */
   oursLines: string[];
@@ -27,7 +33,7 @@ export function parseConflictBlocks(content: string): ParsedConflict {
 
   let i = 0;
   while (i < lines.length) {
-    if (!lines[i].startsWith("<<<<<<<")) {
+    if (!isStart(lines[i])) {
       i++;
       continue;
     }
@@ -35,9 +41,9 @@ export function parseConflictBlocks(content: string): ParsedConflict {
     let sep = -1;
     let end = -1;
     for (let j = i + 1; j < lines.length; j++) {
-      if (sep === -1 && lines[j] === "=======") {
+      if (sep === -1 && isSep(lines[j])) {
         sep = j;
-      } else if (lines[j].startsWith(">>>>>>>")) {
+      } else if (isEnd(lines[j])) {
         end = j;
         break;
       }
@@ -76,7 +82,7 @@ export function applyBlockChoice(
   if (trailingNewline) lines = lines.slice(0, -1);
 
   while (i < lines.length) {
-    if (!lines[i].startsWith("<<<<<<<")) {
+    if (!isStart(lines[i])) {
       out.push(lines[i]);
       i++;
       continue;
