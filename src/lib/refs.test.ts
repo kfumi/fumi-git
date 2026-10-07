@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRef, groupBranches } from "./refs";
+import { classifyRef, groupBranches, groupRemotes, splitRemoteRef } from "./refs";
 
 describe("classifyRef", () => {
   it("HEAD / 标签 / 本地分支各归各类", () => {
@@ -53,5 +53,44 @@ describe("groupBranches", () => {
 
   it("空输入返回空结构", () => {
     expect(groupBranches([])).toEqual({ roots: [], groups: [] });
+  });
+});
+
+describe("splitRemoteRef", () => {
+  it("按真实远程列表做最长前缀匹配", () => {
+    expect(splitRemoteRef("origin/master", ["origin", "gitee"])).toEqual(["origin", "master"]);
+    expect(splitRemoteRef("gitee/feat/a", ["origin", "gitee"])).toEqual(["gitee", "feat/a"]);
+  });
+
+  it("未知远端退化为首个 / 切分，不丢展示", () => {
+    expect(splitRemoteRef("upstream/main", ["origin"])).toEqual(["upstream", "main"]);
+    expect(splitRemoteRef("lonely", ["origin"])).toEqual(["lonely", ""]);
+  });
+});
+
+describe("groupRemotes", () => {
+  it("先按远端名分组，第二层复用分支式 / 分层", () => {
+    const g = groupRemotes(
+      [
+        ["origin/master", "1"],
+        ["gitee/master", "2"],
+        ["gitee/feat/agent-task-board", "3"],
+        ["gitee/feat/daemon-boundary", "4"],
+      ],
+      ["origin", "gitee"],
+    );
+    expect(g.map(([r]) => r)).toEqual(["gitee", "origin"]);
+    const gitee = g.find(([r]) => r === "gitee")![1];
+    expect(gitee.roots).toEqual([["master", "2"]]);
+    expect(gitee.groups).toEqual([
+      ["feat", [["agent-task-board", "3"], ["daemon-boundary", "4"]]],
+    ]);
+    const origin = g.find(([r]) => r === "origin")![1];
+    expect(origin.roots).toEqual([["master", "1"]]);
+    expect(origin.groups).toEqual([]);
+  });
+
+  it("空输入返回空数组", () => {
+    expect(groupRemotes([], ["origin"])).toEqual([]);
   });
 });

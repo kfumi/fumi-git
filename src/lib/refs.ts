@@ -45,3 +45,45 @@ export function groupBranches(branches: Iterable<[string, string]>): BranchGroup
   for (const [, members] of groups) members.sort(byName);
   return { roots, groups };
 }
+
+/**
+ * 拆分远程 ref 为 [远端名, 分支部分]。
+ * 优先按真实远程列表做最长前缀匹配（兼容远端名本身含 "/" 的极端情况），
+ * 匹配不上时退化为按首个 "/" 切分，保证未知远端也不丢展示。
+ */
+export function splitRemoteRef(
+  fullRef: string,
+  remotes: Iterable<string> = FALLBACK_REMOTES,
+): [string, string] {
+  const list = [...remotes].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const r of list) {
+    if (fullRef === r) return [r, ""];
+    if (fullRef.startsWith(`${r}/`)) return [r, fullRef.slice(r.length + 1)];
+  }
+  const i = fullRef.indexOf("/");
+  if (i === -1) return [fullRef, ""];
+  return [fullRef.slice(0, i), fullRef.slice(i + 1)];
+}
+
+/**
+ * 远程 refs 按远端名分组，第二层复用 groupBranches 做 "/" 分层
+ * （VS Code 源代码管理风格，与本地分支一致）。
+ * 返回按远端名排序的 [远端名, BranchGrouping][]，
+ * 其中 BranchGrouping 内名称均为去掉 "<远端>/" 后的分支部分，
+ * 完整 ref 可由 `<远端>/<分支部分>` 拼回。
+ */
+export function groupRemotes(
+  refs: Iterable<[string, string]>,
+  remotes: Iterable<string> = FALLBACK_REMOTES,
+): [string, BranchGrouping][] {
+  const buckets = new Map<string, [string, string][]>();
+  for (const [full, tip] of refs) {
+    const [remote, rest] = splitRemoteRef(full, remotes);
+    const list = buckets.get(remote) ?? [];
+    list.push([rest, tip]);
+    buckets.set(remote, list);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([remote, branches]): [string, BranchGrouping] => [remote, groupBranches(branches)]);
+}

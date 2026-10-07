@@ -1,4 +1,4 @@
-// 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰，按 "/" 前缀分组折叠）/ 远程
+// 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰，按 "/" 前缀分组折叠）/ 远程（按远端名 + "/" 分层，与分支同风格）
 import { useMemo, useState } from "react";
 import {
   Archive,
@@ -13,12 +13,14 @@ import {
   X,
 } from "lucide-react";
 import { useRepo } from "../stores/repo";
-import { classifyRef, groupBranches } from "../lib/refs";
+import { classifyRef, groupBranches, groupRemotes } from "../lib/refs";
 import { relTime } from "../lib/format";
 import type { BranchSummary, StashEntry } from "../lib/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 const GROUPS_KEY = "fumigit.expanded-branch-groups";
+const REMOTE_GROUPS_KEY = "fumigit.expanded-remote-groups";
+const REMOTE_SUBGROUPS_KEY = "fumigit.expanded-remote-subgroups";
 
 function loadExpandedGroups(): Set<string> {
   try {
@@ -26,6 +28,23 @@ function loadExpandedGroups(): Set<string> {
     return Array.isArray(raw) ? new Set(raw.filter((x) => typeof x === "string")) : new Set();
   } catch {
     return new Set();
+  }
+}
+
+function loadStringSet(key: string): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return Array.isArray(raw) ? new Set(raw.filter((x) => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistStringSet(key: string, next: Set<string>) {
+  try {
+    localStorage.setItem(key, JSON.stringify([...next]));
+  } catch {
+    // 持久化失败只影响下次启动的展开状态
   }
 }
 
@@ -143,6 +162,34 @@ export function Sidebar() {
       return next;
     });
 
+  // 远程先按远端名分组，第二层复用分支式 "/" 分层；两层折叠状态各自持久化
+  const remoteTree = useMemo(
+    () => groupRemotes(remoteRefs.entries(), remoteNames),
+    [remoteRefs, remoteNames],
+  );
+  const [expandedRemotes, setExpandedRemotes] = useState<Set<string>>(() =>
+    loadStringSet(REMOTE_GROUPS_KEY),
+  );
+  const [expandedRemoteSubs, setExpandedRemoteSubs] = useState<Set<string>>(() =>
+    loadStringSet(REMOTE_SUBGROUPS_KEY),
+  );
+  const toggleRemote = (remote: string) =>
+    setExpandedRemotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(remote)) next.delete(remote);
+      else next.add(remote);
+      persistStringSet(REMOTE_GROUPS_KEY, next);
+      return next;
+    });
+  const toggleRemoteSub = (key: string) =>
+    setExpandedRemoteSubs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      persistStringSet(REMOTE_SUBGROUPS_KEY, next);
+      return next;
+    });
+
   return (
     <aside className="h-full min-h-0 overflow-y-auto bg-panel px-2 py-3">
       <h4 className="section-label pb-1.5 pt-1">仓库</h4>
@@ -169,7 +216,7 @@ export function Sidebar() {
             </button>
             <button
               title="从列表移除"
-              aria-label={`从列表移除 ${e.name}`}
+              aria-label={'从列表移除 ' + e.name}
               onClick={() => void removeRecent(e.path)}
               className="mr-1 hidden rounded p-0.5 text-faint transition-colors hover:text-bad group-hover:block"
             >
@@ -323,19 +370,95 @@ export function Sidebar() {
         </>
       )}
 
-      {remoteRefs.size > 0 && (
+      {remoteTree.length > 0 && (
         <>
           <h4 className="section-label pb-1.5 pt-4">远程</h4>
-          {[...remoteRefs.entries()].slice(0, 20).map(([name, id]) => (
-            <button
-              key={name}
-              onClick={() => selectRefTip(id)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
-            >
-              <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
-              <span className="truncate">{name}</span>
-            </button>
-          ))}
+          {remoteTree.map(([remote, grouping]) => {
+            const open = expandedRemotes.has(remote);
+            const total =
+              grouping.roots.length +
+              grouping.groups.reduce((n, [, members]) => n + members.length, 0);
+            return (
+              <div key={remote}>
+                <button
+                  onClick={() => toggleRemote(remote)}
+                  aria-expanded={open}
+                  title={remote}
+                  className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+                >
+                  {open ? (
+                    <ChevronDown size={11} aria-hidden className="shrink-0 text-faint" />
+                  ) : (
+                    <ChevronRight size={11} aria-hidden className="shrink-0 text-faint" />
+                  )}
+                  <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
+                  <span className="truncate">{remote}</span>
+                  <span className="tnum ml-auto text-[10px] text-faint">{total}</span>
+                </button>
+                {open &&
+                  grouping.roots.map(([name, id]) => {
+                    const full = name ? remote + "/" + name : remote;
+                    const label = name === "" ? "(空)" : name;
+                    return (
+                      <button
+                        key={full}
+                        onClick={() => selectRefTip(id)}
+                        title={full + " → " + id.slice(0, 7)}
+                        className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-7 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+                      >
+                        <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
+                        <span className="truncate">{label}</span>
+                      </button>
+                    );
+                  })}
+                {open &&
+                  grouping.groups.map(([prefix, members]) => {
+                    const subKey = remote + "/" + prefix;
+                    const subOpen = expandedRemoteSubs.has(subKey);
+                    return (
+                      <div key={subKey}>
+                        <button
+                          onClick={() => toggleRemoteSub(subKey)}
+                          aria-expanded={subOpen}
+                          title={subKey}
+                          className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-7 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+                        >
+                          {subOpen ? (
+                            <ChevronDown size={11} aria-hidden className="shrink-0 text-faint" />
+                          ) : (
+                            <ChevronRight size={11} aria-hidden className="shrink-0 text-faint" />
+                          )}
+                          {subOpen ? (
+                            <FolderOpen size={11} aria-hidden className="shrink-0 text-faint" />
+                          ) : (
+                            <Folder size={11} aria-hidden className="shrink-0 text-faint" />
+                          )}
+                          <span className="truncate">{prefix}</span>
+                          <span className="tnum ml-auto text-[10px] text-faint">
+                            {members.length}
+                          </span>
+                        </button>
+                        {subOpen &&
+                          members.map(([rest, id]) => {
+                            const full = remote + "/" + prefix + "/" + rest;
+                            return (
+                              <button
+                                key={full}
+                                onClick={() => selectRefTip(id)}
+                                title={full + " → " + id.slice(0, 7)}
+                                className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-10 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
+                              >
+                                <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
+                                <span className="truncate">{rest}</span>
+                              </button>
+                            );
+                          })}
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })}
         </>
       )}
     </aside>
@@ -365,7 +488,7 @@ function BranchRow({
     <button
       onClick={onSelect}
       onContextMenu={onContextMenu}
-      title={`${fullName} → ${tip.slice(0, 7)}`}
+      title={fullName + " → " + tip.slice(0, 7)}
       className={
         "flex w-full items-center gap-1.5 rounded-md py-[7px] pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink " +
         (indent ? "pl-7" : "pl-2")
@@ -384,3 +507,4 @@ function BranchRow({
     </button>
   );
 }
+
