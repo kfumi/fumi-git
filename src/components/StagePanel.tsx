@@ -531,7 +531,7 @@ function GroupLabel({
             onAction();
           }}
           title={actionLabel}
-          className="ml-auto hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] font-normal text-faint transition-colors hover:text-accent-ink group-hover:block"
+          className="invisible ml-auto shrink-0 rounded px-1 py-0.5 text-[10.5px] font-normal text-faint transition-colors group-hover:visible hover:text-accent-ink"
         >
           {actionLabel}
         </button>
