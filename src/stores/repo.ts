@@ -165,6 +165,10 @@ interface RepoState {
   openConflictInEditor: (path: string) => Promise<void>;
   /** 冲突块逐块取舍：把第 index 块替换为所选一侧内容并写回工作区（不自动 add） */
   applyConflictBlock: (path: string, blockIndex: number, side: "ours" | "theirs") => Promise<void>;
+  /** 择取提交到当前分支（脏树拒绝；空提交给跳过/放弃选择） */
+  cherryPickFlow: (commitId: string) => Promise<void>;
+  /** 还原提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
+  revertFlow: (commitId: string) => Promise<void>;
   /**
    * 丢弃工作区改动（US22–25，支持批量多选）：未暂存组 M/D → 从 index 恢复，
    * 'A'（未跟踪）→ 删除文件；均带不可恢复确认。
@@ -189,6 +193,16 @@ const errText = async (e: unknown): Promise<string> => {
 
 /** 分支名客户端预检（表单即时反馈；后端仍以 check-ref-format 为准） */
 const BAD_BRANCH_CHARS = new Set([" ", "~", "^", ":", "?", "*", "[", "]", "\\", "\t"]);
+
+/** 写操作前的脏工作树预检（cherry-pick / revert 等不允许带脏树进行） */
+async function ensureCleanTree(get: () => RepoState): Promise<boolean> {
+  const st = await ipc.getStatus().catch(() => null);
+  if (st && (st.staged.length > 0 || st.unstaged.length > 0 || st.unmerged.length > 0)) {
+    get().pushToast("err", "工作区不干净：请先提交改动或 stash 后再操作");
+    return false;
+  }
+  return true;
+}
 
 export function validateBranchName(name: string): string | null {
   const n = name.trim();
@@ -998,6 +1012,113 @@ export const useRepo = create<RepoState>((set, get) => ({
     } catch (e) {
       get().pushToast("err", await errText(e));
     }
+  },
+
+  cherryPickFlow: async (commitId) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
+    if (!(await ensureCleanTree(get))) return;
+    const branch = get().summary?.branch ?? get().meta?.branch ?? "";
+    const doPick = async () => {
+      set({ writeBusy: true });
+      const id = get().pushToast("busy", "择取提交…");
+      try {
+        await ipc.cherryPick(commitId);
+        get().updateToast(id, { kind: "ok", text: "已择取该提交" });
+        await get().refresh();
+      } catch (e) {
+        const err = await asGitError(e);
+        await get().refresh();
+        if (get().status?.operation === "cherry-pick") {
+          get().updateToast(id, {
+            kind: "err",
+            text: `择取产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`,
+          });
+        } else if (err.kind === "NothingToCommit") {
+          get().updateToast(id, { kind: "err", text: err.message });
+          get().openDialog({
+            title: "空提交",
+            message: "该提交的改动已经包含在当前分支里，应用它不会产生任何变化。",
+            actions: [
+              {
+                label: "跳过并继续",
+                run: () => {
+                  void runWrite(set, get, "跳过空提交…", "已跳过空提交", async () => {
+                    await ipc.cherryPickSkip();
+                  });
+                },
+              },
+              {
+                label: "放弃本次摘取",
+                kind: "danger",
+                run: () => {
+                  void runWrite(set, get, "放弃摘取…", "已放弃本次摘取", async () => {
+                    await ipc.abortOperation("cherry-pick");
+                  });
+                },
+              },
+            ],
+          });
+        } else {
+          get().updateToast(id, { kind: "err", text: err.message });
+        }
+      } finally {
+        set({ writeBusy: false });
+      }
+    };
+    get().openDialog({
+      title: "择取此提交（cherry-pick）",
+      message: `把 ${commitId.slice(0, 7)} 应用到当前分支 ${branch}。`,
+      actions: [
+        { label: "择取", kind: "primary", run: () => void doPick() },
+      ],
+    });
+  },
+
+  revertFlow: async (commitId) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
+    // 合并提交需要 -m 主线，本版不支持（spec 决策）
+    const commit = get().commits.find((c) => c.id === commitId);
+    if (commit && commit.parents.length > 1) {
+      get().openDialog({
+        title: "无法还原合并提交",
+        message:
+          "这是合并提交：还原它需要指定保留哪条主线（git revert -m），暂不支持。可以先还原其单个父提交序列，或在终端处理。",
+        actions: [],
+      });
+      return;
+    }
+    if (!(await ensureCleanTree(get))) return;
+    const branch = get().summary?.branch ?? get().meta?.branch ?? "";
+    get().openDialog({
+      title: "还原此提交（revert）",
+      message: `生成一个反向提交撤销 ${commitId.slice(0, 7)} 的改动，落在分支 ${branch} 上（不改写历史）。`,
+      actions: [
+        {
+          label: "还原",
+          kind: "primary",
+          run: () => {
+            void runWrite(set, get, "还原提交…", "已还原该提交", async () => {
+              try {
+                await ipc.revertCommit(commitId);
+              } catch (e) {
+                await get().refresh();
+                if (get().status?.operation === "revert") {
+                  get().pushToast("err", `还原产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`);
+                  return;
+                }
+                throw e;
+              }
+            });
+          },
+        },
+      ],
+    });
   },
 
   discardWorktreeFlow: (files) => {

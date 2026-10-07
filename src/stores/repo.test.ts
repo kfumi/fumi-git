@@ -47,6 +47,9 @@ vi.mock("../lib/ipc", () => {
     resolveTake: vi.fn(async () => {}),
     continueOperation: vi.fn(async () => ""),
     openInEditor: vi.fn(async () => {}),
+    revertCommit: vi.fn(async () => ""),
+    cherryPick: vi.fn(async () => ""),
+    cherryPickSkip: vi.fn(async () => {}),
   };
   return {
     ipc: ipcMock,
@@ -854,6 +857,79 @@ describe("冲突解决视图与逐块取舍（二阶段票 02/03）", () => {
     await useRepo.getState().applyConflictBlock("a.txt", 0, "theirs");
     expect(ipc.writeWorktreeFile).toHaveBeenCalledWith("a.txt", "h\ntheirs\ntail\n");
     expect(useRepo.getState().conflictView?.result).toBe("h\ntheirs\ntail\n");
+  });
+});
+
+describe("revert 与 cherry-pick（二阶段票 04/05）", () => {
+  const withRepo = () =>
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch: "main" },
+      summary: { branch: "main", upstream: null, ahead: 0, behind: 0 },
+      commits: [
+        { id: "merge1", short_id: "merge1", parents: ["p1", "p2"], author_name: "林", author_email: "a@b.c", time: 3, subject: "Merge", refs: [] },
+        { id: "normal1", short_id: "normal1", parents: ["p0"], author_name: "林", author_email: "a@b.c", time: 2, subject: "normal", refs: [] },
+      ],
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+  };
+
+  it("revertFlow：合并提交解释性拦截，不发 IPC", async () => {
+    withRepo();
+    logOk();
+    await useRepo.getState().revertFlow("merge1");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("无法还原合并提交");
+    expect(ipc.revertCommit).not.toHaveBeenCalled();
+
+    await useRepo.getState().revertFlow("normal1");
+    const d2 = useRepo.getState().dialog!;
+    d2.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.revertCommit).toHaveBeenCalledWith("normal1"));
+  });
+
+  it("cherryPickFlow：脏工作树拒绝；空提交给跳过/放弃选择", async () => {
+    withRepo();
+    logOk();
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      staged: [],
+      unstaged: [{ path: "a.ts", old_path: null, status: "M" }],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+    await useRepo.getState().cherryPickFlow("normal1");
+    expect(useRepo.getState().dialog).toBeNull(); // 脏树：确认框都不出
+    const toasts = useRepo.getState().toasts;
+    expect(toasts[toasts.length - 1]?.text ?? "").toContain("工作区不干净");
+
+    // 干净树 → 确认 → 空提交错误 → 选择对话框
+    (ipc.cherryPick as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "NothingToCommit",
+      message: "该提交的改动已包含在当前分支（应用后为空提交）",
+    });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+    await useRepo.getState().cherryPickFlow("normal1");
+    useRepo.getState().dialog!.actions[0].run("", false); // 择取
+    await vi.waitFor(() => expect(useRepo.getState().dialog?.title).toBe("空提交"));
+    const empty = useRepo.getState().dialog!;
+    expect(empty.actions.map((a) => a.label)).toEqual(["跳过并继续", "放弃本次摘取"]);
+    empty.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.cherryPickSkip).toHaveBeenCalled());
   });
 });
 

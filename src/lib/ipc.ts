@@ -95,6 +95,12 @@ export const ipc = {
   continueOperation: (op: GitOperation) => cmd<string>("continue_operation", { op }),
   /** 用系统默认应用打开文件（手动编辑冲突） */
   openInEditor: (path: string) => cmd<void>("open_file_in_editor", { path }),
+  /** 还原普通提交（合并提交被后端拦截） */
+  revertCommit: (hash: string) => cmd<string>("revert_commit", { hash }),
+  /** 择取单提交（空提交返回 NothingToCommit） */
+  cherryPick: (hash: string) => cmd<string>("cherry_pick", { hash }),
+  /** 跳过卡住的空 cherry-pick */
+  cherryPickSkip: () => cmd<void>("cherry_pick_skip"),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

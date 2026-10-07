@@ -228,6 +228,21 @@ pub fn open_file_in_editor(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn revert_commit(state: State<'_, AppState>, hash: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::revert_commit(repo, &hash))
+}
+
+#[tauri::command]
+pub fn cherry_pick(state: State<'_, AppState>, hash: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::cherry_pick(repo, &hash))
+}
+
+#[tauri::command]
+pub fn cherry_pick_skip(state: State<'_, AppState>) -> Result<(), GitError> {
+    with_active(&state, git::cherry_pick_skip)
+}
+
+#[tauri::command]
 pub fn get_branch_summary(state: State<'_, AppState>) -> Result<BranchSummary, GitError> {
     with_active(&state, git::get_branch_summary)
 }

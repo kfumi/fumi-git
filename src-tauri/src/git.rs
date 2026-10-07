@@ -798,6 +798,53 @@ pub fn continue_operation(repo: &GitRepo, op: Operation) -> GitResult<String> {
     Ok("已完成".into())
 }
 
+// ── 历史修正：revert / cherry-pick（二阶段票 04/05） ────────────────────────
+
+fn validate_hash(hash: &str) -> GitResult<String> {
+    let hash = hash.trim();
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::CommandFailed("非法提交哈希".into()));
+    }
+    Ok(hash.to_string())
+}
+
+/// 还原普通提交（自动生成 `Revert "<subject>"` 提交，不改写历史）。
+/// 合并提交需要 -m 指定主线，本版不支持并给出解释。
+pub fn revert_commit(repo: &GitRepo, hash: &str) -> GitResult<String> {
+    let target = validate_hash(hash)?;
+    if repo.run_ok(&["rev-parse", "--verify", "--quiet", &format!("{target}^2")]) {
+        return Err(GitError::CommandFailed(
+            "这是合并提交：还原它需要指定保留哪条主线（-m 参数），暂不支持。".into(),
+        ));
+    }
+    repo.run(&["-c", "core.editor=true", "revert", "--no-edit", &target])?;
+    Ok("已还原该提交".into())
+}
+
+/// 择取单提交到当前分支。改动已在当前分支（空提交）时返回 NothingToCommit，
+/// 由前端给出「跳过 / 放弃」选择；冲突时进入 operation=cherry-pick 流程。
+pub fn cherry_pick(repo: &GitRepo, hash: &str) -> GitResult<String> {
+    let target = validate_hash(hash)?;
+    repo.run(&["-c", "core.editor=true", "cherry-pick", &target])
+        .map_err(|e| match &e {
+            GitError::CommandFailed(stderr)
+                if stderr.contains("now empty") || stderr.contains("is empty") =>
+            {
+                GitError::NothingToCommit(
+                    "该提交的改动已包含在当前分支（应用后为空提交）".into(),
+                )
+            }
+            _ => e,
+        })?;
+    Ok("已择取该提交".into())
+}
+
+/// 跳过当前卡住的 cherry-pick（空提交场景）。
+pub fn cherry_pick_skip(repo: &GitRepo) -> GitResult<()> {
+    repo.run(&["-c", "core.editor=true", "cherry-pick", "--skip"])?;
+    Ok(())
+}
+
 // ── stash 管理 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1935,6 +1982,78 @@ mod tests {
         let r2 = GitRepo::open(t2.path()).unwrap();
         resolve_take(&r2, "a.txt", false).unwrap();
         assert_eq!(fs::read_to_string(t2.path().join("a.txt")).unwrap(), "feat\n");
+    }
+
+    #[test]
+    fn revert_normal_merge_rejected_and_conflict() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1\n", "base");
+        let second = commit_file(t.path(), "a.txt", "2\n", "second");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 普通提交 revert：内容回退 + 自动提交
+        revert_commit(&r, &second).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "1\n");
+        let page = get_log(&r, 0, 2).unwrap();
+        assert!(page.commits[0].subject.starts_with("Revert \"second\""));
+
+        // 合并提交被拦截并解释
+        commit_file(t.path(), "b.txt", "x", "for merge");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t.path(), "f.txt", "1", "feat work");
+        git(t.path(), &["checkout", "-q", "main"]);
+        git(t.path(), &["merge", "-q", "--no-ff", "-m", "Merge feat", "feat"]);
+        let merge_hash = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+        assert!(matches!(
+            revert_commit(&r, &merge_hash),
+            Err(GitError::CommandFailed(m)) if m.contains("合并提交")
+        ));
+
+        // revert 冲突：对同一文件连续编辑后还原较早提交 → 反向补丁上下文对不上
+        let x = commit_file(t.path(), "a.txt", "2\n", "edit x");
+        commit_file(t.path(), "a.txt", "3\n", "edit y");
+        assert!(revert_commit(&r, &x).is_err());
+        assert_eq!(get_status(&r).unwrap().operation, Some(Operation::Revert));
+        abort_operation(&r, Operation::Revert).unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_success_empty_and_conflict() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        let fix = commit_file(t.path(), "fix.txt", "fixed\n", "fix: something");
+        git(t.path(), &["checkout", "-q", "main"]);
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 成功：fix.txt 落到 main，自动提交
+        cherry_pick(&r, &fix).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("fix.txt")).unwrap(), "fixed\n");
+        assert!(get_log(&r, 0, 1).unwrap().commits[0]
+            .subject
+            .contains("fix: something"));
+
+        // 空提交：把同一提交再摘一次 → NothingToCommit 结构化错误
+        assert!(matches!(
+            cherry_pick(&r, &fix),
+            Err(GitError::NothingToCommit(m)) if m.contains("空提交")
+        ));
+        cherry_pick_skip(&r).unwrap();
+        assert!(get_status(&r).unwrap().operation.is_none());
+
+        // 冲突：构造分叉后摘取对同一文件的改动
+        git(t.path(), &["checkout", "-q", "feat"]);
+        let clash = commit_file(t.path(), "a.txt", "feat side\n", "feat edits a");
+        git(t.path(), &["checkout", "-q", "main"]);
+        commit_file(t.path(), "a.txt", "main side\n", "main edits a");
+        let out = Command::new("git")
+            .current_dir(t.path())
+            .args(["cherry-pick", &clash])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "夹具必须真冲突");
+        assert_eq!(get_status(&r).unwrap().operation, Some(Operation::CherryPick));
+        abort_operation(&r, Operation::CherryPick).unwrap();
     }
 
     /// 票 08 性能 smoke（默认忽略，显式运行：cargo test perf_100k -- --ignored）

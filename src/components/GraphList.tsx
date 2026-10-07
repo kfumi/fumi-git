@@ -118,6 +118,8 @@ export function GraphList() {
   const checkout = useRepo((s) => s.checkout);
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
   const resetBranchTo = useRepo((s) => s.resetBranchTo);
+  const cherryPickFlow = useRepo((s) => s.cherryPickFlow);
+  const revertFlow = useRepo((s) => s.revertFlow);
   const summary = useRepo((s) => s.summary);
   // 提交右键菜单：挂本地分支才出现迁出项（ui-spec 决策：不做 detached HEAD）
   const [commitMenu, setCommitMenu] = useState<{ x: number; y: number; commit: CommitEntry } | null>(
@@ -138,6 +140,8 @@ export function GraphList() {
         label: "重置当前分支到此…",
         onSelect: () => resetBranchTo(commit.id),
       },
+      { label: "择取此提交（cherry-pick）…", onSelect: () => void cherryPickFlow(commit.id) },
+      { label: "还原此提交（revert）…", onSelect: () => void revertFlow(commit.id) },
     );
     return items;
   };
