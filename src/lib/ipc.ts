@@ -5,7 +5,9 @@ import type {
   AppConfig,
   BranchSummary,
   CommitDetail,
+  ConflictVersions,
   GitError,
+  GitOperation,
   LogPage,
   RepoMeta,
   RepoStatus,
@@ -80,7 +82,8 @@ export const ipc = {
     cmd<string>("push_upstream", { remote, branch }),
   listRemotes: () => cmd<string[]>("list_remotes"),
   mergeUpstream: (refName: string) => cmd<string>("merge_upstream", { refName }),
-  abortMerge: () => cmd<void>("abort_merge"),
+  abortOperation: (op: GitOperation) => cmd<void>("abort_operation", { op }),
+  conflictVersions: (path: string) => cmd<ConflictVersions>("conflict_versions", { path }),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

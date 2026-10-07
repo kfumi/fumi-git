@@ -170,8 +170,22 @@ pub fn merge_upstream(state: State<'_, AppState>, ref_name: String) -> Result<St
 }
 
 #[tauri::command]
-pub fn abort_merge(state: State<'_, AppState>) -> Result<(), GitError> {
-    with_active(&state, git::abort_merge)
+pub fn abort_operation(state: State<'_, AppState>, op: String) -> Result<(), GitError> {
+    let op = match op.as_str() {
+        "merge" => git::Operation::Merge,
+        "cherry-pick" => git::Operation::CherryPick,
+        "revert" => git::Operation::Revert,
+        other => return Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
+    };
+    with_active(&state, |repo| git::abort_operation(repo, op))
+}
+
+#[tauri::command]
+pub fn conflict_versions(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<git::ConflictVersions, GitError> {
+    with_active(&state, |repo| git::conflict_versions(repo, &path))
 }
 
 #[tauri::command]

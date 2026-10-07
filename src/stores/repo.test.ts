@@ -31,7 +31,7 @@ vi.mock("../lib/ipc", () => {
     pushUpstream: vi.fn(async () => ""),
     listRemotes: vi.fn(async () => ["origin"]),
     mergeUpstream: vi.fn(async () => ""),
-    abortMerge: vi.fn(async () => {}),
+    abortOperation: vi.fn(async () => {}),
     stashList: vi.fn(async () => []),
     stashDiff: vi.fn(async () => ""),
     stashApply: vi.fn(async () => {}),
@@ -508,7 +508,7 @@ describe("远程同步补全（票 04）", () => {
       staged: [],
       unstaged: [],
       unmerged: [],
-      merging: false,
+      operation: null,
       branch: "feat",
     });
 
@@ -531,7 +531,7 @@ describe("远程同步补全（票 04）", () => {
       staged: [],
       unstaged: [],
       unmerged: [{ path: "a.txt", old_path: null, status: "U" }],
-      merging: true,
+      operation: "merge",
       branch: "feat",
     });
 
@@ -544,18 +544,14 @@ describe("远程同步补全（票 04）", () => {
     });
   });
 
-  it("abortMerge：成功后提示并刷新", async () => {
+  it("abortOperation：按当前 operation 路由中止", async () => {
     withRepo();
     logOk();
-    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      staged: [],
-      unstaged: [],
-      unmerged: [],
-      merging: false,
-      branch: "feat",
+    useRepo.setState({
+      status: { staged: [], unstaged: [], unmerged: [], operation: "merge", branch: "feat" },
     });
-    await useRepo.getState().abortMerge();
-    expect(ipc.abortMerge).toHaveBeenCalled();
+    await useRepo.getState().abortOperation();
+    expect(ipc.abortOperation).toHaveBeenCalledWith("merge");
     expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok" });
   });
 });
@@ -576,7 +572,7 @@ describe("stash 管理（票 05）", () => {
       staged: [],
       unstaged: [],
       unmerged: [],
-      merging: false,
+      operation: null,
       branch: "main",
     });
   };
@@ -651,7 +647,7 @@ describe("丢弃改动（spec US22–25）", () => {
       staged: [],
       unstaged: [],
       unmerged: [],
-      merging: false,
+      operation: null,
       branch: "main",
     });
   };
@@ -710,7 +706,7 @@ describe("丢弃改动（spec US22–25）", () => {
           { path: "n.ts", old_path: null, status: "A" },
         ],
         unmerged: [],
-        merging: false,
+        operation: null,
         branch: "main",
       },
     });
@@ -734,7 +730,7 @@ describe("丢弃改动（spec US22–25）", () => {
       staged: [],
       unstaged: [],
       unmerged: [],
-      merging: false,
+      operation: null,
       branch: "main",
     });
     await useRepo.getState().checkout("feat");

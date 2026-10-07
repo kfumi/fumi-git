@@ -135,7 +135,7 @@ interface RepoState {
   /** 分叉拉取：把上游分支合并进当前分支（确认后由 remote('pull') 错误处理触发） */
   mergeUpstreamFlow: (refName: string) => Promise<void>;
   /** 中止进行中的合并，恢复到合并前状态 */
-  abortMerge: () => Promise<void>;
+  abortOperation: () => Promise<void>;
   /** stash 入口：对话框附可选描述，暂存全部改动（含未跟踪） */
   stashFlow: () => void;
   /** 选中/收起 stash 条目，右栏查看其只读 diff */
@@ -764,7 +764,7 @@ export const useRepo = create<RepoState>((set, get) => ({
                 const err = await asGitError(e);
                 await get().refresh();
                 const st = get().status;
-                if (st?.merging) {
+                if (st?.operation === "merge") {
                   get().updateToast(id, {
                     kind: "err",
                     text: `合并产生冲突：${st.unmerged.length} 个冲突文件。解决后暂存提交，或中止合并。`,
@@ -780,9 +780,11 @@ export const useRepo = create<RepoState>((set, get) => ({
     });
   },
 
-  abortMerge: async () => {
-    await runWrite(set, get, "中止合并…", "已中止合并，仓库恢复到合并前", async () => {
-      await ipc.abortMerge();
+  abortOperation: async () => {
+    const op = get().status?.operation;
+    if (!op) return;
+    await runWrite(set, get, "中止操作…", "已中止操作，仓库恢复到操作前", async () => {
+      await ipc.abortOperation(op);
     });
   },
 

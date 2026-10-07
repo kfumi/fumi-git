@@ -428,8 +428,8 @@ pub struct RepoStatus {
     pub unstaged: Vec<FileEntry>,
     /// 合并冲突（未合入）文件；非空即存在冲突
     pub unmerged: Vec<FileEntry>,
-    /// 是否有进行中的合并（MERGE_HEAD 存在），前端据此显示「中止合并」出口
-    pub merging: bool,
+    /// 进行中的多提交操作（merge / cherry-pick / revert）
+    pub operation: Option<Operation>,
     pub branch: String,
 }
 
@@ -484,7 +484,7 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
         staged,
         unstaged,
         unmerged,
-        merging: merge_in_progress(repo),
+        operation: read_operation(repo),
         branch: repo.current_branch(),
     })
 }
@@ -666,9 +666,29 @@ fn is_unmerged(x: char, y: char) -> bool {
     matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D'))
 }
 
-/// 是否有进行中的合并（MERGE_HEAD 存在）。
-fn merge_in_progress(repo: &GitRepo) -> bool {
-    repo.run_ok(&["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
+/// 进行中的多提交操作（决定横幅文案与 abort 路由）。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum Operation {
+    #[serde(rename = "merge")]
+    Merge,
+    #[serde(rename = "cherry-pick")]
+    CherryPick,
+    #[serde(rename = "revert")]
+    Revert,
+}
+
+/// 依据 sequencer 状态文件识别进行中的操作（互斥，优先级即检出顺序）。
+fn read_operation(repo: &GitRepo) -> Option<Operation> {
+    let has = |name: &str| repo.run_ok(&["rev-parse", "--verify", "--quiet", name]);
+    if has("MERGE_HEAD") {
+        Some(Operation::Merge)
+    } else if has("CHERRY_PICK_HEAD") {
+        Some(Operation::CherryPick)
+    } else if has("REVERT_HEAD") {
+        Some(Operation::Revert)
+    } else {
+        None
+    }
 }
 
 /// 合并把 <ref>（通常为上游分支如 origin/main）到当前分支。
@@ -683,13 +703,42 @@ pub fn merge_ref(repo: &GitRepo, ref_name: &str) -> GitResult<String> {
     Ok(out.trim().to_string())
 }
 
-/// 中止合并，恢复到合并前状态。仅在合并进行中可用。
-pub fn abort_merge(repo: &GitRepo) -> GitResult<()> {
-    if !merge_in_progress(repo) {
-        return Err(GitError::CommandFailed("当前没有进行中的合并".into()));
+/// 中止进行中的操作（merge --abort / cherry-pick --abort / revert --abort），
+/// 恢复到操作前状态。仅在对应操作进行中可用。
+pub fn abort_operation(repo: &GitRepo, op: Operation) -> GitResult<()> {
+    let current = read_operation(repo);
+    if current != Some(op) {
+        return Err(GitError::CommandFailed("当前没有进行中的对应操作".into()));
     }
-    repo.run(&["merge", "--abort"])?;
+    let cmd = match op {
+        Operation::Merge => "merge",
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
+    };
+    repo.run(&[cmd, "--abort"])?;
     Ok(())
+}
+
+/// 冲突文件的三方内容：index stages（`:1:` 共同祖先 / `:2:` 我方 / `:3:` 对方）。
+/// 文件不在某个 stage 中（如单侧新增）时对应项为 None。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConflictVersions {
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+}
+
+pub fn conflict_versions(repo: &GitRepo, path: &str) -> GitResult<ConflictVersions> {
+    let path = path.trim();
+    if path.is_empty() || path.contains("..") || path.starts_with('/') {
+        return Err(GitError::CommandFailed("非法文件路径".into()));
+    }
+    let stage = |n: u8| repo.run(&["show", &format!(":{n}:{path}")]).ok();
+    Ok(ConflictVersions {
+        base: stage(1),
+        ours: stage(2),
+        theirs: stage(3),
+    })
 }
 
 // ── stash 管理 ──────────────────────────────────────────────────────────────
@@ -800,11 +849,11 @@ pub fn discard_staged_new(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
 }
 
 /// 全部丢弃：tracked 的 index+工作区退回 HEAD，未跟踪文件/目录一并清掉。
-/// 合并进行中时拒绝（冲突现场请先解决或中止合并）。
+/// 有进行中的多提交操作（合并/摘取/还原）时拒绝，避免破坏冲突现场。
 pub fn discard_all(repo: &GitRepo) -> GitResult<()> {
-    if merge_in_progress(repo) {
+    if read_operation(repo).is_some() {
         return Err(GitError::CommandFailed(
-            "合并进行中，请先解决冲突并提交，或中止合并".into(),
+            "有进行中的合并/摘取/还原操作，请先完成或中止".into(),
         ));
     }
     repo.run(&["restore", "--source=HEAD", "--staged", "--worktree", "--", ":/"])?;
@@ -1617,7 +1666,7 @@ mod tests {
         assert!(msg.contains("Merge") || msg.contains("merge"), "{msg}");
         assert!(work.path().join("remote.txt").exists());
         let st = get_status(&r).unwrap();
-        assert!(!st.merging);
+        assert!(st.operation.is_none());
         assert!(st.unmerged.is_empty());
 
         // 冲突合并：两边改同一文件
@@ -1630,15 +1679,15 @@ mod tests {
 
         // 合并中：状态带 merging + 冲突清单
         let st = get_status(&r).unwrap();
-        assert!(st.merging);
+        assert_eq!(st.operation, Some(Operation::Merge));
         assert!(st.unmerged.iter().any(|f| f.path == "a.txt" && f.status == 'U'));
         assert!(!st.staged.iter().any(|f| f.path == "a.txt"));
         assert!(!st.unstaged.iter().any(|f| f.path == "a.txt"));
 
         // 中止合并：完整回到合并前
-        abort_merge(&r).unwrap();
+        abort_operation(&r, Operation::Merge).unwrap();
         let st2 = get_status(&r).unwrap();
-        assert!(!st2.merging);
+        assert!(st2.operation.is_none());
         assert!(st2.unmerged.is_empty());
         assert!(st2.staged.is_empty() && st2.unstaged.is_empty());
         let head = git(work.path(), &["rev-parse", "HEAD"]);
@@ -1650,8 +1699,8 @@ mod tests {
 
         // 非合并状态中止 → 结构化报错
         assert!(matches!(
-            abort_merge(&r),
-            Err(GitError::CommandFailed(m)) if m.contains("没有进行中的合并")
+            abort_operation(&r, Operation::Merge),
+            Err(GitError::CommandFailed(m)) if m.contains("没有进行中的对应操作")
         ));
         let _ = origin;
     }
@@ -1826,6 +1875,60 @@ mod tests {
         let all_elapsed = all.elapsed();
         assert!(total >= count);
         println!("首 200 条: {first_elapsed:?}；全量 {total} 条（{} 页）: {all_elapsed:?}", skip / 200 + 1);
+    }
+
+    #[test]
+    fn operation_detection_and_conflict_versions() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t.path(), "a.txt", "feat\n", "feat side");
+        git(t.path(), &["checkout", "-q", "main"]);
+        commit_file(t.path(), "a.txt", "main\n", "main side");
+        let r = GitRepo::open(t.path()).unwrap();
+        assert!(get_status(&r).unwrap().operation.is_none());
+
+        // cherry-pick 冲突 → CHERRY_PICK_HEAD → operation = cherry-pick
+        let feat_tip = git(t.path(), &["rev-parse", "feat"]).trim().to_string();
+        let out = Command::new("git")
+            .current_dir(t.path())
+            .args(["cherry-pick", &feat_tip])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "夹具必须真冲突");
+        let st = get_status(&r).unwrap();
+        assert_eq!(st.operation, Some(Operation::CherryPick));
+        assert!(st.unmerged.iter().any(|f| f.path == "a.txt"));
+
+        // stages 三方内容
+        let v = conflict_versions(&r, "a.txt").unwrap();
+        assert_eq!(v.base.as_deref(), Some("base\n"));
+        assert_eq!(v.ours.as_deref(), Some("main\n"));
+        assert_eq!(v.theirs.as_deref(), Some("feat\n"));
+        // 非法路径拒绝
+        assert!(matches!(
+            conflict_versions(&r, "../escape"),
+            Err(GitError::CommandFailed(m)) if m.contains("非法文件路径")
+        ));
+
+        abort_operation(&r, Operation::CherryPick).unwrap();
+        assert!(get_status(&r).unwrap().operation.is_none());
+
+        // revert 冲突 → REVERT_HEAD → operation = revert；abort 只认对应操作
+        let out = Command::new("git")
+            .current_dir(t.path())
+            .args(["revert", "--no-edit", &feat_tip])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "夹具必须真冲突");
+        let st2 = get_status(&r).unwrap();
+        assert_eq!(st2.operation, Some(Operation::Revert));
+        assert!(matches!(
+            abort_operation(&r, Operation::CherryPick),
+            Err(GitError::CommandFailed(_))
+        ));
+        abort_operation(&r, Operation::Revert).unwrap();
+        assert!(get_status(&r).unwrap().operation.is_none());
     }
 }
 

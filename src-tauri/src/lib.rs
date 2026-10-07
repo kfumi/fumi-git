@@ -57,7 +57,8 @@ pub fn run() {
             commands::push_upstream,
             commands::list_remotes,
             commands::merge_upstream,
-            commands::abort_merge,
+            commands::abort_operation,
+            commands::conflict_versions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

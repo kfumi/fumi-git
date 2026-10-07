@@ -40,14 +40,24 @@ export interface FileEntry {
   status: 'M' | 'A' | 'D' | 'R';
 }
 
+/** 进行中的多提交操作（决定横幅文案与中止路由） */
+export type GitOperation = 'merge' | 'cherry-pick' | 'revert';
+
 export interface RepoStatus {
   staged: FileEntry[];
   unstaged: FileEntry[];
   /** 合并冲突（未合入）文件；非空即存在冲突，状态记 'U' */
   unmerged: FileEntry[];
-  /** 是否有进行中的合并（MERGE_HEAD 存在） */
-  merging: boolean;
+  /** 进行中的多提交操作；null = 无 */
+  operation: GitOperation | null;
   branch: string;
+}
+
+/** 冲突文件三方内容（index stages；文件不在某 stage 时为 null） */
+export interface ConflictVersions {
+  base: string | null;
+  ours: string | null;
+  theirs: string | null;
 }
 
 export interface RepoMeta {

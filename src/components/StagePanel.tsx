@@ -136,7 +136,7 @@ export function ChangesPanel() {
   const selectWorkFile = useRepo((s) => s.selectWorkFile);
   const workFile = useRepo((s) => s.workFile);
   const workStaged = useRepo((s) => s.workStaged);
-  const abortMerge = useRepo((s) => s.abortMerge);
+  const abortOperation = useRepo((s) => s.abortOperation);
   const discardWorktreeFlow = useRepo((s) => s.discardWorktreeFlow);
   const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
   const discardAllFlow = useRepo((s) => s.discardAllFlow);
@@ -297,19 +297,27 @@ export function ChangesPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
-      {status.merging && (
+      {status.operation && (
         <div className="flex shrink-0 items-center gap-2 border-b border-brd bg-warn-soft px-4 py-2 text-xs">
-          <span className="font-medium text-warn">合并进行中</span>
-          {status.unmerged.length > 0 && (
+          <span className="font-medium text-warn">
+            {status.operation === "merge"
+              ? "合并进行中"
+              : status.operation === "cherry-pick"
+                ? "摘取（cherry-pick）进行中"
+                : "还原（revert）进行中"}
+          </span>
+          {status.unmerged.length > 0 ? (
             <span className="text-dim">
-              {status.unmerged.length} 个冲突文件，解决后暂存提交；或在终端处理后继续
+              {status.unmerged.length} 个冲突文件，点开处理后暂存提交；或中止操作
             </span>
+          ) : (
+            <span className="text-dim">冲突已全部标记解决，可继续完成本次操作</span>
           )}
           <button
-            onClick={() => void abortMerge()}
-            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-bad transition-colors hover:bg-[rgba(242,112,138,0.10)]"
+            onClick={() => void abortOperation()}
+            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-bad transition-colors hover:bg-bad-soft"
           >
-            中止合并
+            中止
           </button>
         </div>
       )}
@@ -442,7 +450,7 @@ export function ChangesPanel() {
           <span className="tnum ml-auto text-[11px] text-faint">
             {status.staged.length} 个已暂存
           </span>
-          {total > 0 && !status.merging && (
+          {total > 0 && !status.operation && (
             <button
               onClick={() => discardAllFlow()}
               title="丢弃全部工作区改动（不可恢复）"
