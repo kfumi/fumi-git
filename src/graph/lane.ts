@@ -1,25 +1,31 @@
-// 图谱 lane 分配 —— 纯函数，从已归档原型（分支 prototype/ui-variants）移植。
-// 规则（定稿见 docs/design/ui-spec.md / spec）：
-//   按传入顺序（拓扑序，children 在 parent 前）遍历；
-//   first parent 延续本 lane，不在可见集内则 lane 立即回收；
-//   其余 parent 各开新 lane（分支调色板按序取色）；
-//   无主的 lane 立即回收压缩。
+// 图谱 lane 分配与连线几何 —— 纯函数。
+// 规则（定稿见 docs/design/ui-spec.md，对齐 oil-git 的 src/graph.ts）：
+//   1. 节点列号优先**复用空槽位**，只记 max 水位、**不压缩下标**
+//      → 同一条线列号全程稳定，不会在行间横移（旧实现 splice 压缩会横移）；
+//   2. 节点出列即释放该槽，first parent 原地接棒，其余 parent 各占一列；
+//   3. 连线为「限幅贝塞尔」：控制点离端点最多 BEND_MAX(38px)，
+//      跨多行的边绝大部分路程即垂直直线，视觉上不会鼓成一团
+//      （旧实现控制点取父子中点，跨度越大鼓包越夸张）；
+//   4. 父提交不在可见集 → 虚线 stub 画到列表底部，占位列仍由 lanes 保留。
 
 import type { CommitEntry } from "../lib/types";
 
+/** 6 色（相邻位刻意拉开色相），按列号取色 —— 列稳定即颜色稳定 */
 export const BRANCH_PALETTE = [
   "#7C7FF2",
   "#3ECFB2",
   "#F0A64B",
-  "#F2708A",
   "#B085F5",
+  "#F2708A",
   "#4EA8F0",
-  "#5ADFC4",
-  "#F6BC6E",
 ];
 
-export const LANE_STEP = 15;
-export const GRAPH_PAD = 14;
+export const LANE_STEP = 12;
+export const GRAPH_PAD = 12;
+/** 节点半径（外缘含描边约 9.8px，恰好塞进 12px 的列距内） */
+export const NODE_R = 4;
+/** 贝塞尔控制点离端点的最大距离 */
+export const BEND_MAX = 38;
 
 export interface LaneNode {
   lane: number;
@@ -31,10 +37,12 @@ export interface LaneEdge {
   /** 起点行（子提交） */
   r1: number;
   l1: number;
-  /** 终点行（父提交） */
+  /** 终点行（父提交）；pending 时为 commits.length（列表底部之下） */
   r2: number;
   l2: number;
   color: string;
+  /** 父提交不在可见集内 → 画虚线 stub */
+  pending: boolean;
 }
 
 export interface Graph {
@@ -44,61 +52,113 @@ export interface Graph {
 }
 
 export function laneX(lane: number): number {
-  return GRAPH_PAD / 2 + 8 + lane * LANE_STEP;
+  return GRAPH_PAD + lane * LANE_STEP;
 }
 
-/** 图谱列宽度：随 lane 数自适应（至少定稿的 96px），分支多的仓库不裁边 */
-export function graphWidth(laneCount: number): number {
-  return Math.max(96, (laneCount + 1) * LANE_STEP);
+/** 图谱列宽：随列数自适应（下限 96px） */
+export function graphWidth(cols: number): number {
+  return Math.max(96, (cols + 1) * LANE_STEP);
+}
+
+/**
+ * 某段行区间内「有墨」的最大列号（返回列数）。
+ *
+ * 全局 laneCount 是整份列表里最宽的那处，直接拿来当列宽会在窄的地方留大片空白
+ * （实测 20 分支仓库：全局 21 列，而单个视口平均只用 13 列）。
+ *
+ * 精确性：跨列的限幅贝塞尔会连续扫过 l1→l2 之间的所有 x，所以一条边在它跨越的
+ * **每一行**上，有墨的最大列都恰为 max(l1, l2) —— 无需按行细分，直接按边取两端最大值即可。
+ */
+export function windowCols(
+  graph: Graph,
+  firstRow: number,
+  lastRow: number,
+  rowIds: (row: number) => string | undefined,
+): number {
+  let max = 0;
+  for (const e of graph.edges) {
+    if (e.r1 > lastRow || e.r2 < firstRow) continue;
+    if (e.l1 > max) max = e.l1;
+    if (e.l2 > max) max = e.l2;
+  }
+  for (let r = firstRow; r <= lastRow; r++) {
+    const n = graph.nodes.get(rowIds(r) ?? "");
+    if (n && n.lane > max) max = n.lane;
+  }
+  return max + 1;
+}
+
+export interface CurveCtl {
+  move: [number, number];
+  c1: [number, number];
+  c2: [number, number];
+  to: [number, number];
+}
+
+/**
+ * 限幅贝塞尔控制点：bend = min(|Δy| * 0.45, BEND_MAX)。
+ * 短边（相邻行）自然弯曲；长边只有首尾各 38px 在弯，中间几乎是直线。
+ */
+export function edgeCurve(x1: number, y1: number, x2: number, y2: number, bendMax = BEND_MAX): CurveCtl {
+  const dy = y2 - y1;
+  const bend = Math.min(Math.abs(dy) * 0.45, bendMax) * (dy >= 0 ? 1 : -1);
+  return {
+    move: [x1, y1],
+    c1: [x1, y1 + bend],
+    c2: [x2, y2 - bend],
+    to: [x2, y2],
+  };
 }
 
 export function computeGraph(commits: CommitEntry[]): Graph {
   const visible = new Set(commits.map((c) => c.id));
   const lanes: (string | null)[] = [];
-  const laneColors: string[] = [];
-  let colorSeq = 0;
   const nodes = new Map<string, LaneNode>();
-  const edges: LaneEdge[] = [];
+  let maxLane = 0;
+
+  // 找到 hash 已在等的列；否则优先复用空槽，最后才追加。**不回收压缩**，列号终身稳定。
+  const reserve = (hash: string): number => {
+    const found = lanes.indexOf(hash);
+    if (found >= 0) return found;
+    const free = lanes.indexOf(null);
+    const lane = free >= 0 ? free : lanes.length;
+    lanes[lane] = hash;
+    return lane;
+  };
 
   commits.forEach((c, row) => {
-    let lane = lanes.indexOf(c.id);
-    if (lane === -1) lane = lanes.length;
-    // 同一提交可能被多个子提交各预留一个槽位（分叉/合并）；
-    // 未被选中的槽位就地释放，否则 lane 永不回收、一路膨胀（lane 泄漏）
-    for (let i = lanes.length - 1; i >= 0; i--) {
-      if (i !== lane && lanes[i] === c.id) lanes[i] = null;
-    }
-    const color = laneColors[lane] ?? BRANCH_PALETTE[colorSeq++ % BRANCH_PALETTE.length];
-    laneColors[lane] = color;
-    nodes.set(c.id, { lane, color, row });
-
-    const [p0, ...rest] = c.parents;
-    lanes[lane] = p0 && visible.has(p0) ? p0 : null;
-    for (const p of rest) {
-      if (!visible.has(p)) continue;
-      if (lanes.indexOf(p) === -1) {
-        lanes.push(p);
-        laneColors.push(BRANCH_PALETTE[colorSeq++ % BRANCH_PALETTE.length]);
+    const lane = reserve(c.id);
+    if (lane > maxLane) maxLane = lane;
+    nodes.set(c.id, { lane, color: BRANCH_PALETTE[lane % BRANCH_PALETTE.length], row });
+    // 节点已出列 → 释放该槽，供 first parent 原地接棒或后续节点复用
+    lanes[lane] = null;
+    c.parents.forEach((parent, i) => {
+      // 不可见的父提交**不占列**：否则它把槽位钉死到一个永远不会出现的 hash 上，
+      // 搜索/过滤后每个被滤掉的 parent 都会永久泄漏一列（实测 11 列 → 47 列）。
+      if (!visible.has(parent)) return;
+      if (lanes.includes(parent)) return; // 已有列在等这个 parent
+      if (i === 0 && lanes[lane] === null) lanes[lane] = parent;
+      else {
+        const l = reserve(parent);
+        if (l > maxLane) maxLane = l;
       }
-    }
-    // 回收空 lane
-    for (let i = lanes.length - 1; i >= 0; i--) {
-      if (lanes[i] === null) {
-        lanes.splice(i, 1);
-        laneColors.splice(i, 1);
-      }
-    }
+    });
   });
 
-  // 边：子提交 lane → 父提交 lane（父提交必须可见）
+  // 边：子提交 lane → 父提交 lane；父提交不可见则沿本列画虚线 stub 到列表底部
+  // （**不新开列**，只作「历史在可见范围外继续」的提示）
+  const edges: LaneEdge[] = [];
   commits.forEach((c, row) => {
-    const from = nodes.get(c.id);
-    if (!from) return;
+    const from = nodes.get(c.id)!;
     for (const p of c.parents) {
       const to = nodes.get(p);
-      if (to) edges.push({ r1: row, l1: from.lane, r2: to.row, l2: to.lane, color: from.color });
+      edges.push(
+        to
+          ? { r1: row, l1: from.lane, r2: to.row, l2: to.lane, color: from.color, pending: false }
+          : { r1: row, l1: from.lane, r2: commits.length, l2: from.lane, color: from.color, pending: true },
+      );
     }
   });
 
-  return { nodes, edges, laneCount: Math.max(1, lanes.length, ...[...nodes.values()].map((n) => n.lane + 1)) };
+  return { nodes, edges, laneCount: maxLane + 1 };
 }

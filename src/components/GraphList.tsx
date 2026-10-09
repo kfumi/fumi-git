@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommitHorizontal } from "lucide-react";
-import { computeGraph, graphWidth, laneX, type Graph } from "../graph/lane";
+import { computeGraph, edgeCurve, graphWidth, laneX, windowCols, NODE_R, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
 import { absTime, avatarColor, relTime } from "../lib/format";
 import { classifyRef } from "../lib/refs";
@@ -17,12 +17,15 @@ function CanvasGraph({
   rows,
   scrollTop,
   viewportH,
+  cols,
   selectedId,
 }: {
   graph: Graph;
   rows: CommitEntry[];
   scrollTop: number;
   viewportH: number;
+  /** 视口内实际用到的列数（由 GraphList 算好传入，决定画布宽度） */
+  cols: number;
   selectedId: string | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -32,7 +35,7 @@ function CanvasGraph({
     const canvas = canvasRef.current;
     if (!canvas || viewportH <= 0) return;
     const dpr = window.devicePixelRatio || 1;
-    const graphW = graphWidth(graph.laneCount);
+    const graphW = graphWidth(cols);
     canvas.width = graphW * dpr;
     canvas.height = Math.max(viewportH, 1) * dpr;
     canvas.style.width = `${graphW}px`;
@@ -50,53 +53,50 @@ function CanvasGraph({
     const firstRow = Math.max(0, Math.floor(scrollTop / ROW_H) - 2);
     const lastRow = Math.min(rowCount - 1, Math.ceil((scrollTop + viewportH) / ROW_H) + 2);
 
-    // 曲线（子在上，父在下：r2 > r1）
+    // 连线：限幅贝塞尔。控制点离端点最多 BEND_MAX(38px)，所以跨多行的边
+    // 绝大部分路程就是垂直直线，既不会像「控制点取中点」那样鼓成一团，
+    // 也不需要 VS Code 那种行内正交走线的复杂模型。
     ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.8;
     for (const e of graph.edges) {
       if (e.r1 > lastRow || e.r2 < firstRow) continue;
-      const x1 = laneX(e.l1);
-      const x2 = laneX(e.l2);
-      const y1 = y(e.r1);
-      const y2 = y(e.r2);
-      const my = (y1 + y2) / 2;
+      const c = edgeCurve(laneX(e.l1), y(e.r1), laneX(e.l2), y(e.r2));
       ctx.strokeStyle = e.color;
-      ctx.globalAlpha = 0.8;
+      // 父提交被过滤掉 → 虚线 stub，表示历史在可见范围之外继续
+      ctx.setLineDash(e.pending ? [4, 4] : []);
       ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.bezierCurveTo(x1, my, x2, my, x2, y2);
+      ctx.moveTo(c.move[0], c.move[1]);
+      ctx.bezierCurveTo(c.c1[0], c.c1[1], c.c2[0], c.c2[1], c.to[0], c.to[1]);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    // 节点
+    // 节点：一律空心圆环（底色填充盖住穿过的连线），选中时填充 accent
     for (let row = firstRow; row <= lastRow; row++) {
-      const node = graph.nodes.get(rows[row]?.id ?? "");
+      const commit = rows[row];
+      const node = graph.nodes.get(commit?.id ?? "");
       if (!node) continue;
-      const isHead = rows[row].refs.includes("HEAD");
+      const isHead = commit.refs.includes("HEAD");
       const x = laneX(node.lane);
       const cy = y(row);
-      ctx.beginPath();
-      ctx.arc(x, cy, isHead ? 5.5 : 4, 0, Math.PI * 2);
-      ctx.fillStyle = node.color;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = bg;
-      ctx.stroke();
-      if (rows[row].id === selectedId) {
-        // 选中：背景色间隙圈盖住连线 + accent 细圈（无半透明填充，避免连线透出显脏）
+      if (isHead) {
+        ctx.globalAlpha = 0.13;
+        ctx.fillStyle = node.color;
         ctx.beginPath();
-        ctx.arc(x, cy, 7.5, 0, Math.PI * 2);
-        ctx.strokeStyle = bg;
-        ctx.lineWidth = 4;
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(x, cy, 7.5, 0, Math.PI * 2);
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
+        ctx.arc(x, cy, NODE_R * 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
       }
+      ctx.fillStyle = commit.id === selectedId ? accent : bg;
+      ctx.strokeStyle = node.color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(x, cy, NODE_R, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
-  }, [graph, rows, scrollTop, viewportH, selectedId, mode]);
+  }, [graph, rows, scrollTop, viewportH, cols, selectedId, mode]);
 
   return (
     <canvas
@@ -175,7 +175,6 @@ export function GraphList() {
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);
   const graph = useMemo(() => computeGraph(rows), [rows]);
-  const graphW = graphWidth(graph.laneCount);
 
   // 侧栏点击分支/标签/远程 → 将其 tip 提交滚动到列表顶部（行高恒定，直接换算 scrollTop）
   useEffect(() => {
@@ -198,6 +197,20 @@ export function GraphList() {
     estimateSize: () => ROW_H,
     overscan: 8,
   });
+
+  // 列宽按**视口内实际用到的列数**算，而不是全局 laneCount：
+  // 全局值是整份列表最宽的那处，直接用会在窄的地方留大片空白
+  // （实测 20 分支仓库：全局 21 列，单个视口平均只用 13 列）。
+  // 两侧各留 4 行缓冲，避免滚动时列宽频繁跳变。
+  const viewCols = useMemo(() => {
+    const rowCount = rows.length;
+    const first = Math.max(0, Math.floor(scrollTop / ROW_H) - 2 - 4);
+    const last = Math.min(rowCount - 1, Math.ceil((scrollTop + viewportH) / ROW_H) + 2 + 4);
+    if (viewportH <= 0 || last < first) return Math.max(1, graph.laneCount);
+    return windowCols(graph, first, last, (r) => rows[r]?.id);
+  }, [graph, rows, scrollTop, viewportH]);
+
+  const graphW = graphWidth(viewCols);
 
   const onScroll = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -254,6 +267,7 @@ export function GraphList() {
         rows={rows}
         scrollTop={scrollTop}
         viewportH={viewportH}
+        cols={viewCols}
         selectedId={selectedId}
       />
       <div
