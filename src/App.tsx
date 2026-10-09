@@ -1,5 +1,7 @@
 // 应用骨架：未开仓库 → 欢迎页；已开 → 侧栏 + 中栏工作台（右栏按需出现）
 // 侧栏像素级宽度独立持久化（右栏显隐不影响其宽度）；中/右宽度由 react-resizable-panels 管理
+// Panel 的 id + order 必须成对给：面板是条件渲染的（动态增删），只给 id 会被库警告
+// （id 决定 autoSaveId 的持久化键，order 决定注册顺序，两者缺一都可能错位）
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Panel, PanelGroup } from "react-resizable-panels";
@@ -83,12 +85,12 @@ export default function App() {
         <SidebarHandle width={sidebarW} onWidthChange={updateSidebarW} />
         <div className="h-full min-w-0 flex-1">
           <PanelGroup direction="horizontal" autoSaveId="fumigit-main-cols">
-            <Panel id="graph" defaultSize={63} minSize={30}>
+            <Panel id="graph" order={1} defaultSize={63} minSize={30}>
               <MainArea />
             </Panel>
             {showRight && <VDivider />}
             {showRight && (
-              <Panel id="right" defaultSize={37} minSize={24} maxSize={52}>
+              <Panel id="right" order={2} defaultSize={37} minSize={24} maxSize={52}>
                 <RightPane />
               </Panel>
             )}
@@ -132,11 +134,11 @@ function RightPane() {
   } else {
     content = (
       <PanelGroup direction="vertical" autoSaveId="fumigit-right">
-        <Panel id="detail" defaultSize={55} minSize={20}>
+        <Panel id="detail" order={1} defaultSize={55} minSize={20}>
           <CommitDetailPanel />
         </Panel>
         <HDivider />
-        <Panel id="filediff" defaultSize={45} minSize={20}>
+        <Panel id="filediff" order={2} defaultSize={45} minSize={20}>
           <FileDiffTabs />
         </Panel>
       </PanelGroup>
