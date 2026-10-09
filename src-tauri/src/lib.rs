@@ -58,6 +58,7 @@ pub fn run() {
             commands::push_to,
             commands::push_all_remotes,
             commands::list_remotes,
+            commands::list_refs,
             commands::merge_upstream,
             commands::abort_operation,
             commands::conflict_versions,

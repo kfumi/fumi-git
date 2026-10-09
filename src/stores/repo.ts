@@ -11,6 +11,7 @@ import type {
   ConflictVersions,
   FileEntry,
   GitOperation,
+  RefEntry,
   RepoMeta,
   RepoStatus,
   StashEntry,
@@ -88,6 +89,12 @@ interface RepoState {
   summary: BranchSummary | null;
   /** 仓库已配置的远程名（git remote）：多远程推送选择框与 ref 分类共用 */
   remotes: string[];
+  /**
+   * 全量引用（分支 / 标签 / 远程 ref）。侧栏的唯一数据源——
+   * 不能从 commits 推导：那些 ref 装饰只存在于已加载的分页里，
+   * tip 落在窗口外的分支/标签会整个消失。
+   */
+  refs: RefEntry[];
   filter: string;
   toasts: Toast[];
   /** 当前打开的通用对话框；null = 关闭 */
@@ -122,8 +129,11 @@ interface RepoState {
   /** 直接拉取工作区文件 diff（无 toggle 语义，refresh 复用） */
   reloadWorkDiff: (path: string, staged: boolean) => Promise<void>;
   setMainTab: (tab: "changes" | "history") => void;
-  /** 侧栏点击分支/标签/远程：选中其 tip 提交并让列表滚动置顶 */
-  selectRefTip: (id: string) => void;
+  /**
+   * 侧栏点击分支/标签/远程：选中其 tip 提交并让列表滚动置顶。
+   * tip 尚未加载时先翻页找到它（refs 是全量的，图谱却只加载了前若干页）。
+   */
+  selectRefTip: (id: string) => Promise<void>;
   /** 关闭右栏面板：改动 tab 收起工作文件 diff，历史 tab 取消选中提交 */
   closeRightPane: () => void;
   stage: (paths: string[]) => Promise<void>;
@@ -285,6 +295,7 @@ export const useRepo = create<RepoState>((set, get) => ({
   status: null,
   summary: null,
   remotes: [],
+  refs: [],
   filter: "",
   toasts: [],
   dialog: null,
@@ -567,6 +578,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       status: null,
       summary: null,
       remotes: [],
+      refs: [],
       dialog: null,
       stashes: [],
       stashView: null,
@@ -595,12 +607,13 @@ export const useRepo = create<RepoState>((set, get) => ({
     const { meta, selectedId } = get();
     if (!meta) return;
     try {
-      const [page, status, summary, stashes, remotes] = await Promise.all([
+      const [page, status, summary, stashes, remotes, refs] = await Promise.all([
         ipc.getLog(0, Math.max(PAGE, get().commits.length || PAGE)),
         ipc.getStatus().catch(() => null),
         ipc.getBranchSummary().catch(() => null),
         ipc.stashList().catch(() => []),
         ipc.listRemotes().catch(() => [] as string[]),
+        ipc.listRefs().catch(() => [] as RefEntry[]),
       ]);
       const stillThere = selectedId && page.commits.some((c) => c.id === selectedId);
       set({
@@ -610,6 +623,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         summary,
         stashes,
         remotes,
+        refs,
         selectedId: stillThere ? selectedId : null,
         detail: stillThere ? get().detail : null,
         openFiles: stillThere ? get().openFiles : [],
@@ -701,10 +715,24 @@ export const useRepo = create<RepoState>((set, get) => ({
 
   setMainTab: (tab) => set({ mainTab: tab }),
 
-  selectRefTip: (id) => {
+  selectRefTip: async (id) => {
+    // refs 是全量的，tip 可能还没被分页加载进来（图谱上根本没有这一行）。
+    // 先翻页直到命中或历史见底，否则点了等于没点。
+    //
+    // 两个坑：loadMore 期间 loadingMore 为 true，此时再调它会直接 return（不能拿来当等待手段，
+    // 会空转）；以及 --skip 偏移分页在翻页间 ref 变动时会漏提交，故以"提交数有增长"作为继续条件。
+    for (let guard = 0; guard < 50; guard++) {
+      for (let w = 0; get().loadingMore && w < 200; w++) {
+        await new Promise((r) => setTimeout(r, 10)); // 等在飞的那次翻页落地
+      }
+      if (get().logDone || get().commits.some((c) => c.id === id)) break;
+      const before = get().commits.length;
+      await get().loadMore();
+      if (get().commits.length === before) break; // 没有新提交，别空转
+    }
     // 跳转目标在历史里：无论当前处于哪个 tab，先切回历史再定位
     set({ mainTab: "history", scrollToId: id, scrollNonce: get().scrollNonce + 1 });
-    void get().select(id);
+    await get().select(id);
   },
 
   closeRightPane: () => {

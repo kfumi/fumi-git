@@ -188,6 +188,12 @@ pub fn list_remotes(state: State<'_, AppState>) -> Result<Vec<String>, GitError>
     with_active(&state, git::list_remotes)
 }
 
+/// 全量引用（分支 / 标签 / 远程 ref）。与 get_log 的分页无关，侧栏据此展示全部引用。
+#[tauri::command]
+pub fn list_refs(state: State<'_, AppState>) -> Result<Vec<git::RefEntry>, GitError> {
+    with_active(&state, git::list_refs)
+}
+
 #[tauri::command]
 pub fn merge_upstream(state: State<'_, AppState>, ref_name: String) -> Result<String, GitError> {
     with_active(&state, |repo| git::merge_ref(repo, &ref_name))

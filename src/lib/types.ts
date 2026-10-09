@@ -78,6 +78,20 @@ export interface AppConfig {
   theme: ThemeMode;
 }
 
+/**
+ * 全量引用条目（list_refs）。刻意独立于分页日志：
+ * 提交上的 ref 装饰只在已加载的那几行上，老分支/老标签的 tip 落在窗口外就整个丢失。
+ */
+export interface RefEntry {
+  /** 短名：本地分支 `main`、远程 ref `origin/main`、标签 `v1.0.0` */
+  name: string;
+  kind: 'branch' | 'remote' | 'tag';
+  /** tip 提交 id；附注标签已剥离到所标注的提交 */
+  tip: string;
+  /** 创建时间（unix 秒；标签按此倒序） */
+  time: number;
+}
+
 export interface BranchSummary {
   branch: string;
   upstream: string | null;

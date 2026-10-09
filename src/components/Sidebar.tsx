@@ -1,4 +1,6 @@
-// 左侧栏：仓库列表 / 分支（来自图谱 ref 装饰，按 "/" 前缀分组折叠）/ 远程（按远端名 + "/" 分层，与分支同风格）
+// 左侧栏：仓库列表 / 分支 / 标签 / 远程。
+// 引用数据来自 store.refs（后端 for-each-ref 全量列表），不从图谱提交推导——
+// 提交上的 ref 装饰只存在于已加载的分页内，tip 落在窗口外的分支/标签会整个丢失。
 import { useMemo, useState } from "react";
 import {
   Archive,
@@ -13,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useRepo } from "../stores/repo";
-import { classifyRef, groupBranches, groupRemotes } from "../lib/refs";
+import { groupBranches, groupRemotes } from "../lib/refs";
 import { relTime } from "../lib/format";
 import type { BranchSummary, StashEntry } from "../lib/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -51,7 +53,7 @@ function persistStringSet(key: string, next: Set<string>) {
 export function Sidebar() {
   const config = useRepo((s) => s.config);
   const meta = useRepo((s) => s.meta);
-  const commits = useRepo((s) => s.commits);
+  const refs = useRepo((s) => s.refs);
   const openRepo = useRepo((s) => s.openRepo);
   const removeRecent = useRepo((s) => s.removeRecent);
   const selectRefTip = useRepo((s) => s.selectRefTip);
@@ -123,28 +125,25 @@ export function Sidebar() {
     ];
   };
 
-  const { branches, remoteRefs, tags } = useMemo(() => {
+  // 按后端给的 kind 直接分流；同名 ref（origin/main 与 main）各归各类，互不覆盖
+  const { branches, remoteRefs } = useMemo(() => {
     const b = new Map<string, string>(); // name -> tip commit id
     const r = new Map<string, string>();
-    const t = new Map<string, string>();
-    for (const c of commits) {
-      for (const ref of c.refs) {
-        switch (classifyRef(ref, remoteNames)) {
-          case "head":
-            break;
-          case "remote":
-            r.set(ref, c.id);
-            break;
-          case "tag":
-            t.set(ref, c.id);
-            break;
-          default:
-            b.set(ref, c.id);
-        }
-      }
+    for (const e of refs) {
+      if (e.kind === "branch") b.set(e.name, e.tip);
+      else if (e.kind === "remote") r.set(e.name, e.tip);
     }
-    return { branches: b, remoteRefs: r, tags: t };
-  }, [commits, remoteNames]);
+    return { branches: b, remoteRefs: r };
+  }, [refs]);
+
+  // 标签按创建时间倒序（新→旧）；同名不可能，但同刻创建的按名称兜底稳定排序
+  const tagList = useMemo(
+    () =>
+      refs
+        .filter((e) => e.kind === "tag")
+        .sort((a, b) => b.time - a.time || a.name.localeCompare(b.name)),
+    [refs],
+  );
 
   // 分支按 "/" 前缀分组；折叠状态持久化到 localStorage
   const tree = useMemo(() => groupBranches(branches), [branches]);
@@ -245,7 +244,7 @@ export function Sidebar() {
           tip={id}
           current={summary?.branch === name}
           summary={summary}
-          onSelect={() => selectRefTip(id)}
+          onSelect={() => void selectRefTip(id)}
           onContextMenu={(e) => {
             e.preventDefault();
             setBranchMenu({ x: e.clientX, y: e.clientY, branch: name });
@@ -284,7 +283,7 @@ export function Sidebar() {
                   indent
                   current={summary?.branch === prefix + "/" + rest}
                   summary={summary}
-                  onSelect={() => selectRefTip(id)}
+                  onSelect={() => void selectRefTip(id)}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     setBranchMenu({
@@ -354,17 +353,18 @@ export function Sidebar() {
         />
       )}
 
-      {tags.size > 0 && (
+      {tagList.length > 0 && (
         <>
           <h4 className="section-label pb-1.5 pt-4">标签</h4>
-          {[...tags.entries()].slice(0, 20).map(([name, id]) => (
+          {tagList.map(({ name, tip }) => (
             <button
               key={name}
-              onClick={() => selectRefTip(id)}
+              onClick={() => void selectRefTip(tip)}
+              title={name + " → " + tip.slice(0, 7)}
               className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
             >
               <Tag size={11} aria-hidden className="shrink-0 text-warn/80" />
-              <span className="truncate">{name.slice(4)}</span>
+              <span className="truncate">{name}</span>
             </button>
           ))}
         </>
@@ -402,7 +402,7 @@ export function Sidebar() {
                     return (
                       <button
                         key={full}
-                        onClick={() => selectRefTip(id)}
+                        onClick={() => void selectRefTip(id)}
                         title={full + " → " + id.slice(0, 7)}
                         className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-7 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
                       >
@@ -444,7 +444,7 @@ export function Sidebar() {
                             return (
                               <button
                                 key={full}
-                                onClick={() => selectRefTip(id)}
+                                onClick={() => void selectRefTip(id)}
                                 title={full + " → " + id.slice(0, 7)}
                                 className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-10 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
                               >

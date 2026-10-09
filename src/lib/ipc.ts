@@ -9,6 +9,7 @@ import type {
   GitError,
   GitOperation,
   LogPage,
+  RefEntry,
   RepoMeta,
   RepoStatus,
   StashEntry,
@@ -85,6 +86,8 @@ export const ipc = {
   /** 当前分支推到所有远程 */
   pushAllRemotes: (branch: string) => cmd<string>("push_all_remotes", { branch }),
   listRemotes: () => cmd<string[]>("list_remotes"),
+  /** 全量引用（分支 / 标签 / 远程 ref）——侧栏数据源，与 get_log 的分页无关 */
+  listRefs: () => cmd<RefEntry[]>("list_refs"),
   mergeRef: (refName: string) => cmd<string>("merge_upstream", { refName }),
   abortOperation: (op: GitOperation) => cmd<void>("abort_operation", { op }),
   conflictVersions: (path: string) => cmd<ConflictVersions>("conflict_versions", { path }),

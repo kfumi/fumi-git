@@ -277,6 +277,80 @@ pub fn get_log(repo: &GitRepo, skip: usize, limit: usize) -> GitResult<LogPage> 
     Ok(LogPage { commits, done })
 }
 
+// ── 引用列表 ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefKind {
+    Branch,
+    Remote,
+    Tag,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RefEntry {
+    /// 短名：本地分支 `main`、远程 ref `origin/main`、标签 `v1.0.0`
+    pub name: String,
+    pub kind: RefKind,
+    /// tip 提交 id；附注标签已剥离到它所标注的提交
+    pub tip: String,
+    /// 创建时间（unix 秒；标签按此倒序）
+    pub time: u32,
+}
+
+/// refname / objectname / 剥离后的 objectname / symref / 创建时间
+const REF_FORMAT: &str =
+    "%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)%1f%(creatordate:unix)";
+
+/// 全量引用（本地分支 / 远程分支 / 标签）。
+///
+/// 刻意与 `get_log` 的分页解耦：`get_log` 只在**已加载提交**的行上给 ref 装饰，
+/// 侧栏若从提交推导引用，tip 落在分页窗口之外的老分支/老标签就整个不存在。
+pub fn list_refs(repo: &GitRepo) -> GitResult<Vec<RefEntry>> {
+    let raw = repo.run(&[
+        "for-each-ref",
+        &format!("--format={REF_FORMAT}"),
+        "refs/heads",
+        "refs/tags",
+        "refs/remotes",
+    ])?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let mut f = line.split('\u{1f}');
+        let full = f.next().unwrap_or_default();
+        let objname = f.next().unwrap_or_default();
+        let peeled = f.next().unwrap_or_default();
+        let symref = f.next().unwrap_or_default();
+        let time = f.next().unwrap_or_default();
+
+        // 符号 ref（refs/remotes/<remote>/HEAD）只是指针，不是真实分支
+        if full.is_empty() || !symref.is_empty() {
+            continue;
+        }
+        // 附注标签的 objectname 是 tag 对象，须剥离到所标注的提交
+        let tip = if peeled.is_empty() { objname } else { peeled };
+        if tip.is_empty() {
+            continue;
+        }
+        let (name, kind) = if let Some(n) = full.strip_prefix("refs/heads/") {
+            (n, RefKind::Branch)
+        } else if let Some(n) = full.strip_prefix("refs/remotes/") {
+            (n, RefKind::Remote)
+        } else if let Some(n) = full.strip_prefix("refs/tags/") {
+            (n, RefKind::Tag)
+        } else {
+            continue;
+        };
+        out.push(RefEntry {
+            name: name.to_string(),
+            kind,
+            tip: tip.to_string(),
+            time: time.parse().unwrap_or(0),
+        });
+    }
+    Ok(out)
+}
+
 // ── 提交详情与 diff ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1309,6 +1383,79 @@ mod tests {
         assert_eq!(page.commits[0].subject, "feat: 中文提交信息");
         let detail = get_commit_detail(&r, &page.commits[0].id).unwrap();
         assert_eq!(detail.files[0].path, "中文 目录/文件.txt");
+    }
+
+    // ── 引用列表 ──
+
+    #[test]
+    fn list_refs_covers_refs_outside_first_log_page() {
+        let t = repo();
+        let base = t.path();
+        // 300 个提交的空提交链（fast-import 一次灌完）
+        let mut s = String::from("reset refs/heads/main\n");
+        for i in 1..=300 {
+            s.push_str(&format!(
+                "commit refs/heads/main\nmark :{i}\ncommitter t <t@t.dev> {} +0000\ndata c{i}\n",
+                1_700_000_000 + i as u64
+            ));
+        }
+        // 老分支与老标签挂在第 1 个提交上 —— 落在首页 200 条之外
+        s.push_str("reset refs/heads/stale\nfrom :1\n");
+        s.push_str("reset refs/tags/old-tag\nfrom :1\n");
+        s.push_str("reset refs/heads/fresh\nfrom :300\n");
+        s.push_str("reset refs/remotes/origin/main\nfrom :300\n");
+        let stream = TempDir::new().unwrap();
+        let script = stream.path().join("fast.txt");
+        fs::write(&script, &s).unwrap();
+        let out = Command::new("git")
+            .current_dir(base)
+            .args(["fast-import", "--quiet"])
+            .stdin(std::process::Stdio::from(fs::File::open(&script).unwrap()))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // 真实的 origin/HEAD 是符号 ref（fetch 之后才有），不是分支
+        git(
+            base,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        );
+
+        let r = GitRepo::open(base).unwrap();
+        let page = get_log(&r, 0, 200).unwrap();
+        assert_eq!(page.commits.len(), 200);
+        let oldest = git(base, &["rev-list", "--max-parents=0", "HEAD"]).trim().to_string();
+        // 前提：老分支的 tip 确实不在首页里（否则本测试证明不了问题）
+        assert!(!page.commits.iter().any(|c| c.id == oldest));
+
+        let refs = list_refs(&r).unwrap();
+        let tip_of = |name: &str| refs.iter().find(|e| e.name == name).map(|e| e.tip.clone());
+        let kind_of =
+            |name: &str| refs.iter().find(|e| e.name == name).map(|e| e.kind);
+
+        // 老分支 / 老标签照样在列表里，且 tip 指向真实提交
+        assert_eq!(kind_of("stale"), Some(RefKind::Branch));
+        assert_eq!(kind_of("old-tag"), Some(RefKind::Tag));
+        assert_eq!(tip_of("stale").as_deref(), Some(oldest.as_str()));
+        assert_eq!(tip_of("old-tag").as_deref(), Some(oldest.as_str()));
+        // 远程 ref 与本地分支同名也不串味
+        assert_eq!(kind_of("main"), Some(RefKind::Branch));
+        assert_eq!(kind_of("origin/main"), Some(RefKind::Remote));
+        // 符号 ref refs/remotes/origin/HEAD 不算真实分支
+        assert!(tip_of("origin/HEAD").is_none());
+    }
+
+    #[test]
+    fn list_refs_peels_annotated_tag_to_commit() {
+        let t = repo();
+        let c1 = commit_file(t.path(), "a.txt", "1", "base");
+        git(t.path(), &["tag", "-a", "-m", "release", "v1"]);
+        git(t.path(), &["tag", "light"]);
+        let r = GitRepo::open(t.path()).unwrap();
+        let refs = list_refs(&r).unwrap();
+        let tip = |n: &str| refs.iter().find(|e| e.name == n).unwrap().tip.clone();
+        // 附注标签的 objectname 是 tag 对象，须剥离到所标注的提交
+        assert_eq!(tip("v1"), c1);
+        assert_eq!(tip("light"), c1);
     }
 
     // ── 详情与 diff ──

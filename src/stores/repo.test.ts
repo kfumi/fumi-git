@@ -32,6 +32,7 @@ vi.mock("../lib/ipc", () => {
     pushTo: vi.fn(async () => ""),
     pushAllRemotes: vi.fn(async () => ""),
     listRemotes: vi.fn(async () => ["origin"]),
+    listRefs: vi.fn(async () => []),
     mergeRef: vi.fn(async () => ""),
     abortOperation: vi.fn(async () => {}),
     stashList: vi.fn(async () => []),
@@ -92,6 +93,7 @@ beforeEach(() => {
     detailFile: null,
     status: null,
     summary: null,
+    refs: [],
     filter: "",
     toasts: [],
     dialog: null,
@@ -198,6 +200,130 @@ describe("store 状态流转（打桩 IPC）", () => {
     await useRepo.getState().loadMore();
     const [, limit2] = (ipc.getLog as ReturnType<typeof vi.fn>).mock.lastCall as [number, number];
     expect(limit2).toBe(250); // max(200, 1000/4)
+  });
+});
+
+describe("全量引用（侧栏数据源）", () => {
+  const ref = (name: string, kind: "branch" | "remote" | "tag", tip: string, time = 0) => ({
+    name,
+    kind,
+    tip,
+    time,
+  });
+
+  it("refresh 取全量 refs：tip 不在已加载提交里的分支/标签照样进侧栏", async () => {
+    // 关键回归：老分支的 tip 落在已加载的 200 条之外，仍必须出现在侧栏
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("new", "new")], logDone: true });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [c("new", "new")], done: true });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([
+      ref("main", "branch", "new"),
+      ref("stale", "branch", "ancient"), // 不在 commits 里
+      ref("old-tag", "tag", "ancient", 5),
+      ref("origin/main", "remote", "new"),
+    ]);
+
+    await useRepo.getState().refresh();
+
+    const names = useRepo.getState().refs.map((e) => e.name);
+    expect(names).toContain("stale");
+    expect(names).toContain("old-tag");
+    // refs 不从 commits 推导：不在 commits 里的 tip 也在
+    expect(useRepo.getState().refs.find((e) => e.name === "stale")?.tip).toBe("ancient");
+    // 同名的本地分支与远程 ref 都在，互不覆盖
+    expect(names.filter((n) => n === "main" || n === "origin/main").length).toBe(2);
+  });
+
+  it("listRefs 失败不阻断 refresh：侧栏退化为空列表而非整体报错", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [c("a", "a")], done: true });
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+
+    await useRepo.getState().refresh();
+
+    expect(useRepo.getState().commits.length).toBe(1);
+    expect(useRepo.getState().refs).toEqual([]);
+  });
+
+  it("selectRefTip：tip 尚未加载时先翻页找到它，再定位", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("a", "a")], logDone: false });
+    (ipc.getLog as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ commits: [c("m1", "m1"), c("m2", "m2")], done: false }) // 还没到目标
+      .mockResolvedValueOnce({ commits: [c("ancient", "ancient")], done: true });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { id: "ancient", short_id: "ancient", subject: "s", author_name: "林", author_email: "a@b.c", time: 1, parents: [], refs: [] },
+      files: [],
+      patch: "",
+    });
+
+    await useRepo.getState().selectRefTip("ancient");
+
+    expect(ipc.getLog).toHaveBeenCalledTimes(2); // 为找到目标翻了一页
+    expect(useRepo.getState().selectedId).toBe("ancient");
+    expect(useRepo.getState().scrollToId).toBe("ancient");
+    expect(useRepo.getState().mainTab).toBe("history");
+  });
+
+  it("selectRefTip：翻页拿不到新提交时收手，不空转", async () => {
+    // --skip 偏移在翻页间 ref 变动时会返回整页已见过的提交，此时不能死循环
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("a", "a")], logDone: false });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [c("a", "a")], done: false });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("bad object"));
+
+    await useRepo.getState().selectRefTip("gone");
+
+    expect(ipc.getLog).toHaveBeenCalledTimes(1); // 只试一次就收手
+  });
+
+  it("selectRefTip：目标已加载时不再翻页", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("a", "a")], logDone: false });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { id: "a", short_id: "a", subject: "s", author_name: "林", author_email: "a@b.c", time: 1, parents: [], refs: [] },
+      files: [],
+      patch: "",
+    });
+
+    await useRepo.getState().selectRefTip("a");
+
+    expect(ipc.getLog).not.toHaveBeenCalled();
+    expect(useRepo.getState().selectedId).toBe("a");
+  });
+
+  it("selectRefTip：滚动触发的翻页还在飞时，等它落地再继续，不空转", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("a", "a")], logDone: false, loadingMore: true }); // 模拟在飞的翻页
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [c("ancient", "ancient")], done: true });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { id: "ancient", short_id: "ancient", subject: "s", author_name: "林", author_email: "a@b.c", time: 1, parents: [], refs: [] },
+      files: [],
+      patch: "",
+    });
+    // 在飞的那次翻页 shortly 后落地（把 loadingMore 拉下来）
+    setTimeout(() => useRepo.setState({ loadingMore: false }), 20);
+
+    await useRepo.getState().selectRefTip("ancient");
+
+    // 起始 loadingMore=true，若不等待就会空转上百次；实际只该再翻一次
+    expect(ipc.getLog).toHaveBeenCalledTimes(1);
+    expect(useRepo.getState().selectedId).toBe("ancient");
+  });
+
+  it("selectRefTip：历史已尽仍找不到时不无限翻页", async () => {
+    useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
+    useRepo.setState({ commits: [c("a", "a")], logDone: true });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("bad object"));
+
+    await useRepo.getState().selectRefTip("gone");
+
+    expect(ipc.getLog).not.toHaveBeenCalled(); // logDone 直接短路
+    expect(useRepo.getState().selectedId).toBe("gone");
   });
 });
 
@@ -1066,14 +1192,14 @@ describe("侧栏引用跳转与右栏关闭", () => {
       patch: "",
     });
 
-    useRepo.getState().selectRefTip("tip1");
+    await useRepo.getState().selectRefTip("tip1");
     const s = useRepo.getState();
     expect(s.mainTab).toBe("history");
     expect(s.scrollToId).toBe("tip1");
     expect(s.scrollNonce).toBe(1);
     await vi.waitFor(() => expect(useRepo.getState().selectedId).toBe("tip1"));
 
-    useRepo.getState().selectRefTip("tip1"); // 同一引用再点 → nonce 仍递增，重复跳转生效
+    await useRepo.getState().selectRefTip("tip1"); // 同一引用再点 → nonce 仍递增，重复跳转生效
     expect(useRepo.getState().scrollNonce).toBe(2);
   });
 

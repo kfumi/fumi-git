@@ -1,4 +1,5 @@
-// ref 分类（HEAD / 远程 / 标签 / 本地分支）—— RefChips 与 Sidebar 共用，避免散点分支
+// ref 分类（HEAD / 远程 / 标签 / 本地分支）——图谱内的 RefChips / 右键菜单共用。
+// 侧栏不走这里：它读 store.refs（后端 for-each-ref 全量列表），分类由后端给好。
 export type RefKind = "head" | "remote" | "tag" | "branch";
 
 /** 默认远程名：未加载到真实远程列表时的兜底（保持单远程仓库的历史行为） */
