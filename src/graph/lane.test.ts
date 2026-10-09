@@ -123,6 +123,8 @@ describe("computeGraph", () => {
 
   it("节点半径与描边能塞进列距内（相邻列不粘连）", () => {
     expect(NODE_R + 0.8).toBeLessThan(LANE_STEP);
+    // 同时要留出呼吸感：列距明显大于节点外缘，避免密集成一片
+    expect(LANE_STEP - (NODE_R + 0.8)).toBeGreaterThanOrEqual(5);
   });
 
   it("颜色按列号取：同一列同色，不同列不同色", () => {
@@ -178,10 +180,10 @@ describe("windowCols / graphWidth", () => {
     expect(windowCols(g, 1, 1, ids(rows))).toBe(2);
   });
 
-  it("graphWidth 有 96px 下限（覆盖到 7 列），之后线性增长", () => {
+  it("graphWidth 有 96px 下限（覆盖到 4 列），之后线性增长", () => {
     expect(graphWidth(1)).toBe(96);
-    expect(graphWidth(7)).toBe(96); // (7+1)*12 = 96，正好卡在下限
-    expect(graphWidth(8)).toBe(9 * LANE_STEP);
+    expect(graphWidth(4)).toBe(96); // (4+1)*18 = 90，被下限托住
+    expect(graphWidth(5)).toBe(6 * LANE_STEP);
     expect(graphWidth(20)).toBe(21 * LANE_STEP);
   });
 });

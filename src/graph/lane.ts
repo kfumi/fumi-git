@@ -20,10 +20,10 @@ export const BRANCH_PALETTE = [
   "#4EA8F0",
 ];
 
-export const LANE_STEP = 12;
-export const GRAPH_PAD = 12;
-/** 节点半径（外缘含描边约 9.8px，恰好塞进 12px 的列距内） */
-export const NODE_R = 4;
+export const LANE_STEP = 18;
+export const GRAPH_PAD = 14;
+/** 节点半径（外缘含描边约 11.6px，落在 18px 的列距里不粘连、也不显空） */
+export const NODE_R = 5;
 /** 贝塞尔控制点离端点的最大距离 */
 export const BEND_MAX = 38;
 
