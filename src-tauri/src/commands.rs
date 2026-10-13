@@ -577,8 +577,15 @@ mod tests {
         );
     }
 
+    /// 文档级用例（诚实范围，勿高估）：这里能锁住的是「读命令在写锁被持有的整段时间内完成」
+    /// 这条**行为**，以及本用例的前提（写锁在读返回时仍被持有）确实成立。
+    ///
+    /// 它**不能**否证「`offload` 改成去抢 `write_lock`」这类回归 —— `run_read` 的入参里没有锁，
+    /// 本用例也没有把锁交给生产读路径。「offload 绝不触碰 write_lock」是 **inspection 级别**的
+    /// 保证（`Arc::clone(&state.write_lock)` 只出现在 `offload_write` 里），真正的行为覆盖
+    /// 由控制器联合端到端验收负责（工单验收「读命令在慢写期间不被阻塞」那条）。
     #[test]
-    fn read_is_not_blocked_by_write_lock() {
+    fn read_completes_while_write_lock_is_held() {
         let lock = Arc::new(Mutex::new(()));
         let guard = lock.lock().unwrap(); // 模拟写操作正持有锁
         let (tx, rx) = mpsc::channel();
@@ -589,6 +596,11 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("读命令被写锁阻塞了");
         assert_eq!(got.unwrap(), 42);
+        // 前提校验：读返回的那一刻写锁必须仍被持有，否则上面那条断言说的「期间」不成立
+        assert!(
+            lock.try_lock().is_err(),
+            "写锁在读命令返回前已被释放，本用例的前提不成立"
+        );
         drop(guard);
     }
 }
