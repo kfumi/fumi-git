@@ -169,8 +169,9 @@ git 命令同量级。
 
 **前置**
 
-- `scripts/gen-perf-repo.sh` 的 `data 16` 改为 `data 15`（`echo "content v$i pad"` 实际输出 15 字节），
-  否则验收夹具生成不出来。已用 hexdump 与 fast-import 报错定位。
+- `scripts/gen-perf-repo.sh` 两处各一行：`data 16` 改为 `data 15`（`echo "content v$i pad"` 实际输出 15 字节），
+  以及 `from :$main_tip` 改为 `from $main_tip`（`main_tip` 自带冒号，原样输出 `from ::341`；被前一处掩盖），
+  否则验收夹具生成不出来。已用 hexdump 与 fast-import 报错（含 crash 报告里被 `*` 标出的 `* from ::341`）定位。
 
 **显式否决项**
 
