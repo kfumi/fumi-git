@@ -126,5 +126,6 @@ export interface CompareResult {
   head: CommitEntry;
   files: FileStat[];
   /** 统一 diff 全文；无差异时为空串 */
-  patch: string;
+  /** 统一 diff 全文；两端内容一致（无差异）为 null */
+  patch: string | null;
 }

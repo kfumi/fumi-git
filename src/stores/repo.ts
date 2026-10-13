@@ -751,14 +751,19 @@ export const useRepo = create<RepoState>((set, get) => ({
     const validateTagName = (v: string): string | null => {
       const n = v.trim();
       if (!n) return "标签名不能为空";
-      if (
-        [...n].some((ch) => BAD_BRANCH_CHARS.has(ch)) ||
-        n.includes("..") ||
-        /^[.\-]/.test(n) ||
-        n.endsWith(".lock")
-      ) {
-        return "非法标签名（不能含空格 ~ ^ : ? * [ \\，不能以 . 或 - 开头）";
-      }
+  if (
+    [...n].some((ch) => BAD_BRANCH_CHARS.has(ch)) ||
+    n.includes("..") ||
+    n.includes("@{") ||
+    n.includes("//") ||
+    n.startsWith("/") ||
+    n.endsWith("/") ||
+    n.endsWith(".") ||
+    /^[.\-]/.test(n) ||
+    n.endsWith(".lock")
+  ) {
+    return "非法标签名（不能含空格 ~ ^ : ? * [ \\，不能以 . 或 - 开头，不能含 // 或 @{，不能以 / 或 . 结尾）";
+  }
       if (existing.has(n)) return "已存在同名标签（可在侧栏标签区看到它）";
       return null;
     };

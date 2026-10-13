@@ -6,10 +6,15 @@
 
 **Status:** ready-for-agent
 
-- [ ] 右键提交 →「新建标签…」→ 填名称（可留空备注）→ 侧栏标签区与图谱 ref 装饰出现该标签
-- [ ] 有备注时生成附注标签（`for-each-ref` 的 peeled tip 剥到所标注提交，与既有 `list_refs_peels_annotated_tag_to_commit` 行为一致）；无备注时为轻量标签
-- [ ] 标签名非法字符（空格、`~^:?*[\`、`..`、以 `/` 开头或结尾等）在表单即时反馈
-- [ ] 重名标签在表单即时反馈，不产生 git 报错弹窗
-- [ ] Rust 夹具测试覆盖轻量标签、附注标签与 peeled tip；已存在同名标签的报错形态有断言
-- [ ] store 测试覆盖成功路径与表单校验失败路径
-- [ ] `cargo test` 与 `pnpm test` 通过
+- [x] 右键提交 →「新建标签…」→ 填名称（可留空备注）→ 侧栏标签区与图谱 ref 装饰出现该标签
+- [x] 有备注时生成附注标签（`for-each-ref` 的 peeled tip 剥到所标注提交，与既有 `list_refs_peels_annotated_tag_to_commit` 行为一致）；无备注时为轻量标签
+- [x] 标签名非法字符（空格、`~^:?*[\`、`..`、以 `/` 开头或结尾等）在表单即时反馈
+- [x] 重名标签在表单即时反馈，不产生 git 报错弹窗
+- [x] Rust 夹具测试覆盖轻量标签、附注标签与 peeled tip；已存在同名标签的报错形态有断言
+- [x] store 测试覆盖成功路径与表单校验失败路径
+- [x] `cargo test` 与 `pnpm test` 通过
+
+## Comments
+
+- 2026-10-11 完成（前端提交 995e553）。提交菜单「新建标签…」+ 两步对话框（勾选「附加备注」才进第二框，第一框 `run` 返回 `false` 以免宿主关掉刚打开的备注框）；表单即时校验覆盖空名、非法字符、`..`、`@{`、`//`、以 `/` 或 `.` 结尾、以 `.`/`-` 开头、`.lock` 结尾与重名。
+- 验证：Rust `create_tag` 相关用例（轻量 / 附注 / peeled tip / 重名与非法参数报错）；store 侧轻量标签一次到位、两步附注标签、`validate` 各分支；`cargo test -- --test-threads=1` 52 passed / 1 ignored，`pnpm test` 134 passed。

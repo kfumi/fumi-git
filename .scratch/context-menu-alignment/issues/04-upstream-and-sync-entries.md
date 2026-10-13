@@ -6,12 +6,17 @@
 
 **Status:** ready-for-agent
 
-- [ ] `RefEntry.upstream` 与 `git for-each-ref %(upstream:short)` 一致（夹具断言）；远程 ref 与标签为 `null`
-- [ ] `set_upstream` 后 `for-each-ref` 与 `branch -vv` 显示新关联；非法/不存在的 upstream 由 git 拦截并规整为可读错误
-- [ ] `unset_upstream` 后关联消失，`ahead/behind` 徽章随之归零
-- [ ] 已有上游时「设置上游分支…」禁用且 hint 说明先取消；无上游时「取消上游关联」禁用
-- [ ] 非当前分支的「推送」成功，且**不改动当前分支的上游关联**
-- [ ] 无上游分支的「推送」弹出既有建立关联对话框，完成后该分支上游被建立（`push -u` 语义）
-- [ ] 本地分支「抓取」只抓该分支的上游远程；无上游时走全量抓取
-- [ ] Rust 夹具测试覆盖 set/unset upstream 与 `list_refs` 的新字段；store 测试覆盖四个菜单流程的成功与失败
-- [ ] `cargo test` 与 `pnpm test` 通过
+- [x] `RefEntry.upstream` 与 `git for-each-ref %(upstream:short)` 一致（夹具断言）；远程 ref 与标签为 `null`
+- [x] `set_upstream` 后 `for-each-ref` 与 `branch -vv` 显示新关联；非法/不存在的 upstream 由 git 拦截并规整为可读错误
+- [x] `unset_upstream` 后关联消失，`ahead/behind` 徽章随之归零
+- [x] 已有上游时「设置上游分支…」禁用且 hint 说明先取消；无上游时「取消上游关联」禁用
+- [x] 非当前分支的「推送」成功，且**不改动当前分支的上游关联**
+- [x] 无上游分支的「推送」弹出既有建立关联对话框，完成后该分支上游被建立（`push -u` 语义）
+- [x] 本地分支「抓取」只抓该分支的上游远程；无上游时走全量抓取
+- [x] Rust 夹具测试覆盖 set/unset upstream 与 `list_refs` 的新字段；store 测试覆盖四个菜单流程的成功与失败
+- [x] `cargo test` 与 `pnpm test` 通过
+
+## Comments
+
+- 2026-10-11 完成（前端提交 995e553）。`REF_FORMAT` 增 `%(upstream:short)` → `RefEntry.upstream`（远程 ref 与标签恒 `null`）；`set_upstream` / `unset_upstream` 落地；本地分支菜单接入「设置上游分支… / 取消上游关联 / 推送 / 抓取」，推送目标恒为被右键的分支（无上游时走既有「建立上游关联并推送」对话框，作用对象同样是该分支而非当前分支）。
+- 验证：Rust `upstream_set_unset_and_list_refs_field`（含空参数拒绝）；store 侧 setUpstreamFlow（非法远程分支即时拦截 + 成功）、unsetUpstream、pushBranchFlow（有上游 → 上游远程同名分支；无上游 → push -u 对话框）、fetchForBranch（有上游只抓该远程 / 无上游全量）；`cargo test -- --test-threads=1` 52 passed / 1 ignored，`pnpm test` 134 passed。

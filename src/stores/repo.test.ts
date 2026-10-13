@@ -1456,6 +1456,9 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(d.input!.validate!("")).toContain("不能为空");
     expect(d.input!.validate!("v1.0.0")).toContain("已存在同名标签");
     expect(d.input!.validate!("v 1")).toContain("非法标签名");
+    expect(d.input!.validate!("v2/")).toContain("非法标签名");
+    expect(d.input!.validate!("v2//x")).toContain("非法标签名");
+    expect(d.input!.validate!("v2.")).toContain("非法标签名");
     expect(d.input!.validate!("v2.0.0")).toBeNull();
 
     d.actions[0].run("v2.0.0", false);
@@ -1583,6 +1586,23 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(ipc.continueOperation).toHaveBeenCalledWith("rebase", "skip");
   });
 
+  it("07 rebaseOntoFlow：脏工作树先拦截，选项是「继续变基 / stash 后变基」", async () => {
+    withRepo();
+    logOk();
+    status(dirty);
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    // 第一步是变基说明确认框，确认后才进脏树拦截
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(useRepo.getState().dialog?.files).toEqual(["src/a.ts"]));
+    const guard = useRepo.getState().dialog!;
+    expect(guard.actions.map((a) => a.label)).toEqual(["继续变基", "stash 后变基"]);
+    expect(ipc.rebase).not.toHaveBeenCalled();
+
+    // 「stash 后变基」= stash push → rebase（不自动 pop）
+    guard.actions[1].run("", false);
+    await vi.waitFor(() => expect(ipc.rebase).toHaveBeenCalledWith("origin/main"));
+    expect(ipc.stashPush).toHaveBeenCalledWith("变基前自动暂存");
+  });
   it("08 compareWithHead：成功进比较模式（base=HEAD）；失败清空并报错", async () => {
     withRepo();
     const data = {
@@ -1662,7 +1682,24 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(d.title).toContain("h1");
     expect(d.input!.initial).toBe("详细说明");
     expect(d.input!.multiline).toBe(true);
+    expect(d.input!.validate!("   ")).toBe("提交信息不能为空");
+    expect(d.message).toBe("只改写提交信息，不改动文件内容。");
     d.actions[0].run("新的提交信息", false);
     await vi.waitFor(() => expect(ipc.amendMessage).toHaveBeenCalledWith("新的提交信息"));
+
+    // 暂存区非空：必须明确警告改动会一并并入（commit --amend 的固有行为）
+    useRepo.setState({
+      status: {
+        staged: [{ path: "s.ts", old_path: null, status: "M" }],
+        unstaged: [],
+        unmerged: [],
+        operation: null,
+        branch: "main",
+      },
+    });
+    useRepo.setState({ dialog: null });
+    useRepo.getState().amendMessageFlow("h1");
+    await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
+    expect(useRepo.getState().dialog!.message).toContain("1 个已暂存文件");
   });
 });
