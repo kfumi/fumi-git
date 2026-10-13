@@ -95,7 +95,11 @@ fn spawn_git(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> GitResul
 /// 已打开的工作树仓库。路径恒为 `rev-parse --show-toplevel` 归一化的仓库根。
 #[derive(Clone)]
 pub struct GitRepo {
+    /// `rev-parse --show-toplevel` 归一化的仓库根
     pub root: PathBuf,
+    /// `rev-parse --absolute-git-dir`：MERGE_HEAD / rebase-merge 等中间态的锚点。
+    /// linked worktree 下 `.git` 是**文件**而不是目录，所以必须问 git 要，不能硬拼 root/.git。
+    pub gitdir: PathBuf,
 }
 
 impl GitRepo {
@@ -107,10 +111,23 @@ impl GitRepo {
                 dir.display()
             )));
         }
-        let out = spawn_git(Some(dir), &["rev-parse", "--show-toplevel"], None)?;
+        // 一次调用拿两行：仓库根 + gitdir（子目录打开也正确；`--absolute-git-dir` 自 git 2.13 起可用）
+        let out = spawn_git(
+            Some(dir),
+            &["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+            None,
+        )?;
         if out.success {
-            let root = PathBuf::from(out.stdout.trim());
-            return Ok(GitRepo { root });
+            let mut lines = out.stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+            let root = lines
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| GitError::NotARepo("无法解析仓库根目录".into()))?;
+            let gitdir = lines
+                .next()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(".git"));
+            return Ok(GitRepo { root, gitdir });
         }
         let bare = spawn_git(Some(dir), &["rev-parse", "--is-bare-repository"], None)?;
         if bare.success && bare.stdout.trim() == "true" {
@@ -517,6 +534,88 @@ fn parse_numstat(raw: &str) -> Vec<FileStat> {
     files
 }
 
+/// 提交详情：LOG_FORMAT 的 8 个字段 + body（body 放最后一格，用 `split_once` 切，
+/// 正文里出现分隔符也不会被切开）。
+const DETAIL_FORMAT: &str = "%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%D%x1e%x1f%b";
+
+/// `show -s --format=DETAIL_FORMAT` → (元信息, body)；元信息复用 `get_log` 的解析。
+fn parse_detail_head(raw: &str) -> GitResult<(CommitEntry, String)> {
+    let (meta_part, rest) = raw
+        .split_once('\u{1e}')
+        .ok_or_else(|| GitError::CommandFailed("提交详情格式异常".into()))?;
+    let meta = parse_log_output(&format!("{meta_part}\u{1e}"))
+        .pop()
+        .ok_or_else(|| GitError::CommandFailed("提交不存在".into()))?;
+    let body = rest
+        .strip_prefix('\u{1f}')
+        .unwrap_or(rest)
+        .trim()
+        .to_string();
+    Ok((meta, body))
+}
+
+/// `--format= --raw --numstat [--patch] -M` 的输出 → (files, patch)
+///
+/// 段序（实测）：`:` 开头的 raw 段 → numstat 段 → （可选）patch 段，`git diff` 同序。
+/// `--raw` 的记录形态：`:oldmode newmode oldsha newsha <STATUS>\t<path>`，重命名是
+/// `R100\t<source>\t<destination>`（源在前、目标在后 —— 同一个 diff 的 patch 段里
+/// 写着 `rename from <source> / rename to <destination>`），而 numstat 的重命名形态是
+/// `0\t0\t<source> => <destination>`（目标也在后，与 raw 同向），既有 `parse_numstat`
+/// 两种形态都能处理。
+///
+/// 所以按**目标路径**建索引：先用 numstat 定文件顺序与计数，再用 raw 覆盖权威
+/// status / 原路径。patch 段在最后，按首个 `diff --git` 行切出 —— hunk 正文行首
+/// 只会是 ` `、`+`、`-`、`@`、`\` 或 diff 头，因此正文里以 `:` 开头的行不会被
+/// 误当成 raw 段。
+fn parse_show_raw_numstat_patch(raw: &str) -> (Vec<FileStat>, Option<String>) {
+    let patch_at = raw.lines().position(|l| l.starts_with("diff --git "));
+    let (body, patch) = match patch_at {
+        Some(i) => {
+            let mut it = raw.lines();
+            let head: Vec<&str> = it.by_ref().take(i).collect();
+            (
+                head.join("\n"),
+                Some(raw.lines().skip(i).collect::<Vec<_>>().join("\n")),
+            )
+        }
+        None => (raw.to_string(), None),
+    };
+    let numstat_part: String = body
+        .lines()
+        .filter(|l| !l.starts_with(':'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut files = parse_numstat(&numstat_part);
+    // `--raw` 是权威：status 字母 + 重命名的原路径
+    let mut raw_map = std::collections::HashMap::new();
+    for line in body.lines().filter(|l| l.starts_with(':')) {
+        let (meta, paths) = match line[1..].split_once('\t') {
+            Some(v) => v,
+            None => continue,
+        };
+        let status = meta
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.chars().next())
+            .unwrap_or('M');
+        // 单路径记录只有一段；重命名 / 拷贝是 `<source>\t<destination>`
+        let (old_path, new_path) = match paths.split_once('\t') {
+            Some((src, dst)) => (Some(src.to_string()), dst.to_string()),
+            None => (None, paths.to_string()),
+        };
+        raw_map.insert(new_path, (status, old_path));
+    }
+    for f in &mut files {
+        if let Some((st, old)) = raw_map.get(&f.path) {
+            f.status = *st;
+            if old.is_some() {
+                f.old_path = old.clone();
+            }
+        }
+    }
+    (files, patch)
+}
+
 /// 读取单条提交的元信息（与 `get_log` 共用日志格式与解析，供详情与比较复用）。
 fn commit_meta(repo: &GitRepo, hash: &str) -> GitResult<CommitEntry> {
     let raw = repo.run(&[
@@ -535,49 +634,26 @@ pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> 
     if safe.is_empty() || !safe.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(GitError::CommandFailed("非法提交哈希".into()));
     }
-    // 元信息（复用日志格式，与 get_log 同一套解析）
-    let meta = commit_meta(repo, safe)?;
-
-    let body = repo
-        .run(&["show", "-s", "--format=%b", safe])?
-        .trim()
-        .to_string();
-
-    // 状态字母用 name-status 精确判定（A/D/M/R），行数统计用 numstat。
-    let ns_raw = repo.run(&[
-        "show",
-        "--format=",
-        "--name-status",
-        "-M",
-        safe,
-    ])?;
-    let num_raw = repo.run(&[
-        "show",
-        "--format=",
-        "--numstat",
-        "-M",
-        safe,
-    ])?;
-    let stats = parse_numstat(&num_raw);
-    let statuses = parse_name_status(&ns_raw);
-    let files: Vec<FileStat> = stats
-        .into_iter()
-        .map(|mut f| {
-            if let Some(st) = statuses.get(&f.path) {
-                f.status = *st;
-            } else if let Some(st) = f.old_path.as_ref().and_then(|o| statuses.get(o)) {
-                f.status = *st;
-            }
-            f
-        })
-        .collect();
-
-    let patch = if meta.parents.len() > 1 {
-        None
-    } else {
-        Some(repo.run(&["show", "--format=", "--patch", safe])?)
+    // 元信息 + 正文：一次 show 拿全（DETAIL_FORMAT 的 8 个字段 + body）
+    let meta_raw = repo.run(&["show", "-s", &format!("--format={DETAIL_FORMAT}"), safe])?;
+    let (meta, body) = parse_detail_head(&meta_raw)?;
+    // 文件统计 + patch 合成一次输出（--raw 权威 status/原路径，numstat 给计数）。
+    // 合并提交不产出 patch（保持现状语义：patch = None），因此连 --patch 都不传。
+    let is_merge = meta.parents.len() > 1;
+    let mut args: Vec<&str> = vec!["show", "--format=", "--raw", "--numstat", "-M"];
+    if !is_merge {
+        args.push("--patch");
+    }
+    args.push(safe);
+    let raw = repo.run(&args)?;
+    let (files, patch) = parse_show_raw_numstat_patch(&raw);
+    // 非合并提交即使无文件变更也与改造前同形（patch = Some("")）：只有合并提交是 None，
+    // 前端据此渲染「合并提交 — 无直接文件变更」文案
+    let patch = match patch {
+        Some(p) => Some(p),
+        None if !is_merge => Some(String::new()),
+        None => None,
     };
-
     Ok(CommitDetail {
         meta,
         body,
@@ -602,37 +678,16 @@ pub fn get_compare(repo: &GitRepo, base: &str, head: &str) -> GitResult<CompareR
     let base = resolve_compare_ref(repo, base)?;
     let head = resolve_compare_ref(repo, head)?;
     let range = format!("{base}..{head}");
-    let files = parse_numstat(&repo.run(&["diff", "--numstat", &range])?);
-    let patch_raw = repo.run(&["diff", &range])?;
-    let patch = if patch_raw.trim().is_empty() {
-        None
-    } else {
-        Some(patch_raw)
-    };
+    // 统计 + 权威 status + patch 一次拿全（`diff` 与 `show` 段序一致：raw → numstat → patch；
+    // 无差异时整段输出为空 → patch: None，与改造前同形）
+    let raw = repo.run(&["diff", "--raw", "--numstat", "--patch", &range])?;
+    let (files, patch) = parse_show_raw_numstat_patch(&raw);
     Ok(CompareResult {
         base: commit_meta(repo, &base)?,
         head: commit_meta(repo, &head)?,
         files,
         patch,
     })
-}
-
-fn parse_name_status(raw: &str) -> std::collections::HashMap<String, char> {
-    let mut map = std::collections::HashMap::new();
-    for line in raw.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut it = line.splitn(2, '\t');
-        let (Some(st), Some(p)) = (it.next(), it.next()) else {
-            continue;
-        };
-        let ch = st.chars().next().unwrap_or('M');
-        // name-status 对重命名是 `R100\t<old>\t<new>`，新路径取最后一个 tab 段
-        let new_path = p.split('\t').next_back().unwrap_or(p);
-        map.insert(new_path.trim().to_string(), ch);
-    }
-    map
 }
 
 // ── 工作区状态 / 暂存 / 提交 ────────────────────────────────────────────────
@@ -656,30 +711,98 @@ pub struct RepoStatus {
     pub branch: String,
 }
 
-pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
-    let raw = repo.run(&["status", "--porcelain", "-z"])?;
+/// `status --porcelain=v2 --branch` 头部里我们用得到的两项。
+pub(crate) struct StatusHeads {
+    /// `# branch.head`：常规分支为分支名，分离 HEAD 为 `(detached)`，缺失为 None
+    pub head: Option<String>,
+    /// `# branch.upstream`：只在有效上游时出现
+    pub upstream: Option<String>,
+}
+
+/// `# branch.ab +N -M` → (ahead, behind)；无有效上游时该行不出现 → None。
+fn parse_branch_ab(raw: &str) -> Option<(u32, u32)> {
+    for rec in raw.split('\0') {
+        if let Some(rest) = rec.strip_prefix("# branch.ab ") {
+            // 形如 `+1 -0`
+            let mut it = rest.split_whitespace();
+            let a = it.next()?.trim_start_matches('+').parse().ok()?;
+            let b = it.next()?.trim_start_matches('-').parse().ok()?;
+            return Some((a, b));
+        }
+    }
+    None
+}
+
+/// `status --porcelain=v2 --branch -z` → (staged, unstaged, unmerged, heads)
+///
+/// 记录形态（实测）：
+///   `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
+///   `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>` + NUL + 原路径
+///   `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
+///   `? <path>` / `! <path>` / `# branch.*`
+fn parse_status_v2(raw: &str) -> (Vec<FileEntry>, Vec<FileEntry>, Vec<FileEntry>, StatusHeads) {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     let mut unmerged = Vec::new();
+    let mut heads = StatusHeads {
+        head: None,
+        upstream: None,
+    };
     let mut it = raw.split('\0').filter(|s| !s.is_empty());
     while let Some(rec) = it.next() {
-        let mut chars = rec.chars();
+        if let Some(name) = rec.strip_prefix("# branch.head ") {
+            heads.head = Some(name.trim().to_string());
+            continue;
+        }
+        if let Some(up) = rec.strip_prefix("# branch.upstream ") {
+            heads.upstream = Some(up.trim().to_string());
+            continue;
+        }
+        if rec.starts_with("# branch.") {
+            continue; // branch.oid / branch.ab 等
+        }
+        let tag = rec.chars().next().unwrap_or(' ');
+        // XY 两字符：X = index 侧，Y = worktree 侧，'.' 表示未修改
+        let xy_at = match tag {
+            '1' | '2' | 'u' => 2usize,
+            '?' | '!' => {
+                if tag == '!' {
+                    continue; // 未传 --ignored 不会出现；出现即忽略
+                }
+                let path = rec[2..].to_string();
+                unstaged.push(FileEntry {
+                    path,
+                    old_path: None,
+                    status: 'A',
+                });
+                continue;
+            }
+            _ => continue,
+        };
+        let mut chars = rec[xy_at..].chars();
         let x = chars.next().unwrap_or(' ');
         let y = chars.next().unwrap_or(' ');
-        let path = rec[2..].to_string();
-        // 重命名条目跟随第二个 NUL 字段 = 原路径
-        let (old_path, x, y) = if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
-            let orig = it.next().unwrap_or("").to_string();
-            (Some(orig), x, y)
-        } else {
-            (None, x, y)
+        // 路径按字段宽度切（path 可能含空格）：1 记录 9 段、2 记录 10 段、u 记录 11 段
+        let arity = match tag {
+            '1' => 9,
+            '2' => 10,
+            _ => 11,
         };
-        let path = path.trim().to_string();
+        let mut f = rec.splitn(arity, ' ');
+        for _ in 0..arity - 1 {
+            f.next();
+        }
+        let path = f.next().unwrap_or_default().to_string();
         if path.is_empty() {
             continue;
         }
-        // 冲突条目独立成组（状态一律记 'U'），不再进暂存/未暂存列表
-        if is_unmerged(x, y) {
+        // 重命名：紧随其后的 NUL 段是原路径（与既有 v1 解析同构）
+        let old_path = if tag == '2' && (x == 'R' || x == 'C' || y == 'R' || y == 'C') {
+            it.next().map(|s| s.to_string())
+        } else {
+            None
+        };
+        if tag == 'u' {
             unmerged.push(FileEntry {
                 path,
                 old_path,
@@ -687,28 +810,47 @@ pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
             });
             continue;
         }
-        if x != ' ' && x != '?' {
+        if x != '.' {
             staged.push(FileEntry {
                 path: path.clone(),
                 old_path: old_path.clone(),
                 status: x,
             });
         }
-        if y != ' ' || x == '?' {
-            let st = if x == '?' { 'A' } else { y };
+        if y != '.' {
             unstaged.push(FileEntry {
                 path,
                 old_path,
-                status: st,
+                status: y,
             });
         }
     }
+    (staged, unstaged, unmerged, heads)
+}
+
+/// `# branch.head` → 与改造前 `current_branch()` 逐字相同的 `branch` 字符串。
+fn branch_from_heads(repo: &GitRepo, heads: &StatusHeads) -> String {
+    match heads.head.as_deref() {
+        // 分离 HEAD：`<short>` 的长度由 git 的 core.abbrev 决定，不能自己截 oid，回退问一次 git
+        Some("(detached)") => repo
+            .run(&["rev-parse", "--short", "HEAD"])
+            .map(|h| format!("(HEAD detached at {})", h.trim()))
+            .unwrap_or_else(|_| "(空仓库)".to_string()),
+        Some(name) => name.to_string(),
+        None => repo.current_branch(),
+    }
+}
+
+pub fn get_status(repo: &GitRepo) -> GitResult<RepoStatus> {
+    // 一次调用拿全：三组文件 + 分支头 + 上游（+ ahead/behind）
+    let raw = repo.run(&["status", "--porcelain=v2", "--branch", "-z"])?;
+    let (staged, unstaged, unmerged, heads) = parse_status_v2(&raw);
     Ok(RepoStatus {
         staged,
         unstaged,
         unmerged,
         operation: read_operation(repo),
-        branch: repo.current_branch(),
+        branch: branch_from_heads(repo, &heads),
     })
 }
 
@@ -920,10 +1062,6 @@ pub fn reset_branch(repo: &GitRepo, target: &str, mode: &str) -> GitResult<()> {
 
 // ── 分叉拉取：最小 merge ────────────────────────────────────────────────────
 
-fn is_unmerged(x: char, y: char) -> bool {
-    // porcelain 冲突对：UU AA DD AU UA DU UD
-    matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D'))
-}
 
 /// 进行中的多提交操作（决定横幅文案与 abort 路由）。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -951,35 +1089,27 @@ impl Operation {
 
 /// 依据 sequencer 状态目录 / 文件识别进行中的操作（互斥，优先级即检出顺序）。
 /// 变基优先级最高：变基中途 HEAD 处于分离态，其它探测可能误判。
+///
+/// 全部按文件判定：`gitdir` 已在 `open()` 里由 `--absolute-git-dir` 解析为绝对路径，
+/// 对 MERGE_HEAD / CHERRY_PICK_HEAD / REVERT_HEAD / rebase-merge / rebase-apply
+/// 这五个名字，`<gitdir>/<name>` 与 `rev-parse --git-path <name>` 解析到同一处
+/// （linked worktree 下 gitdir 就是 `.git/worktrees/<name>` 这个 per-worktree 目录）。
 fn read_operation(repo: &GitRepo) -> Option<Operation> {
-    // `--git-path` 可能返回相对仓库根的相对路径（spawn_git 的 cwd 是仓库根，
-    // 但本进程 cwd 不是），必须先拼回仓库根再判断存在性。
-    let has_dir = |name: &str| {
-        repo.run(&["rev-parse", "--git-path", name])
-            .ok()
-            .map(|p| {
-                let p = PathBuf::from(p.trim());
-                if p.is_absolute() {
-                    p
-                } else {
-                    repo.root.join(p)
-                }
-            })
-            .is_some_and(|p| p.exists())
-    };
-    if has_dir("rebase-merge") || has_dir("rebase-apply") {
+    let g = &repo.gitdir;
+    if g.join("rebase-merge").is_dir() || g.join("rebase-apply").is_dir() {
         return Some(Operation::Rebase);
     }
-    let has = |name: &str| repo.run_ok(&["rev-parse", "--verify", "--quiet", name]);
-    if has("MERGE_HEAD") {
-        Some(Operation::Merge)
-    } else if has("CHERRY_PICK_HEAD") {
-        Some(Operation::CherryPick)
-    } else if has("REVERT_HEAD") {
-        Some(Operation::Revert)
-    } else {
-        None
+    let heads = [
+        ("MERGE_HEAD", Operation::Merge),
+        ("CHERRY_PICK_HEAD", Operation::CherryPick),
+        ("REVERT_HEAD", Operation::Revert),
+    ];
+    for (name, op) in heads {
+        if g.join(name).exists() {
+            return Some(op);
+        }
     }
+    None
 }
 
 /// 合并把 <ref>（通常为上游分支如 origin/main）到当前分支。
@@ -1309,26 +1439,13 @@ pub struct BranchSummary {
 }
 
 pub fn get_branch_summary(repo: &GitRepo) -> GitResult<BranchSummary> {
-    let branch = repo.current_branch();
-    let up = repo.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-    let upstream = match up {
-        Ok(u) => Some(u.trim().to_string()),
-        Err(_) => None,
-    };
-    let (ahead, behind) = match &upstream {
-        Some(u) => {
-            let out = repo.run(&["rev-list", "--left-right", "--count", &format!("HEAD...{u}")])?;
-            let mut it = out.split_whitespace();
-            (
-                it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
-                it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
-            )
-        }
-        None => (0, 0),
-    };
+    // 上游与 ahead/behind 都在同一次 v2 输出里：不再需要 symbolic-ref / @{u} / rev-list
+    let raw = repo.run(&["status", "--porcelain=v2", "--branch", "-z"])?;
+    let (.., heads) = parse_status_v2(&raw);
+    let (ahead, behind) = parse_branch_ab(&raw).unwrap_or((0, 0));
     Ok(BranchSummary {
-        branch,
-        upstream,
+        branch: branch_from_heads(repo, &heads),
+        upstream: heads.upstream,
         ahead,
         behind,
     })
@@ -3433,6 +3550,592 @@ mod tests {
     /// 免得二十来条既有断言被筛选参数淹掉。
     fn get_log(repo: &GitRepo, skip: usize, limit: usize) -> GitResult<LogPage> {
         get_log_filtered(repo, skip, limit, &LogFilter::default())
+    }
+
+    // ── 调用折叠：status v2 / show 输出合一（工单 02） ────────────────────────
+    //
+    // 改造前 v1 解析逻辑的两份副本（working tree status 与 name-status）都搬到这里：
+    // 它们只是「新实现与旧实现逐位等价」的比对面，不属于生产路径。
+
+    /// v1 冲突判定（改造前为模块级 `is_unmerged`，随 v1 解析一起退休）。
+    fn is_unmerged(x: char, y: char) -> bool {
+        // porcelain 冲突对：UU AA DD AU UA DU UD
+        matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D'))
+    }
+
+    /// 改造前 `get_status` 的内联解析：逐字搬进测试作基线。
+    fn parse_status_v1_for_test(raw: &str) -> (Vec<FileEntry>, Vec<FileEntry>, Vec<FileEntry>) {
+        let mut staged = Vec::new();
+        let mut unstaged = Vec::new();
+        let mut unmerged = Vec::new();
+        let mut it = raw.split('\0').filter(|s| !s.is_empty());
+        while let Some(rec) = it.next() {
+            let mut chars = rec.chars();
+            let x = chars.next().unwrap_or(' ');
+            let y = chars.next().unwrap_or(' ');
+            let path = rec[2..].to_string();
+            // 重命名条目跟随第二个 NUL 字段 = 原路径
+            let (old_path, x, y) = if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+                let orig = it.next().unwrap_or("").to_string();
+                (Some(orig), x, y)
+            } else {
+                (None, x, y)
+            };
+            let path = path.trim().to_string();
+            if path.is_empty() {
+                continue;
+            }
+            // 冲突条目独立成组（状态一律记 'U'），不再进暂存/未暂存列表
+            if is_unmerged(x, y) {
+                unmerged.push(FileEntry {
+                    path,
+                    old_path,
+                    status: 'U',
+                });
+                continue;
+            }
+            if x != ' ' && x != '?' {
+                staged.push(FileEntry {
+                    path: path.clone(),
+                    old_path: old_path.clone(),
+                    status: x,
+                });
+            }
+            if y != ' ' || x == '?' {
+                let st = if x == '?' { 'A' } else { y };
+                unstaged.push(FileEntry {
+                    path,
+                    old_path,
+                    status: st,
+                });
+            }
+        }
+        (staged, unstaged, unmerged)
+    }
+
+    /// 改造前被删掉的 name-status 解析：提交详情 files 的等价对照基线（逐字搬进测试）。
+    fn name_status_v1_for_test(raw: &str) -> std::collections::HashMap<String, char> {
+        let mut map = std::collections::HashMap::new();
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut it = line.splitn(2, '\t');
+            let (Some(st), Some(p)) = (it.next(), it.next()) else {
+                continue;
+            };
+            let ch = st.chars().next().unwrap_or('M');
+            // name-status 对重命名是 `R100\t<old>\t<new>`，新路径取最后一个 tab 段
+            let new_path = p.split('\t').next_back().unwrap_or(p);
+            map.insert(new_path.trim().to_string(), ch);
+        }
+        map
+    }
+
+    /// 工作区三组列表的逐位快照（路径 / 原路径 / 状态）。
+    fn snapshot(files: &[FileEntry]) -> Vec<(String, Option<String>, char)> {
+        files
+            .iter()
+            .map(|e| (e.path.clone(), e.old_path.clone(), e.status))
+            .collect()
+    }
+
+    /// 文件统计的逐位快照（用于与改造前的 `Vec<FileStat>` 逐字段对照）。
+    fn stat_snapshot(files: &[FileStat]) -> Vec<(String, Option<String>, char, u32, u32, bool)> {
+        files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.clone(),
+                    f.old_path.clone(),
+                    f.status,
+                    f.add,
+                    f.del,
+                    f.binary,
+                )
+            })
+            .collect()
+    }
+
+    /// 七种形态同盘的夹具：普通修改 / 已暂存新增 / 已暂存删除 / 重命名 /
+    /// 未跟踪 / 冲突（unmerged）/ 忽略文件（未传 --ignored，两种格式都应看不到）。
+    fn status_shapes_fixture() -> TempDir {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base"); // 冲突候选
+        commit_file(t.path(), "mod.txt", "1\n", "mod base");
+        commit_file(t.path(), "rm.txt", "gone\n", "rm base");
+        commit_file(t.path(), "keep.txt", "k\n", "keep base");
+        commit_file(t.path(), ".gitignore", "ignored.txt\n", "ignore rules");
+        // 冲突：两侧各改一处再 merge（真冲突，git merge 必然失败）
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        fs::write(t.path().join("a.txt"), "feat\n").unwrap();
+        git(t.path(), &["commit", "-q", "-am", "feat side"]);
+        git(t.path(), &["checkout", "-q", "main"]);
+        fs::write(t.path().join("a.txt"), "main\n").unwrap();
+        git(t.path(), &["commit", "-q", "-am", "main side"]);
+        let merge = Command::new("git")
+            .current_dir(t.path())
+            .args(["merge", "feat"])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "夹具必须真冲突");
+        // 已暂存新增 / 已暂存删除 / 重命名（都不碰冲突路径）
+        fs::write(t.path().join("added.txt"), "new\n").unwrap();
+        git(t.path(), &["add", "--", "added.txt"]);
+        git(t.path(), &["rm", "-q", "--", "rm.txt"]);
+        git(t.path(), &["mv", "keep.txt", "renamed.txt"]);
+        // 普通修改 / 未跟踪 / 忽略
+        fs::write(t.path().join("mod.txt"), "2\n").unwrap();
+        fs::write(t.path().join("untracked.txt"), "u\n").unwrap();
+        fs::write(t.path().join("ignored.txt"), "i\n").unwrap();
+        t
+    }
+
+    /// 本票最强的回归证据：同一夹具上 v1 与 v2 两套解析逐位相等。
+    #[test]
+    fn status_v1_and_v2_parsers_agree_bit_for_bit() {
+        let t = status_shapes_fixture();
+        let r = GitRepo::open(t.path()).unwrap();
+        let raw_v1 = git(t.path(), &["status", "--porcelain", "-z"]);
+        let raw_v2 = git(t.path(), &["status", "--porcelain=v2", "--branch", "-z"]);
+        let (s1, u1, m1) = parse_status_v1_for_test(&raw_v1);
+        let (s2, u2, m2, _heads) = parse_status_v2(&raw_v2);
+
+        // 七种形态真的都在夹具里，对照才不是空转
+        let has =
+            |v: &[FileEntry], p: &str, st: char| v.iter().any(|e| e.path == p && e.status == st);
+        assert!(has(&s1, "added.txt", 'A'), "{s1:?}");
+        assert!(has(&s1, "rm.txt", 'D'), "{s1:?}");
+        assert!(has(&s1, "renamed.txt", 'R'), "{s1:?}");
+        assert!(has(&u1, "mod.txt", 'M'), "{u1:?}");
+        assert!(has(&u1, "untracked.txt", 'A'), "{u1:?}");
+        assert!(has(&m1, "a.txt", 'U'), "{m1:?}");
+        assert!(s1.iter().all(|e| e.path != "ignored.txt"), "{s1:?}");
+        assert!(u1.iter().all(|e| e.path != "ignored.txt"), "{u1:?}");
+        assert_eq!(
+            s1.iter()
+                .find(|e| e.path == "renamed.txt")
+                .unwrap()
+                .old_path
+                .as_deref(),
+            Some("keep.txt")
+        );
+
+        // v1 / v2 两套解析逐位相等（含组内顺序）
+        assert_eq!(snapshot(&s1), snapshot(&s2), "staged 组不一致");
+        assert_eq!(snapshot(&u1), snapshot(&u2), "unstaged 组不一致");
+        assert_eq!(snapshot(&m1), snapshot(&m2), "unmerged 组不一致");
+
+        // 生产路径（v2）在同一夹具上与 v1 基线逐位相同
+        let st = get_status(&r).unwrap();
+        assert_eq!(snapshot(&st.staged), snapshot(&s1));
+        assert_eq!(snapshot(&st.unstaged), snapshot(&u1));
+        assert_eq!(snapshot(&st.unmerged), snapshot(&m1));
+    }
+
+    /// `branch` 字符串三态：常规分支 / 分离 HEAD / 空仓库。
+    #[test]
+    fn status_and_summary_branch_strings() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1\n", "base");
+        let r = GitRepo::open(t.path()).unwrap();
+        assert_eq!(get_status(&r).unwrap().branch, "main");
+        assert_eq!(get_branch_summary(&r).unwrap().branch, "main");
+
+        // 分离 HEAD：短 id 长度由 git（core.abbrev）决定，不能自己截 40 位 oid
+        git(t.path(), &["checkout", "-q", "--detach", "HEAD"]);
+        let short = git(t.path(), &["rev-parse", "--short", "HEAD"])
+            .trim()
+            .to_string();
+        let want = format!("(HEAD detached at {short})");
+        assert_eq!(get_status(&r).unwrap().branch, want);
+        assert_eq!(get_branch_summary(&r).unwrap().branch, want);
+
+        // 空仓库（无提交）：symbolic-ref 仍给出分支名
+        let empty = repo();
+        let er = GitRepo::open(empty.path()).unwrap();
+        assert_eq!(get_status(&er).unwrap().branch, "main");
+        assert_eq!(get_branch_summary(&er).unwrap().branch, "main");
+    }
+
+    /// 上游与 ahead/behind：与 `# branch.ab` 及 `rev-list --left-right --count` 两侧对账。
+    #[test]
+    fn branch_summary_upstream_and_ab_pair() {
+        let (origin, work) = repo_with_origin();
+        // 本地 +2、远端 +1 → 分叉
+        commit_file(work.path(), "l1.txt", "1\n", "local 1");
+        commit_file(work.path(), "l2.txt", "2\n", "local 2");
+        let side = TempDir::new().unwrap();
+        let clone = side.path().join("c");
+        git(
+            side.path(),
+            &[
+                "clone",
+                "-q",
+                origin.path().to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        commit_file(&clone, "r.txt", "r\n", "remote 1");
+        git(&clone, &["push", "-q", "origin", "main"]);
+
+        let r = GitRepo::open(work.path()).unwrap();
+        fetch(&r, None).unwrap();
+        let s = get_branch_summary(&r).unwrap();
+        assert_eq!(s.branch, "main");
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (2, 1));
+
+        let raw = git(work.path(), &["status", "--porcelain=v2", "--branch", "-z"]);
+        assert_eq!(parse_branch_ab(&raw), Some((2, 1)));
+        let rev = git(
+            work.path(),
+            &["rev-list", "--left-right", "--count", "HEAD...origin/main"],
+        );
+        let mut it = rev.split_whitespace();
+        let pair = (
+            it.next().unwrap().parse::<u32>().unwrap(),
+            it.next().unwrap().parse::<u32>().unwrap(),
+        );
+        assert_eq!(pair, (s.ahead, s.behind));
+
+        // 无有效上游：`# branch.upstream` / `# branch.ab` 都不出现 → None 与 0/0
+        let plain = repo();
+        commit_file(plain.path(), "a.txt", "1\n", "base");
+        let pr = GitRepo::open(plain.path()).unwrap();
+        let ps = get_branch_summary(&pr).unwrap();
+        assert_eq!(ps.upstream, None);
+        assert_eq!((ps.ahead, ps.behind), (0, 0));
+        let np = git(plain.path(), &["status", "--porcelain=v2", "--branch", "-z"]);
+        assert_eq!(parse_branch_ab(&np), None);
+    }
+
+    /// 旧实现用的 `rev-parse --git-path <name>`：作为「gitdir 拼接等价」的对照面。
+    fn git_path_probe(root: &Path, name: &str) -> PathBuf {
+        let raw = git(root, &["rev-parse", "--git-path", name]);
+        let p = PathBuf::from(raw.trim());
+        if p.is_absolute() {
+            p
+        } else {
+            root.join(p)
+        }
+    }
+
+    /// 五个中间态名字上，`<gitdir>/<name>` 必须与 `--git-path` 解析到同一个路径。
+    fn assert_gitdir_equivalent(root: &Path, repo: &GitRepo) {
+        for name in [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+        ] {
+            assert_eq!(
+                git_path_probe(root, name),
+                repo.gitdir.join(name),
+                "{name}：gitdir 拼接必须等于 rev-parse --git-path"
+            );
+        }
+    }
+
+    #[test]
+    fn gitdir_for_root_subdir_and_linked_worktree() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1\n", "base");
+        fs::create_dir_all(t.path().join("sub")).unwrap();
+
+        // 1) 仓库根
+        let r = GitRepo::open(t.path()).unwrap();
+        assert_eq!(r.root, t.path());
+        assert_eq!(r.gitdir, t.path().join(".git"));
+        assert_gitdir_equivalent(t.path(), &r);
+
+        // 2) 子目录打开：root 归一化到仓库根，gitdir 仍是同一个
+        let sub = t.path().join("sub");
+        let rs = GitRepo::open(&sub).unwrap();
+        assert_eq!(rs.root, t.path());
+        assert_eq!(rs.gitdir, r.gitdir);
+        assert_gitdir_equivalent(t.path(), &rs);
+
+        // 3) linked worktree：`.git` 是文件，gitdir 是 per-worktree 目录
+        let wt_home = TempDir::new().unwrap();
+        let wt = wt_home.path().join("linked");
+        git(
+            t.path(),
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        );
+        assert!(
+            wt.join(".git").is_file(),
+            "夹具必须是 linked worktree（.git 为文件）"
+        );
+        let rw = GitRepo::open(&wt).unwrap();
+        assert_eq!(rw.root, wt);
+        assert_ne!(rw.gitdir, wt.join(".git"));
+        assert_eq!(
+            rw.gitdir,
+            t.path().join(".git").join("worktrees").join("linked")
+        );
+        assert!(rw.gitdir.join("HEAD").is_file(), "per-worktree HEAD 应存在");
+        assert_gitdir_equivalent(&wt, &rw);
+    }
+
+    #[test]
+    fn read_operation_five_states_from_gitdir() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1\n", "base");
+        let r = GitRepo::open(t.path()).unwrap();
+        let g = r.gitdir.clone();
+        assert_eq!(read_operation(&r), None);
+
+        // 文件形态：MERGE_HEAD / CHERRY_PICK_HEAD / REVERT_HEAD
+        for (name, op) in [
+            ("MERGE_HEAD", Operation::Merge),
+            ("CHERRY_PICK_HEAD", Operation::CherryPick),
+            ("REVERT_HEAD", Operation::Revert),
+        ] {
+            fs::write(g.join(name), "0".repeat(40)).unwrap();
+            assert_eq!(read_operation(&r), Some(op), "{name}");
+            fs::remove_file(g.join(name)).unwrap();
+            assert_eq!(read_operation(&r), None, "{name} 清理后");
+        }
+
+        // 目录形态：rebase-merge / rebase-apply
+        for name in ["rebase-merge", "rebase-apply"] {
+            fs::create_dir_all(g.join(name)).unwrap();
+            assert_eq!(read_operation(&r), Some(Operation::Rebase), "{name}");
+            fs::remove_dir_all(g.join(name)).unwrap();
+            assert_eq!(read_operation(&r), None, "{name} 清理后");
+        }
+
+        // 变基优先于 HEAD 类探测（变基中途 HEAD 分离，其它探测会误报）
+        fs::write(g.join("MERGE_HEAD"), "0".repeat(40)).unwrap();
+        fs::create_dir_all(g.join("rebase-merge")).unwrap();
+        assert_eq!(read_operation(&r), Some(Operation::Rebase));
+        fs::remove_dir_all(g.join("rebase-merge")).unwrap();
+        fs::remove_file(g.join("MERGE_HEAD")).unwrap();
+        assert_eq!(read_operation(&r), None);
+    }
+
+    /// 本改动唯一的语义风险点：linked worktree 的中间态落在 per-worktree gitdir。
+    #[test]
+    fn operation_state_in_linked_worktree_is_per_worktree() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base");
+        let wt_home = TempDir::new().unwrap();
+        let wt = wt_home.path().join("linked");
+        git(
+            t.path(),
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        );
+        // 两侧各向前走一步 → 真合并冲突
+        fs::write(t.path().join("a.txt"), "main\n").unwrap();
+        git(t.path(), &["commit", "-q", "-am", "main side"]);
+        fs::write(wt.join("a.txt"), "wt\n").unwrap();
+        git(&wt, &["commit", "-q", "-am", "wt side"]);
+        let merge = Command::new("git")
+            .current_dir(&wt)
+            .args(["merge", "main"])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "夹具必须真冲突");
+
+        let r_main = GitRepo::open(t.path()).unwrap();
+        let r_wt = GitRepo::open(&wt).unwrap();
+        // git 把 MERGE_HEAD 写在 linked worktree 的 gitdir，主仓库 .git 里没有
+        assert!(r_wt.gitdir.join("MERGE_HEAD").is_file());
+        assert!(!t.path().join(".git").join("MERGE_HEAD").exists());
+        assert_eq!(read_operation(&r_wt), Some(Operation::Merge));
+        assert_eq!(read_operation(&r_main), None);
+        let st_wt = get_status(&r_wt).unwrap();
+        assert_eq!(st_wt.operation, Some(Operation::Merge));
+        assert!(st_wt.unmerged.iter().any(|f| f.path == "a.txt"));
+        let st_main = get_status(&r_main).unwrap();
+        assert_eq!(st_main.operation, None);
+        assert!(st_main.unmerged.is_empty());
+
+        // 手工造 rebase-merge 于 per-worktree gitdir：主仓库看不到，且与 --git-path 同址
+        fs::create_dir_all(r_wt.gitdir.join("rebase-merge")).unwrap();
+        assert_eq!(read_operation(&r_wt), Some(Operation::Rebase));
+        assert_eq!(
+            git_path_probe(&wt, "rebase-merge"),
+            r_wt.gitdir.join("rebase-merge")
+        );
+        assert_eq!(read_operation(&r_main), None);
+    }
+
+    #[test]
+    fn parse_detail_head_with_and_without_multiline_body() {
+        let t = repo();
+        let root_commit = commit_file(t.path(), "a.txt", "1\n", "subject only");
+        fs::write(t.path().join("b.txt"), "2\n").unwrap();
+        git(t.path(), &["add", "--", "b.txt"]);
+        let msg = t.path().join("msg.txt");
+        fs::write(&msg, "subject with body\n\nline one\nline two\n").unwrap();
+        git(t.path(), &["commit", "-q", "-F", msg.to_str().unwrap()]);
+        let head = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 无 body：`%b` 为空
+        let d0 = get_commit_detail(&r, &root_commit).unwrap();
+        assert_eq!(d0.meta.id, root_commit);
+        assert_eq!(d0.meta.subject, "subject only");
+        assert_eq!(d0.meta.parents.len(), 0);
+        assert_eq!(d0.body, "");
+        assert!(d0
+            .patch
+            .as_deref()
+            .unwrap()
+            .starts_with("diff --git a/a.txt b/a.txt"));
+
+        // 多行 body：完整保留（含段落）
+        let d1 = get_commit_detail(&r, &head).unwrap();
+        assert_eq!(d1.meta.id, head);
+        assert_eq!(d1.meta.subject, "subject with body");
+        assert_eq!(d1.body, "line one\nline two");
+        assert_eq!(d1.files.len(), 1);
+        assert_eq!(d1.files[0].status, 'A');
+        assert_eq!((d1.files[0].add, d1.files[0].del), (1, 0));
+
+        // DETAIL_FORMAT 的形态：8 个字段 + body，body 在最后一段
+        let raw = git(
+            t.path(),
+            &["show", "-s", &format!("--format={DETAIL_FORMAT}"), &head],
+        );
+        let (meta, body) = parse_detail_head(&raw).unwrap();
+        assert_eq!(meta.id, head);
+        assert_eq!(meta.short_id, head[..7].to_string());
+        assert_eq!(body, "line one\nline two");
+    }
+
+    /// `--raw --numstat --patch` 合并解析：状态字母 / 增删计数 / 二进制 / 重命名 /
+    /// patch 段落切分，并与改造前「name-status + numstat + show --patch」的产出等价。
+    #[test]
+    fn show_raw_numstat_patch_files_equivalent_to_v1() {
+        let t = repo();
+        commit_file(t.path(), "mod.txt", "1\n", "base");
+        commit_file(t.path(), "old.txt", "rename me\n", "base rename");
+        commit_file(t.path(), "del.txt", "gone\n", "base delete");
+        commit_file(t.path(), "colon.txt", "first\n", "base colon");
+        // 第二条提交：M + R + D + A（文本）+ A（二进制）
+        fs::write(t.path().join("mod.txt"), "2\n").unwrap();
+        git(t.path(), &["mv", "old.txt", "new.txt"]);
+        fs::remove_file(t.path().join("del.txt")).unwrap();
+        git(t.path(), &["rm", "-q", "--", "del.txt"]);
+        // patch 正文里刻意放一行以 `:` 开头，检验 raw/numstat 段切分不会被正文污染
+        fs::write(t.path().join("colon.txt"), "first\n:not a raw line\n").unwrap();
+        fs::write(t.path().join("bin.dat"), [0u8, 1, 2, 0, 255]).unwrap();
+        git(t.path(), &["add", "--", "mod.txt", "colon.txt", "bin.dat"]);
+        git(t.path(), &["commit", "-q", "-m", "mixed changes"]);
+        let head = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+        let r = GitRepo::open(t.path()).unwrap();
+        let d = get_commit_detail(&r, &head).unwrap();
+        assert_eq!(d.files.len(), 5, "{:?}", d.files);
+        let f = |p: &str| {
+            d.files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap_or_else(|| panic!("缺 {p}：{:?}", d.files))
+        };
+        assert_eq!(f("mod.txt").status, 'M');
+        assert_eq!((f("mod.txt").add, f("mod.txt").del), (1, 1));
+        assert!(f("mod.txt").old_path.is_none());
+        assert_eq!(f("new.txt").status, 'R');
+        assert_eq!(f("new.txt").old_path.as_deref(), Some("old.txt"));
+        assert_eq!(f("del.txt").status, 'D');
+        assert_eq!(f("colon.txt").status, 'M');
+        assert_eq!((f("colon.txt").add, f("colon.txt").del), (1, 0));
+        assert_eq!(f("bin.dat").status, 'A');
+        assert!(f("bin.dat").binary);
+        assert_eq!((f("bin.dat").add, f("bin.dat").del), (0, 0));
+
+        // patch 从首个 `diff --git` 起：正文里的 `:` 行不会被吞进 raw/numstat 段
+        let patch = d.patch.as_deref().unwrap();
+        assert!(patch.starts_with("diff --git "), "{patch}");
+        assert_eq!(patch.matches("diff --git ").count(), 5, "{patch}");
+        assert!(patch.contains(":not a raw line"), "{patch}");
+        assert_eq!(d.meta.subject, "mixed changes");
+        assert_eq!(d.body, "");
+
+        // 与改造前三条命令的产出等价：files 逐字段、patch 逐行
+        let ns = git(
+            t.path(),
+            &["show", "--format=", "--name-status", "-M", &head],
+        );
+        let num = git(t.path(), &["show", "--format=", "--numstat", "-M", &head]);
+        let statuses = name_status_v1_for_test(&ns);
+        let old_files: Vec<FileStat> = parse_numstat(&num)
+            .into_iter()
+            .map(|mut f| {
+                if let Some(st) = statuses.get(&f.path) {
+                    f.status = *st;
+                } else if let Some(st) = f.old_path.as_ref().and_then(|o| statuses.get(o)) {
+                    f.status = *st;
+                }
+                f
+            })
+            .collect();
+        assert_eq!(stat_snapshot(&d.files), stat_snapshot(&old_files));
+        let old_patch = git(t.path(), &["show", "--format=", "--patch", &head]);
+        assert_eq!(
+            patch.lines().collect::<Vec<_>>(),
+            old_patch.lines().collect::<Vec<_>>()
+        );
+    }
+
+    /// `--raw` 的 R/C 记录是 `R100\t<source>\t<destination>`（源在前、目标在后）。
+    #[test]
+    fn show_raw_rename_paths_are_source_then_destination() {
+        let t = repo();
+        commit_file(t.path(), "old.txt", "rename me\n", "base");
+        commit_file(t.path(), "other.txt", "other\n", "base other");
+        git(t.path(), &["mv", "old.txt", "new.txt"]);
+        fs::write(t.path().join("other.txt"), "changed\n").unwrap();
+        git(t.path(), &["add", "--", "other.txt"]);
+        git(t.path(), &["commit", "-q", "-m", "rename + modify"]);
+        let head = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+        // 先钉住 git 的输出方向：raw 段写 `<old>\t<new>`，patch 段写 rename from/to
+        let raw = git(t.path(), &["show", "--format=", "--raw", "-M", &head]);
+        assert!(raw.contains("R100\told.txt\tnew.txt"), "{raw}");
+        let patch = git(t.path(), &["show", "--format=", "--patch", &head]);
+        assert!(patch.contains("rename from old.txt"), "{patch}");
+        assert!(patch.contains("rename to new.txt"), "{patch}");
+
+        // 解析结果：path = 新路径、old_path = 原路径（与 numstat 的 `old => new` 同向）
+        let r = GitRepo::open(t.path()).unwrap();
+        let d = get_commit_detail(&r, &head).unwrap();
+        let by = |p: &str| {
+            d.files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap_or_else(|| panic!("缺 {p}：{:?}", d.files))
+        };
+        assert_eq!(d.files.len(), 2, "{:?}", d.files);
+        assert_eq!(by("new.txt").status, 'R');
+        assert_eq!(by("new.txt").old_path.as_deref(), Some("old.txt"));
+        assert_eq!(by("other.txt").status, 'M');
+        assert!(by("other.txt").old_path.is_none());
+
+        // 解析器直测：合成一份形态取自真实输出的 raw + numstat + patch
+        let synthetic = concat!(
+            ":100644 100644 6e91814 6e91814 R100\told.txt\tnew.txt\n",
+            "0\t0\told.txt => new.txt\n",
+            ":100644 100644 db127bf f0abfbc M\tother.txt\n",
+            "1\t1\tother.txt\n",
+            "\n",
+            "diff --git a/old.txt b/new.txt\n",
+            "rename from old.txt\n",
+            "rename to new.txt\n",
+        );
+        let (files, patch) = parse_show_raw_numstat_patch(synthetic);
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!(files[0].path, "new.txt");
+        assert_eq!(files[0].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(files[0].status, 'R');
+        assert_eq!(files[1].path, "other.txt");
+        assert_eq!(files[1].status, 'M');
+        assert!(patch.unwrap().starts_with("diff --git a/old.txt b/new.txt"));
     }
 
 }

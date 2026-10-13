@@ -548,6 +548,7 @@ mod tests {
     fn dummy_repo() -> GitRepo {
         GitRepo {
             root: std::path::PathBuf::from("."),
+            gitdir: std::path::PathBuf::from(".git"),
         }
     }
 
