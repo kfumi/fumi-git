@@ -296,11 +296,13 @@ pub struct RefEntry {
     pub tip: String,
     /// 创建时间（unix 秒；标签按此倒序）
     pub time: u32,
+    /// 上游分支短名（如 `origin/main`）；远程 ref 与标签天然为空 → None
+    pub upstream: Option<String>,
 }
 
-/// refname / objectname / 剥离后的 objectname / symref / 创建时间
+/// refname / objectname / 剥离后的 objectname / symref / 创建时间 / 上游短名
 const REF_FORMAT: &str =
-    "%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)%1f%(creatordate:unix)";
+    "%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)%1f%(creatordate:unix)%1f%(upstream:short)";
 
 /// 全量引用（本地分支 / 远程分支 / 标签）。
 ///
@@ -322,6 +324,7 @@ pub fn list_refs(repo: &GitRepo) -> GitResult<Vec<RefEntry>> {
         let peeled = f.next().unwrap_or_default();
         let symref = f.next().unwrap_or_default();
         let time = f.next().unwrap_or_default();
+        let upstream = f.next().unwrap_or_default();
 
         // 符号 ref（refs/remotes/<remote>/HEAD）只是指针，不是真实分支
         if full.is_empty() || !symref.is_empty() {
@@ -346,6 +349,7 @@ pub fn list_refs(repo: &GitRepo) -> GitResult<Vec<RefEntry>> {
             kind,
             tip: tip.to_string(),
             time: time.parse().unwrap_or(0),
+            upstream: (!upstream.is_empty()).then(|| upstream.to_string()),
         });
     }
     Ok(out)
@@ -415,22 +419,26 @@ fn parse_numstat(raw: &str) -> Vec<FileStat> {
     files
 }
 
+/// 读取单条提交的元信息（与 `get_log` 共用日志格式与解析，供详情与比较复用）。
+fn commit_meta(repo: &GitRepo, hash: &str) -> GitResult<CommitEntry> {
+    let raw = repo.run(&[
+        "show",
+        "-s",
+        &format!("--format={LOG_FORMAT}"),
+        hash,
+    ])?;
+    parse_log_output(&raw)
+        .pop()
+        .ok_or_else(|| GitError::CommandFailed("提交不存在".into()))
+}
+
 pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> {
     let safe = hash.trim();
     if safe.is_empty() || !safe.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(GitError::CommandFailed("非法提交哈希".into()));
     }
-    // 元信息（复用日志格式）
-    let raw = repo.run(&[
-        "show",
-        "-s",
-        &format!("--format={LOG_FORMAT}"),
-        safe,
-    ])?;
-    let mut commits = parse_log_output(&raw);
-    let meta = commits
-        .pop()
-        .ok_or_else(|| GitError::CommandFailed("提交不存在".into()))?;
+    // 元信息（复用日志格式，与 get_log 同一套解析）
+    let meta = commit_meta(repo, safe)?;
 
     let body = repo
         .run(&["show", "-s", "--format=%b", safe])?
@@ -475,6 +483,37 @@ pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> 
     Ok(CommitDetail {
         meta,
         body,
+        files,
+        patch,
+    })
+}
+
+/// 两个提交的比较结果：`base..head` 的元信息、文件统计与统一 diff。
+#[derive(Debug, Clone, Serialize)]
+pub struct CompareResult {
+    pub base: CommitEntry,
+    pub head: CommitEntry,
+    pub files: Vec<FileStat>,
+    /// 统一 diff 原文；无差异（patch 为空）为 None
+    pub patch: Option<String>,
+}
+
+/// 比较任意两个提交（不限于 HEAD）。两端接受十六进制提交 id；`HEAD` / `@` 按调用瞬间的 HEAD 解析
+/// （右栏「与 HEAD 比较」的 base 就是字面量 `HEAD`，这样基准永远是当前 HEAD 而不是某个旧 id）。
+pub fn get_compare(repo: &GitRepo, base: &str, head: &str) -> GitResult<CompareResult> {
+    let base = resolve_compare_ref(repo, base)?;
+    let head = resolve_compare_ref(repo, head)?;
+    let range = format!("{base}..{head}");
+    let files = parse_numstat(&repo.run(&["diff", "--numstat", &range])?);
+    let patch_raw = repo.run(&["diff", &range])?;
+    let patch = if patch_raw.trim().is_empty() {
+        None
+    } else {
+        Some(patch_raw)
+    };
+    Ok(CompareResult {
+        base: commit_meta(repo, &base)?,
+        head: commit_meta(repo, &head)?,
         files,
         patch,
     })
@@ -730,6 +769,42 @@ pub fn rename_branch(repo: &GitRepo, old: &str, new: &str) -> GitResult<()> {
     Ok(())
 }
 
+/// 建立分支与上游的关联（`--set-upstream-to`）。
+/// upstream 形如 `origin/main`，含 `/` 属正常，不做分支名级校验。
+pub fn set_upstream(repo: &GitRepo, branch: &str, upstream: &str) -> GitResult<()> {
+    let branch = branch.trim();
+    let upstream = upstream.trim();
+    if branch.is_empty() || upstream.is_empty() {
+        return Err(GitError::CommandFailed("分支或上游为空".into()));
+    }
+    repo.run(&["branch", &format!("--set-upstream-to={upstream}"), branch])?;
+    Ok(())
+}
+
+/// 解除分支的上游关联（`--unset-upstream`）。
+pub fn unset_upstream(repo: &GitRepo, branch: &str) -> GitResult<()> {
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err(GitError::CommandFailed("分支名为空".into()));
+    }
+    repo.run(&["branch", "--unset-upstream", branch])?;
+    Ok(())
+}
+
+/// 新建标签：message 非空 → 附注标签（`-a`），否则轻量标签。target 只接受提交哈希。
+pub fn create_tag(repo: &GitRepo, name: &str, target: &str, message: Option<&str>) -> GitResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::CommandFailed("标签名不能为空".into()));
+    }
+    let target = validate_hash(target)?;
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => repo.run(&["tag", "-a", name, &target, "-m", m])?,
+        None => repo.run(&["tag", name, &target])?,
+    };
+    Ok(())
+}
+
 /// 将当前分支重置到目标提交。target 仅接受十六进制哈希（UI 只传提交 id）；
 /// 模式 = soft（保留改动在暂存区）/ mixed（保留在工作区）/ hard（丢弃，脏树拦截在前端）。
 pub fn reset_branch(repo: &GitRepo, target: &str, mode: &str) -> GitResult<()> {
@@ -761,6 +836,8 @@ pub enum Operation {
     CherryPick,
     #[serde(rename = "revert")]
     Revert,
+    #[serde(rename = "rebase")]
+    Rebase,
 }
 
 impl Operation {
@@ -769,12 +846,32 @@ impl Operation {
             Operation::Merge => "merge",
             Operation::CherryPick => "cherry-pick",
             Operation::Revert => "revert",
+            Operation::Rebase => "rebase",
         }
     }
 }
 
-/// 依据 sequencer 状态文件识别进行中的操作（互斥，优先级即检出顺序）。
+/// 依据 sequencer 状态目录 / 文件识别进行中的操作（互斥，优先级即检出顺序）。
+/// 变基优先级最高：变基中途 HEAD 处于分离态，其它探测可能误判。
 fn read_operation(repo: &GitRepo) -> Option<Operation> {
+    // `--git-path` 可能返回相对仓库根的相对路径（spawn_git 的 cwd 是仓库根，
+    // 但本进程 cwd 不是），必须先拼回仓库根再判断存在性。
+    let has_dir = |name: &str| {
+        repo.run(&["rev-parse", "--git-path", name])
+            .ok()
+            .map(|p| {
+                let p = PathBuf::from(p.trim());
+                if p.is_absolute() {
+                    p
+                } else {
+                    repo.root.join(p)
+                }
+            })
+            .is_some_and(|p| p.exists())
+    };
+    if has_dir("rebase-merge") || has_dir("rebase-apply") {
+        return Some(Operation::Rebase);
+    }
     let has = |name: &str| repo.run_ok(&["rev-parse", "--verify", "--quiet", name]);
     if has("MERGE_HEAD") {
         Some(Operation::Merge)
@@ -799,7 +896,7 @@ pub fn merge_ref(repo: &GitRepo, ref_name: &str) -> GitResult<String> {
     Ok(out.trim().to_string())
 }
 
-/// 中止进行中的操作（merge --abort / cherry-pick --abort / revert --abort），
+/// 中止进行中的操作（merge / cherry-pick / revert / rebase --abort），
 /// 恢复到操作前状态。仅在对应操作进行中可用。
 pub fn abort_operation(repo: &GitRepo, op: Operation) -> GitResult<()> {
     let current = read_operation(repo);
@@ -864,22 +961,40 @@ pub fn resolve_take(repo: &GitRepo, path: &str, ours: bool) -> GitResult<()> {
     Ok(())
 }
 
-/// 完成进行中的操作（--continue）。冲突未清空时拒绝；
+/// 完成 / 跳过进行中的操作。
+/// action = None / "continue"：`--continue`（冲突未清空时拒绝）；
+/// action = "skip"：仅变基支持，丢弃当前提交继续；
 /// 以内置空 editor 运行，沿用 git 生成的默认提交信息，不弹交互编辑器。
-pub fn continue_operation(repo: &GitRepo, op: Operation) -> GitResult<String> {
+pub fn continue_operation(
+    repo: &GitRepo,
+    op: Operation,
+    action: Option<&str>,
+) -> GitResult<String> {
     let current = read_operation(repo);
     if current != Some(op) {
         return Err(GitError::CommandFailed("当前没有进行中的对应操作".into()));
     }
-    let st = get_status(repo)?;
-    if !st.unmerged.is_empty() {
-        return Err(GitError::CommandFailed(format!(
-            "还有 {} 个冲突文件未解决",
-            st.unmerged.len()
-        )));
+    match action.map(str::trim).filter(|a| !a.is_empty()) {
+        None | Some("continue") => {
+            let st = get_status(repo)?;
+            if !st.unmerged.is_empty() {
+                return Err(GitError::CommandFailed(format!(
+                    "还有 {} 个冲突文件未解决",
+                    st.unmerged.len()
+                )));
+            }
+            repo.run(&["-c", "core.editor=true", op.as_str(), "--continue"])?;
+            Ok("已完成".into())
+        }
+        Some("skip") => {
+            if op != Operation::Rebase {
+                return Err(GitError::CommandFailed("该操作不支持跳过".into()));
+            }
+            repo.run(&["-c", "core.editor=true", "rebase", "--skip"])?;
+            Ok("已跳过本次提交".into())
+        }
+        Some(_) => Err(GitError::CommandFailed("非法动作".into())),
     }
-    repo.run(&["-c", "core.editor=true", op.as_str(), "--continue"])?;
-    Ok("已完成".into())
 }
 
 // ── 历史修正：revert / cherry-pick（二阶段票 04/05） ────────────────────────
@@ -890,6 +1005,43 @@ fn validate_hash(hash: &str) -> GitResult<String> {
         return Err(GitError::CommandFailed("非法提交哈希".into()));
     }
     Ok(hash.to_string())
+}
+
+/// 比较入口的 ref 解析：`HEAD` / `@`（大小写不敏感）解析为当前 HEAD 的提交 id，其余按提交 id 校验。
+fn resolve_compare_ref(repo: &GitRepo, value: &str) -> GitResult<String> {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("HEAD") || v == "@" {
+        return Ok(repo.run(&["rev-parse", "HEAD"])?.trim().to_string());
+    }
+    validate_hash(v)
+}
+
+/// 检出指定修订（分离 HEAD）。target 只接受十六进制提交 id。
+pub fn checkout_commit(repo: &GitRepo, hash: &str) -> GitResult<()> {
+    let target = validate_hash(hash)?;
+    repo.run(&["switch", "--detach", &target])?;
+    Ok(())
+}
+
+/// 改写 HEAD 的提交信息（`commit --amend -m`，不弹交互编辑器）。
+/// 注意：暂存区已有的改动会被一并并入这次修正提交。
+pub fn amend_message(repo: &GitRepo, message: &str) -> GitResult<()> {
+    if message.trim().is_empty() {
+        return Err(GitError::CommandFailed("提交信息不能为空".into()));
+    }
+    repo.run(&["commit", "--amend", "-m", message])?;
+    Ok(())
+}
+
+/// 变基：把当前分支的提交重放到 ref_name 之上。
+/// 冲突时原样返回 CommandFailed（仓库进入变基中状态），由前端读状态分类。
+pub fn rebase(repo: &GitRepo, ref_name: &str) -> GitResult<String> {
+    let ref_name = ref_name.trim();
+    if ref_name.is_empty() {
+        return Err(GitError::CommandFailed("变基目标为空".into()));
+    }
+    repo.run(&["rebase", ref_name])?;
+    Ok("已变基".into())
 }
 
 /// 还原普通提交（自动生成 `Revert "<subject>"` 提交，不改写历史）。
@@ -1084,9 +1236,17 @@ pub fn get_branch_summary(repo: &GitRepo) -> GitResult<BranchSummary> {
     })
 }
 
-/// 抓取：多远程仓库下 `--all` 覆盖每个远程（裸 fetch 只动当前上游那一个）。
-pub fn fetch(repo: &GitRepo) -> GitResult<String> {
-    repo.run(&["fetch", "--all"]).map(|_| "抓取完成".into())
+/// 抓取：多远程仓库下 `--all` 覆盖每个远程（裸 fetch 只动当前上游那一个）；
+/// 指定 remote 时只抓该远程。
+pub fn fetch(repo: &GitRepo, remote: Option<&str>) -> GitResult<String> {
+    let remote = remote.map(str::trim).filter(|r| !r.is_empty());
+    match remote {
+        Some(r) => {
+            repo.run(&["fetch", r])?;
+            Ok(format!("已抓取 {r}"))
+        }
+        None => repo.run(&["fetch", "--all"]).map(|_| "抓取完成".into()),
+    }
 }
 
 pub fn pull(repo: &GitRepo) -> GitResult<String> {
@@ -1193,6 +1353,31 @@ pub fn push_all_remotes(repo: &GitRepo, branch: &str) -> GitResult<String> {
         ));
     }
     Ok(msg)
+}
+
+/// 删除远程分支：显式带 `refs/heads/` 前缀，避免与同名标签歧义。
+/// 先 `ls-remote` 确认分支存在 —— 本地路径远程上删除不存在的 ref 时
+/// receive-pack 只给 warning 且退出码为 0，必须自己兜住「分支不存在」。
+/// 真正的删除失败（无权限等）走与 push 相同的结构化映射。
+pub fn delete_remote_branch(repo: &GitRepo, remote: &str, branch: &str) -> GitResult<String> {
+    let remote = remote.trim();
+    let branch = branch.trim();
+    if remote.is_empty() || branch.is_empty() {
+        return Err(GitError::CommandFailed("远程或分支名为空".into()));
+    }
+    let refname = format!("refs/heads/{branch}");
+    let advertised = repo.run(&["ls-remote", "--heads", remote, &refname])?;
+    if advertised.trim().is_empty() {
+        return Err(GitError::CommandFailed(format!(
+            "远程分支不存在：{remote}/{branch}"
+        )));
+    }
+    repo.run(&["push", "--quiet", remote, "--delete", &refname])
+        .map_err(|e| match e {
+            GitError::CommandFailed(stderr) => map_push_err(stderr),
+            other => other,
+        })?;
+    Ok(format!("已删除 {remote}/{branch}"))
 }
 
 /// 本地分支还没有上游时：让用户选远程，一次性建立关联并推送（push -u）。
@@ -1689,7 +1874,7 @@ mod tests {
 
         let r = GitRepo::open(work.path()).unwrap();
         assert_eq!(get_branch_summary(&r).unwrap().behind, 0);
-        fetch(&r).unwrap();
+        fetch(&r, None).unwrap();
         let s = get_branch_summary(&r).unwrap();
         assert_eq!((s.ahead, s.behind), (0, 1));
         pull(&r).unwrap();
@@ -1700,7 +1885,7 @@ mod tests {
         commit_file(work.path(), "local.txt", "l1", "local diverge");
         commit_file(&c2, "remote2.txt", "r2", "remote diverge");
         git(&c2, &["push", "-q", "origin", "main"]);
-        fetch(&r).unwrap();
+        fetch(&r, None).unwrap();
         let s2 = get_branch_summary(&r).unwrap();
         assert_eq!((s2.ahead, s2.behind), (1, 1));
         assert!(matches!(pull(&r), Err(GitError::NonFastForward(_))));
@@ -2065,7 +2250,7 @@ mod tests {
             &["push", "-q", "gitee", "HEAD:refs/heads/main"],
         );
 
-        fetch(&r).unwrap();
+        fetch(&r, None).unwrap();
         assert!(r.run_ok(&["rev-parse", "--verify", "refs/remotes/gitee/main"]));
     }
 
@@ -2104,7 +2289,7 @@ mod tests {
         commit_file(work.path(), "a.txt", "local edit", "local edits a");
         commit_file(&c2, "a.txt", "remote edit", "remote edits a");
         git(&c2, &["push", "-q", "origin", "main"]);
-        fetch(&r).unwrap();
+        fetch(&r, None).unwrap();
         assert!(matches!(pull(&r), Err(GitError::NonFastForward(_))));
         assert!(merge_ref(&r, "origin/main").is_err());
 
@@ -2266,7 +2451,7 @@ mod tests {
 
         // 冲突未解决时 continue 被拒
         assert!(matches!(
-            continue_operation(&r, Operation::Merge),
+            continue_operation(&r, Operation::Merge, None),
             Err(GitError::CommandFailed(m)) if m.contains("冲突文件未解决")
         ));
 
@@ -2276,7 +2461,7 @@ mod tests {
         let st = get_status(&r).unwrap();
         assert!(st.unmerged.is_empty()); // 我方版本与 HEAD 一致，无差异即无暂存条目
         // 继续合并 → 产生合并提交
-        continue_operation(&r, Operation::Merge).unwrap();
+        continue_operation(&r, Operation::Merge, None).unwrap();
         let page = get_log(&r, 0, 3).unwrap();
         assert_eq!(page.commits[0].parents.len(), 2);
         assert!(get_status(&r).unwrap().operation.is_none());
@@ -2508,6 +2693,465 @@ mod tests {
         ));
         abort_operation(&r, Operation::Revert).unwrap();
         assert!(get_status(&r).unwrap().operation.is_none());
+    }
+    // ── 远程同步（按远程抓取 / 删除远程分支 / 上游管理） ──
+
+    #[test]
+    fn fetch_single_remote_and_all_regression() {
+        let (_origin, gitee, work) = repo_with_two_remotes();
+        let r = GitRepo::open(work.path()).unwrap();
+
+        // 另一个工作仓往 gitee 推 main：本地只有 gitee 远端能提供该分支
+        let side = repo();
+        git(
+            side.path(),
+            &["remote", "add", "gitee", gitee.path().to_str().unwrap()],
+        );
+        commit_file(side.path(), "g.txt", "1", "gitee side");
+        git(side.path(), &["push", "-q", "gitee", "HEAD:refs/heads/main"]);
+
+        // 指定远程：只抓该远程，不碰别的远程
+        assert_eq!(fetch(&r, Some("origin")).unwrap(), "已抓取 origin");
+        assert!(!r.run_ok(&["rev-parse", "--verify", "--quiet", "refs/remotes/gitee/main"]));
+        assert!(r.run_ok(&["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]));
+
+        // 无参 / 全空白：仍是 --all 行为（回归）
+        assert_eq!(fetch(&r, None).unwrap(), "抓取完成");
+        assert!(r.run_ok(&["rev-parse", "--verify", "--quiet", "refs/remotes/gitee/main"]));
+        assert_eq!(fetch(&r, Some("  ")).unwrap(), "抓取完成");
+    }
+
+    #[test]
+    fn delete_remote_branch_success_and_missing() {
+        let (origin, work) = repo_with_origin();
+        let r = GitRepo::open(work.path()).unwrap();
+        // 先在远端造一个分支
+        git(work.path(), &["push", "-q", "origin", "main:refs/heads/topic"]);
+        let remote_ref = |name: &str| {
+            git(
+                origin.path(),
+                &["for-each-ref", "--format=%(refname)", name],
+            )
+            .trim()
+            .to_string()
+        };
+        assert_eq!(remote_ref("refs/heads/topic"), "refs/heads/topic");
+
+        assert_eq!(
+            delete_remote_branch(&r, "origin", "topic").unwrap(),
+            "已删除 origin/topic"
+        );
+        assert!(remote_ref("refs/heads/topic").is_empty());
+
+        // 分支不存在 / 空参 → 结构化错误
+        assert!(matches!(
+            delete_remote_branch(&r, "origin", "no-such"),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            delete_remote_branch(&r, "  ", "topic"),
+            Err(GitError::CommandFailed(m)) if m.contains("远程或分支名为空")
+        ));
+        assert!(matches!(
+            delete_remote_branch(&r, "origin", ""),
+            Err(GitError::CommandFailed(m)) if m.contains("远程或分支名为空")
+        ));
+    }
+
+    #[test]
+    fn upstream_set_unset_and_list_refs_field() {
+        let (_origin, work) = repo_with_origin();
+        let r = GitRepo::open(work.path()).unwrap();
+        git(work.path(), &["branch", "feature"]);
+        git(work.path(), &["tag", "v1"]);
+
+        let up_of = |name: &str| {
+            r.run(&[
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                &format!("refs/heads/{name}"),
+            ])
+            .unwrap()
+            .trim()
+            .to_string()
+        };
+        assert_eq!(up_of("feature"), "");
+
+        // 建立上游：for-each-ref 与 list_refs 的 upstream 字段一致
+        set_upstream(&r, "feature", "origin/main").unwrap();
+        assert_eq!(up_of("feature"), "origin/main");
+        let refs = list_refs(&r).unwrap();
+        let entry = |name: &str| refs.iter().find(|e| e.name == name).cloned().unwrap();
+        assert_eq!(entry("main").kind, RefKind::Branch);
+        assert_eq!(entry("main").upstream.as_deref(), Some("origin/main"));
+        assert_eq!(entry("feature").upstream.as_deref(), Some("origin/main"));
+        // 远程 ref 与标签天然没有上游
+        assert_eq!(entry("origin/main").kind, RefKind::Remote);
+        assert_eq!(entry("origin/main").upstream, None);
+        assert_eq!(entry("v1").kind, RefKind::Tag);
+        assert_eq!(entry("v1").upstream, None);
+
+        // 解除上游（upstream 是快照字段，须重新读取引用列表）
+        unset_upstream(&r, "feature").unwrap();
+        assert_eq!(up_of("feature"), "");
+        let refs2 = list_refs(&r).unwrap();
+        assert_eq!(
+            refs2.iter().find(|e| e.name == "feature").unwrap().upstream,
+            None
+        );
+
+        // 空参
+        assert!(matches!(
+            set_upstream(&r, "", "origin/main"),
+            Err(GitError::CommandFailed(m)) if m.contains("分支或上游为空")
+        ));
+        assert!(matches!(
+            set_upstream(&r, "feature", "   "),
+            Err(GitError::CommandFailed(m)) if m.contains("分支或上游为空")
+        ));
+        assert!(matches!(
+            unset_upstream(&r, " "),
+            Err(GitError::CommandFailed(m)) if m.contains("分支名为空")
+        ));
+    }
+
+    // ── 标签 / 检出 / 修正提交信息 / 变基 / 与 HEAD 比较 ──
+
+    #[test]
+    fn create_tag_lightweight_and_annotated() {
+        let t = repo();
+        let c1 = commit_file(t.path(), "a.txt", "1", "base");
+        let c2 = commit_file(t.path(), "a.txt", "2", "second");
+        let r = GitRepo::open(t.path()).unwrap();
+        let fields = |name: &str| -> Vec<String> {
+            r.run(&[
+                "for-each-ref",
+                "--format=%(objecttype) %(objectname) %(*objectname)",
+                &format!("refs/tags/{name}"),
+            ])
+            .unwrap()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+        };
+
+        // 轻量标签：ref 直接指向 commit 对象（无剥离对象）
+        create_tag(&r, "lw", &c1, None).unwrap();
+        let lw = fields("lw");
+        assert_eq!(lw.len(), 2);
+        assert_eq!(lw[0], "commit");
+        assert_eq!(lw[1], c1);
+
+        // 附注标签：tag 对象剥离到目标提交；message 全空白视作轻量
+        create_tag(&r, "ann", &c2, Some("发布说明")).unwrap();
+        let ann = fields("ann");
+        assert_eq!(ann[0], "tag");
+        assert_eq!(ann[2], c2);
+        create_tag(&r, "blank-msg", &c1, Some("   ")).unwrap();
+        assert_eq!(fields("blank-msg")[0], "commit");
+
+        // 重名 / 空名 / 非法目标 → Err
+        assert!(matches!(
+            create_tag(&r, "lw", &c2, None),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            create_tag(&r, "  ", &c1, None),
+            Err(GitError::CommandFailed(m)) if m.contains("标签名不能为空")
+        ));
+        assert!(matches!(
+            create_tag(&r, "bad", "not-a-hash", None),
+            Err(GitError::CommandFailed(_))
+        ));
+    }
+
+    #[test]
+    fn checkout_remote_branch_sets_upstream() {
+        let (_origin, work) = repo_with_origin();
+        let r = GitRepo::open(work.path()).unwrap();
+        // 远端有 topic（本地还没有）：抓取后按远程分支检出（侧栏「远程分支 → 检出」的路径）
+        git(work.path(), &["push", "-q", "origin", "main:refs/heads/topic"]);
+        git(work.path(), &["fetch", "-q", "origin"]);
+        create_branch(&r, "topic", true, Some("origin/topic")).unwrap();
+
+        assert_eq!(r.current_branch(), "topic");
+        let up = git(
+            work.path(),
+            &[
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                "refs/heads/topic",
+            ],
+        )
+        .trim()
+        .to_string();
+        assert_eq!(up, "origin/topic");
+        // list_refs 与 for-each-ref 一致：侧栏据此决定「设置上游 / 取消上游」的可用性
+        let entry = list_refs(&r)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "topic")
+            .unwrap();
+        assert_eq!(entry.upstream.as_deref(), Some("origin/topic"));
+    }
+
+    #[test]
+    fn checkout_commit_detaches_head_without_upstream() {
+        let t = repo();
+        let c1 = commit_file(t.path(), "a.txt", "1", "base");
+        commit_file(t.path(), "a.txt", "2", "second");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        checkout_commit(&r, &c1).unwrap();
+        assert!(!r.run_ok(&["symbolic-ref", "--short", "HEAD"]));
+        assert_eq!(r.run(&["rev-parse", "HEAD"]).unwrap().trim(), c1);
+        assert_eq!(fs::read_to_string(t.path().join("a.txt")).unwrap(), "1");
+        assert_eq!(get_branch_summary(&r).unwrap().upstream, None);
+        // 前端 menus.ts detachedHead() 按该字符串识别分离态：格式固定为 `(HEAD detached at <十六进制短号>)`
+        let branch = get_branch_summary(&r).unwrap().branch;
+        let short = branch
+            .strip_prefix("(HEAD detached at ")
+            .and_then(|s| s.strip_suffix(')'))
+            .expect("分离态分支串格式变了：前端 detachedHead() 会失效");
+        assert!(!short.is_empty() && short.chars().all(|c| c.is_ascii_hexdigit()));
+
+        assert!(matches!(
+            checkout_commit(&r, "zz"),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            checkout_commit(&r, "   "),
+            Err(GitError::CommandFailed(_))
+        ));
+    }
+
+    #[test]
+    fn amend_message_rewrites_head_and_folds_staged() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "base");
+        let c2 = commit_file(t.path(), "a.txt", "2", "second");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 空信息拒绝
+        assert!(matches!(
+            amend_message(&r, "   "),
+            Err(GitError::CommandFailed(m)) if m.contains("提交信息不能为空")
+        ));
+
+        // 改写信息：哈希变化，提交数不变
+        amend_message(&r, "改写后的信息").unwrap();
+        let page = get_log(&r, 0, 2).unwrap();
+        assert_eq!(page.commits[0].subject, "改写后的信息");
+        assert_ne!(page.commits[0].id, c2);
+        assert_eq!(git(t.path(), &["rev-list", "--count", "HEAD"]).trim(), "2");
+
+        // 多行信息保留换行与缩进（-m 已给，不弹编辑器）
+        amend_message(&r, "标题行\n\n- 要点一\n  缩进续行").unwrap();
+        let body = r.run(&["show", "-s", "--format=%B", "HEAD"]).unwrap();
+        assert!(body.contains("标题行"), "{body}");
+        assert!(body.contains("- 要点一"), "{body}");
+        assert!(body.contains("  缩进续行"), "{body}");
+
+        // 暂存区非空：暂存改动会被并入修正提交（前端据此提示风险）
+        fs::write(t.path().join("staged.txt"), "staged content\n").unwrap();
+        git(t.path(), &["add", "--", "staged.txt"]);
+        amend_message(&r, "并入暂存改动").unwrap();
+        assert_eq!(git(t.path(), &["rev-list", "--count", "HEAD"]).trim(), "2");
+        let stat = git(t.path(), &["show", "--stat", "--format=", "HEAD"]);
+        assert!(stat.contains("staged.txt"), "{stat}");
+        assert_eq!(git(t.path(), &["show", "HEAD:staged.txt"]), "staged content\n");
+    }
+
+    #[test]
+    fn rebase_clean_replays_commits_onto_target() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "base\n", "base");
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(t.path(), "feat.txt", "f1\n", "feat 1");
+        commit_file(t.path(), "feat2.txt", "f2\n", "feat 2");
+        git(t.path(), &["checkout", "-q", "main"]);
+        commit_file(t.path(), "main.txt", "m1\n", "main 1");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        assert!(matches!(
+            rebase(&r, "  "),
+            Err(GitError::CommandFailed(m)) if m.contains("变基目标为空")
+        ));
+
+        git(t.path(), &["checkout", "-q", "feat"]);
+        assert_eq!(rebase(&r, "main").unwrap(), "已变基");
+        let page = get_log(&r, 0, 4).unwrap();
+        let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(&subjects[..3], &["feat 2", "feat 1", "main 1"]);
+        assert!(r.run_ok(&["merge-base", "--is-ancestor", "main", "feat"]));
+        assert!(get_status(&r).unwrap().operation.is_none());
+    }
+
+    #[test]
+    fn rebase_conflict_continue_abort_and_skip() {
+        // 冲突夹具：base → feat 改 a.txt；main 也改 a.txt
+        let setup = || {
+            let t = repo();
+            commit_file(t.path(), "a.txt", "base\n", "base");
+            git(t.path(), &["checkout", "-q", "-b", "feat"]);
+            commit_file(t.path(), "a.txt", "feat\n", "feat edit");
+            git(t.path(), &["checkout", "-q", "main"]);
+            commit_file(t.path(), "a.txt", "main\n", "main edit");
+            t
+        };
+
+        // 1) 冲突停下：operation = rebase 且未合入清单非空
+        let t = setup();
+        let r = GitRepo::open(t.path()).unwrap();
+        git(t.path(), &["checkout", "-q", "feat"]);
+        assert!(matches!(rebase(&r, "main"), Err(GitError::CommandFailed(_))));
+        let st = get_status(&r).unwrap();
+        assert_eq!(st.operation, Some(Operation::Rebase));
+        assert!(st.unmerged.iter().any(|f| f.path == "a.txt"));
+
+        // 2) 冲突未清空时 continue 被拒
+        assert!(matches!(
+            continue_operation(&r, Operation::Rebase, None),
+            Err(GitError::CommandFailed(m)) if m.contains("冲突文件未解决")
+        ));
+
+        // 3) 解决后 continue 完成，提交被重放到 main 之上
+        fs::write(t.path().join("a.txt"), "resolved\n").unwrap();
+        git(t.path(), &["add", "--", "a.txt"]);
+        assert_eq!(
+            continue_operation(&r, Operation::Rebase, None).unwrap(),
+            "已完成"
+        );
+        assert!(get_status(&r).unwrap().operation.is_none());
+        assert_eq!(
+            git(t.path(), &["log", "--format=%s", "-1", "feat"]).trim(),
+            "feat edit"
+        );
+        assert!(r.run_ok(&["merge-base", "--is-ancestor", "main", "feat"]));
+
+        // 4) abort 完整回到变基前（提交与分支指针都不动）
+        let t2 = setup();
+        let r2 = GitRepo::open(t2.path()).unwrap();
+        git(t2.path(), &["checkout", "-q", "feat"]);
+        let feat_before = git(t2.path(), &["rev-parse", "feat"]).trim().to_string();
+        let log_before = git(t2.path(), &["log", "--format=%s", "--all", "--topo-order"]);
+        assert!(rebase(&r2, "main").is_err());
+        assert_eq!(get_status(&r2).unwrap().operation, Some(Operation::Rebase));
+        abort_operation(&r2, Operation::Rebase).unwrap();
+        assert!(get_status(&r2).unwrap().operation.is_none());
+        assert_eq!(git(t2.path(), &["rev-parse", "feat"]).trim(), feat_before);
+        assert_eq!(git(t2.path(), &["rev-parse", "HEAD"]).trim(), feat_before);
+        assert_eq!(
+            git(t2.path(), &["log", "--format=%s", "--all", "--topo-order"]),
+            log_before
+        );
+
+        // 5) skip 丢弃本次提交继续（feat 只有一个提交 → 直接落到 main）
+        let t3 = setup();
+        let r3 = GitRepo::open(t3.path()).unwrap();
+        git(t3.path(), &["checkout", "-q", "feat"]);
+        assert!(rebase(&r3, "main").is_err());
+        assert_eq!(
+            continue_operation(&r3, Operation::Rebase, Some("skip")).unwrap(),
+            "已跳过本次提交"
+        );
+        assert!(get_status(&r3).unwrap().operation.is_none());
+        assert_eq!(
+            git(t3.path(), &["rev-parse", "feat"]).trim(),
+            git(t3.path(), &["rev-parse", "main"]).trim()
+        );
+        assert_eq!(fs::read_to_string(t3.path().join("a.txt")).unwrap(), "main\n");
+
+        // 6) 动作合法性：skip 只支持变基；未知动作非法；无进行中操作被拒
+        let t4 = setup();
+        commit_file(t4.path(), "a.txt", "merge-side\n", "merge side");
+        let out = Command::new("git")
+            .current_dir(t4.path())
+            .args(["merge", "--no-ff", "feat"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "夹具必须真冲突");
+        let r4 = GitRepo::open(t4.path()).unwrap();
+        assert_eq!(get_status(&r4).unwrap().operation, Some(Operation::Merge));
+        assert!(matches!(
+            continue_operation(&r4, Operation::Merge, Some("skip")),
+            Err(GitError::CommandFailed(m)) if m.contains("该操作不支持跳过")
+        ));
+        assert!(matches!(
+            continue_operation(&r4, Operation::Merge, Some("bogus")),
+            Err(GitError::CommandFailed(m)) if m.contains("非法动作")
+        ));
+        assert!(matches!(
+            continue_operation(&r3, Operation::Rebase, None),
+            Err(GitError::CommandFailed(m)) if m.contains("没有进行中的对应操作")
+        ));
+    }
+
+    #[test]
+    fn get_compare_files_patch_and_edge_cases() {
+        let t = repo();
+        let c1 = commit_file(t.path(), "a.txt", "1\n", "base");
+        let c2 = commit_file(t.path(), "a.txt", "2\n", "second");
+        commit_file(t.path(), "b.txt", "new\n", "third");
+        let c3 = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+        let r = GitRepo::open(t.path()).unwrap();
+
+        let cmp = get_compare(&r, &c1, &c3).unwrap();
+        assert_eq!(cmp.base.id, c1);
+        assert_eq!(cmp.head.id, c3);
+        assert_eq!(cmp.base.subject, "base");
+        assert_eq!(cmp.head.subject, "third");
+        let a = cmp.files.iter().find(|f| f.path == "a.txt").unwrap();
+        assert_eq!((a.add, a.del), (1, 1));
+        assert!(cmp.files.iter().any(|f| f.path == "b.txt"));
+        let patch = cmp.patch.as_deref().unwrap();
+        assert!(patch.contains("diff --git a/a.txt b/a.txt"), "{patch}");
+        assert!(patch.contains("+2"), "{patch}");
+
+        // 相同提交：无差异
+        let same = get_compare(&r, &c1, &c1).unwrap();
+        assert!(same.files.is_empty());
+        assert!(same.patch.is_none());
+
+        // 反向比较也合法（patch 为反向 diff）
+        let rev = get_compare(&r, &c3, &c1).unwrap();
+        assert!(rev.patch.as_deref().unwrap().contains("-2"));
+
+        // 非法 / 不存在哈希
+        assert!(matches!(
+            get_compare(&r, "zz", &c2),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            get_compare(&r, &c1, "   "),
+            Err(GitError::CommandFailed(_))
+        ));
+        assert!(matches!(
+            get_compare(&r, &c1, "deadbeef"),
+            Err(GitError::CommandFailed(_))
+        ));
+    }
+
+    #[test]
+    fn get_compare_accepts_literal_head() {
+        let t = repo();
+        let c1 = commit_file(t.path(), "a.txt", "1\n", "base");
+        commit_file(t.path(), "a.txt", "2\n", "second");
+        let head_id = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 右栏「与 HEAD 比较」传的就是字面量 HEAD：基准解析为调用瞬间的 HEAD
+        let cmp = get_compare(&r, "HEAD", &c1).unwrap();
+        assert_eq!(cmp.base.id, head_id);
+        assert_eq!(cmp.head.id, c1);
+        assert_eq!(cmp.base.subject, "second");
+        // 大小写不敏感，且 git 的 @ 同义写法一并接受
+        assert_eq!(get_compare(&r, "head", &c1).unwrap().base.id, head_id);
+        assert_eq!(get_compare(&r, "@", &c1).unwrap().base.id, head_id);
+        // HEAD 与自身比较：无差异
+        let self_cmp = get_compare(&r, "HEAD", "HEAD").unwrap();
+        assert!(self_cmp.files.is_empty());
+        assert!(self_cmp.patch.is_none());
     }
 }
 

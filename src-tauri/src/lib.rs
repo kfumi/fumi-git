@@ -54,9 +54,16 @@ pub fn run() {
             commands::branch_unmerged_count,
             commands::rename_branch,
             commands::reset_branch,
+            commands::set_upstream,
+            commands::unset_upstream,
+            commands::create_tag,
+            commands::checkout_commit,
+            commands::amend_message,
+            commands::rebase,
             commands::push_upstream,
             commands::push_to,
             commands::push_all_remotes,
+            commands::delete_remote_branch,
             commands::list_remotes,
             commands::list_refs,
             commands::merge_upstream,
@@ -71,6 +78,7 @@ pub fn run() {
             commands::cherry_pick,
             commands::cherry_pick_skip,
             commands::cherry_pick_keep,
+            commands::get_compare,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

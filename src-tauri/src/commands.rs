@@ -25,6 +25,7 @@ fn parse_operation(op: &str) -> Result<git::Operation, GitError> {
         "merge" => Ok(git::Operation::Merge),
         "cherry-pick" => Ok(git::Operation::CherryPick),
         "revert" => Ok(git::Operation::Revert),
+        "rebase" => Ok(git::Operation::Rebase),
         other => Err(GitError::CommandFailed(format!("非法操作类型：{other}"))),
     }
 }
@@ -146,8 +147,8 @@ pub fn commit_staged(state: State<'_, AppState>, message: String) -> Result<Stri
 }
 
 #[tauri::command]
-pub fn fetch_remote(state: State<'_, AppState>) -> Result<String, GitError> {
-    with_active(&state, git::fetch)
+pub fn fetch_remote(state: State<'_, AppState>, remote: Option<String>) -> Result<String, GitError> {
+    with_active(&state, |repo| git::fetch(repo, remote.as_deref()))
 }
 
 #[tauri::command]
@@ -236,8 +237,14 @@ pub fn resolve_take(
 }
 
 #[tauri::command]
-pub fn continue_operation(state: State<'_, AppState>, op: String) -> Result<String, GitError> {
-    with_active(&state, |repo| git::continue_operation(repo, parse_operation(&op)?))
+pub fn continue_operation(
+    state: State<'_, AppState>,
+    op: String,
+    action: Option<String>,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| {
+        git::continue_operation(repo, parse_operation(&op)?, action.as_deref())
+    })
 }
 
 #[tauri::command]
@@ -371,4 +378,65 @@ pub fn rename_branch(
     new: String,
 ) -> Result<(), GitError> {
     with_active(&state, |repo| git::rename_branch(repo, &old, &new))
+}
+
+#[tauri::command]
+pub fn delete_remote_branch(
+    state: State<'_, AppState>,
+    remote: String,
+    branch: String,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| {
+        git::delete_remote_branch(repo, &remote, &branch)
+    })
+}
+
+#[tauri::command]
+pub fn set_upstream(
+    state: State<'_, AppState>,
+    branch: String,
+    upstream: String,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| git::set_upstream(repo, &branch, &upstream))
+}
+
+#[tauri::command]
+pub fn unset_upstream(state: State<'_, AppState>, branch: String) -> Result<(), GitError> {
+    with_active(&state, |repo| git::unset_upstream(repo, &branch))
+}
+
+#[tauri::command]
+pub fn create_tag(
+    state: State<'_, AppState>,
+    name: String,
+    hash: String,
+    message: Option<String>,
+) -> Result<(), GitError> {
+    with_active(&state, |repo| {
+        git::create_tag(repo, &name, &hash, message.as_deref())
+    })
+}
+
+#[tauri::command]
+pub fn checkout_commit(state: State<'_, AppState>, hash: String) -> Result<(), GitError> {
+    with_active(&state, |repo| git::checkout_commit(repo, &hash))
+}
+
+#[tauri::command]
+pub fn amend_message(state: State<'_, AppState>, message: String) -> Result<(), GitError> {
+    with_active(&state, |repo| git::amend_message(repo, &message))
+}
+
+#[tauri::command]
+pub fn rebase(state: State<'_, AppState>, ref_name: String) -> Result<String, GitError> {
+    with_active(&state, |repo| git::rebase(repo, &ref_name))
+}
+
+#[tauri::command]
+pub fn get_compare(
+    state: State<'_, AppState>,
+    base: String,
+    head: String,
+) -> Result<git::CompareResult, GitError> {
+    with_active(&state, |repo| git::get_compare(repo, &base, &head))
 }
