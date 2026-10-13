@@ -216,7 +216,8 @@ git 命令同量级。
 - `refresh()` 单飞 + 合并：在飞期间连续触发 N 次只产生「1 轮 + 1 轮补跑」。
 - 分类分流：只带 `index`/`worktree` 的事件不触发 `get_log`；带 `refs`/`head` 的触发全量。
 - 写操作后 500ms 抑制窗口内到达的 `repo-changed` 被忽略。
-- summary 由 status 派生后，`currentBranch()` / `pushUpstreamFlow` 等既有消费点行为不变。
+- 既有消费点（`currentBranch()` / `pushUpstreamFlow` 等）行为不变；`get_branch_summary` **保留**
+  （Implementation Decisions 已撤回「删命令 + summary 派生」的方案，本行原文是它的残留）。
 
 **端到端（人工走查，结果回填到工单 Comments；相对口径，不设绝对毫秒线）**
 

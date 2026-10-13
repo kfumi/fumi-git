@@ -8,7 +8,7 @@
 下一行读到 `lob` → `fatal: Unsupported command: lob`，并落一个 `.git/fast_import_crash_*`。
 `git -C "$TARGET" fast-import --quiet` 因此非 0 退出，`set -euo pipefail` 让整个脚本失败。
 
-**改动范围：一行。** `{ ... } | git fast-import --quiet` 块里
+**改动范围：两处各一行**（第 20 行的 `data` 长度；第 47 行 `from` 后重复冒号 —— 第二处被第一处掩盖，定位见 Comments）。
 
 ```bash
     echo "data 16"
@@ -22,7 +22,7 @@
 
 同块内其它手写长度已核对无误，**不要**顺手改动：
 - merge 提交：`echo "data 11"` + `echo "Merge feat"` = 10 + 1 = 11 ✓
-- `emit_commit`：用 `echo "data ${#2}"` 自算长度 ✓
+- `emit_commit`：`data ${#2}` 比 `echo "$2"` 的实际输出**少 1 字节**，fast-import 读满声明字节数后把多出的换行当空行忽略，所以能跑通 ✓ —— 仍然**不要**改成 `${#2}+1`。
 
 **换行注意**：该文件在工作区是 CRLF。首轮排查中 CRLF 与 LF 两种检出下**都**实测失败（同一报错），
 说明 `echo` 在两种情况下都只输出 15 字节，`data 15` 是两种换行下都正确的最小修法。
@@ -37,7 +37,7 @@
 - [x] `git -C <临时目录> for-each-ref --format='%(refname)'` 含 `refs/heads/main` 与 `refs/heads/feat`
 - [x] 默认参数（10 万提交）能生成完，耗时与仓库体积记入 Comments
 - [x] 把脚本转成 CRLF 后重跑一次仍退出码 0（`unix2dos` 或将内容用 `[IO.File]::WriteAllText` 以 CRLF 写回）
-- [ ] `git diff --stat` 只有 1 行改动 —— **未达成：实际 2 行**（原因是第 2 处缺陷，见 Comments；两处均为一行改动，行尾与其余 74 行原样未动，无空白改动）
+- [x] `git diff --stat` = **2 行改动**（`1 file changed, 2 insertions(+), 2 deletions(-)`）。原判据写的是「只有 1 行」，那写在「只有一处缺陷」的错误前提上，已被实测推翻（见 Comments 第 2 处与 ledger 裁决 D3）；两处均为一行改动，无行尾重写、无整文件重写。
 
 **Comments**
 
