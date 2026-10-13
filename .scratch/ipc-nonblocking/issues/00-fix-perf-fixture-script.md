@@ -38,7 +38,7 @@
 - [x] `git -C <临时目录> for-each-ref --format='%(refname)'` 含 `refs/heads/main` 与 `refs/heads/feat`
 - [x] 默认参数（10 万提交）能生成完，耗时与仓库体积记入 Comments
 - [x] 把脚本转成 CRLF 后重跑一次仍退出码 0（`unix2dos` 或将内容用 `[IO.File]::WriteAllText` 以 CRLF 写回）
-- [ ] `git diff --stat e4e9dfc..HEAD -- scripts/gen-perf-repo.sh` = `1 file changed, 2 insertions(+), 2 deletions(-)`，且无行尾重写 / 无整文件重写。**本判据由控制器在 `d772b8b` 修改（裁决 D3）**：原文写「只有 1 行」，前提是「只有一处缺陷」，该前提已被实测推翻（见 Comments 第 2 处）——判据既由改动方修改，就**必须由作者以外的人独立验证后再勾选**；`-- scripts/gen-perf-repo.sh` 这一路径限定是必需的（不加会连工单 / spec 文本一并计入）。**（待控制器独立验证后勾选）**
+- [x] `git diff --stat e4e9dfc..c464e37 -- scripts/gen-perf-repo.sh` = `1 file changed, 2 insertions(+), 2 deletions(-)`，且无行尾重写 / 无整文件重写。**本判据由控制器在 `d772b8b` 修改（裁决 D3）**：原文写「只有 1 行」，前提是「只有一处缺陷」，该前提已被实测推翻（见 Comments 第 2 处）；判据依据是 spec「前置」的绑定意图 —— 夹具必须能生成，只改一处则验收 1/2/3/4/5 条全部无法达成。判据既由改动方修改，就由**作者以外的人独立验证后勾选** —— 控制器已独立验证（见 Comments 末节）。`-- scripts/gen-perf-repo.sh` 这一路径限定是必需的（不加会连工单 / spec 文本一并计入）。
 
 **Comments**
 
@@ -77,3 +77,17 @@ $ git diff --stat e4e9dfc..HEAD -- scripts/gen-perf-repo.sh
 
 - `emit_commit` 的 `data ${#2}` 说明改口径：`${#2}` 恰等于正文字节数，`echo "$2"` 多出的换行是 `data` 块的可选结束换行（`data SP <count> LF <raw> LF?`），不是「被当空行忽略」的多余字节；结论不变（不要改成 `${#2}+1`）。
 - `spec.md` 的「前置」补上第二处改动（原只记 `data 16` → `data 15`），与 `d772b8b` 已改的工单「改动范围」对齐。
+
+**控制器独立验证（第 6 条的验证者记录，在 `c464e37` 上，验证者非作者）**
+
+```
+$ git diff --stat e4e9dfc..c464e37 -- scripts/gen-perf-repo.sh
+ scripts/gen-perf-repo.sh | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+$ git diff --numstat e4e9dfc..c464e37 -- scripts/gen-perf-repo.sh
+2       2       scripts/gen-perf-repo.sh
+```
+
+- 无行尾重写：工作区文件仍 **76 个 CRLF 对 / 2162 字节**（与改前一致，仅少一个被删的 `:`），`git show HEAD:scripts/gen-perf-repo.sh` 为纯 LF。
+- 脚本自 `a231e55` 起逐字节未变：`git diff --stat a231e55..HEAD -- scripts/gen-perf-repo.sh` 无输出。
+- 控制器另行**独立重跑**夹具（第二方证据，不引用实现者输出）：`bash scripts/gen-perf-repo.sh <scratch>\ctl-verify-1000 1000` → 退出码 0、无 `fast_import_crash_*`、`rev-list --count --all` = **1001**、refs = `feat` + `main`、`git log --merges` = **1**；保留的 10 万夹具实测 `count` = **100001**、合并结论相同。
