@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: ready-for-agent
 
 # Spec：FumiGit 第三阶段 — 右键菜单全量对齐（分支 · 远程分支 · 提交）
 
