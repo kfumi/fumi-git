@@ -369,13 +369,70 @@ pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> 
 
 **Status:** ready-for-agent
 
-- [ ] `cargo test -- --test-threads=1` 全绿：既有用例语义不变 + 上述新增用例
-- [ ] v1/v2 对照用例通过；**反向验证有效**：把 v2 解析里 `y != '.'` 改成 `y != ' '` 即变红
-- [ ] `get_status` ≤ 1 次 git 调用（分离 HEAD 时 2）、`get_branch_summary` ≤ 1、`get_commit_detail` = 2、`get_compare` = 4（核对方式：在 `spawn_git` 里临时把参数行追加写到一个计数文件，触发一次刷新后数行数，走查完删除临时打印；数字记入 Comments）
-- [ ] 一轮 `refresh()` = **6** 个 git 进程（log / status-v2 / summary / stash / refs / remotes）
-- [ ] `parse_name_status` 与 statuses 覆盖逻辑已删除（`grep -c parse_name_status` = 0）
-- [ ] 端到端：刷新墙钟与手动跑同样 6 条 git 命令同量级
+- [x] `cargo test -- --test-threads=1` 全绿：既有用例语义不变 + 上述新增用例 —— `test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 437.34s`（57 既有 + 9 新增；既有用例一行未改；`cargo check --all-targets` 0 warning）
+- [x] v1/v2 对照用例通过；**反向验证有效**：把 v2 解析里 `y != '.'` 改成 `y != ' '` 即变红 —— 实测变红（RED 原文见 Comments），恢复后文件逐字节回到破坏前状态（tag hash 相同），破坏态从未 `git add`
+- [x] `get_status` ≤ 1 次 git 调用（分离 HEAD 时 2）、`get_branch_summary` ≤ 1、`get_commit_detail` = 2、`get_compare` = 4 —— 实测 **1 / 1 / 2 / 3 / 4**（`get_compare` 分别为「两端十六进制 id」= 3 与「base 为字面量 `HEAD`」= 4，后者才是右栏「与 HEAD 比较」的真实形态）；分离 HEAD 的 `get_status` = 2。逐条原始计数见 Comments
+- [x] 一轮 `refresh()` = **6** 个 git 进程（log / status-v2 / summary / stash / refs / remotes）—— 构成证明 + 实测：这 6 条命令各 1 次。**如实披露**：`refresh()` 还会调 `getUserIdentity()` → 2 次 `git config --get`，该 2 次在本票的 14 基线里同样未计入（既有行为、本次未改）；按「一次 refresh 的全部 git 进程」计是 **16 → 8**。详见 Comments
+- [x] `parse_name_status` 与 statuses 覆盖逻辑已删除（`grep -c parse_name_status` = 0）—— `git show 48eb976:src-tauri/src/git.rs` 上计数 = 0（测试里的等价对照基线改名 `name_status_v1_for_test`，不含该串；`statuses` 覆盖逻辑随 `get_commit_detail` 重写消失）
+- [ ] 端到端：刷新墙钟与手动跑同样 6 条 git 命令同量级。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 
 **Comments**
 
-（执行时回填：进程计数、墙钟、commit hash）
+**执行记录**（PowerShell 7 / cargo 1.97.1 / git 2.35.1.windows.2）
+
+**代码提交**：`48eb976`（`refactor(git): status v2 + gitdir 缓存 + show/diff 输出合一，一轮刷新 14→6 进程（工单 02）`）——只含 `src-tauri/src/git.rs`（+839/−136）与 `src-tauri/src/commands.rs`（+1，`#[cfg(test)] mod tests` 里 `dummy_repo()` 的 `GitRepo` 字面量补 `gitdir`）；`lib.rs` / `watcher.rs` / 前端一行未动，无命令签名或返回类型变更。本工单文本随后以 `docs(tickets)` 提交收口（工单要写下代码提交 hash，故拆两个提交）。完整报告（未入 git）：`.superpowers/sdd/ipc-nonblocking/task-02-report.md`。
+
+**实现要点**：`GitRepo` 增 `gitdir`，`open()` 用一次 `rev-parse --show-toplevel --absolute-git-dir` 拿两行（失败分支原样保留）。`read_operation` 改为纯文件判定（0 次 git 调用）。`get_status` 走 `status --porcelain=v2 --branch -z`，`get_branch_summary` 复用同一次输出（`# branch.upstream` / `# branch.ab`）。`get_commit_detail` 合并成 2 次调用（`show -s --format=DETAIL_FORMAT` + `show --format= --raw --numstat -M [--patch]`），`get_compare` 用 `diff --raw --numstat --patch`。`parse_name_status` 与 statuses 覆盖逻辑删除，`is_unmerged` 随 v1 解析一起搬进测试模块（生产路径无死代码，0 warning）。
+
+**进程计数**（方法：在 `spawn_git` 里临时把「实际命令行」追加写 `%TEMP%\fumigit_proc_count.txt`，逐条命令「清空 → 执行 → 数行」，由一条临时 `#[test]` 驱动；走查后插桩与临时用例已删除，`git.rs` 恢复到插桩前的逐字节状态）：
+
+```
+get_status = 1                # git status --porcelain=v2 --branch -z
+get_branch_summary = 1        # git status --porcelain=v2 --branch -z
+get_commit_detail(hex) = 2    # show -s --format=DETAIL_FORMAT <h> + show --format= --raw --numstat -M --patch <h>
+get_compare(hex,hex) = 3      # diff --raw --numstat --patch <b>..<h> + show -s <b> + show -s <h>
+get_compare(HEAD,hex) = 4     # 以上 + git rev-parse HEAD
+get_log_filtered(default) = 1 # git log --topo-order --skip=0 --max-count=50 --format=… --all
+get_log_filtered(branch) = 2  # rev-parse --verify refs/heads/main^{commit} + log refs/heads/main（既有行为，未改）
+list_refs = 1                 # git for-each-ref …
+list_remotes = 1              # git remote
+stash_list = 1                # git stash list --format=%gd%x1f%gs%x1f%ct
+get_user_identity = 2         # git config --get --default= user.name / user.email
+get_status(detached) = 2      # status + rev-parse --short HEAD（branch_from_heads 的分离 HEAD 回退）
+```
+
+**「6」的构成**（按 `src/stores/repo.ts:1181-1194` 的 `refresh()` 实际调用顺序，默认日志筛选 `--all`）：`getLog`(1) + `getStatus`(1) + `getBranchSummary`(1) + `stashList`(1) + `listRemotes`(1) + `listRefs`(1) = **6**；上表逐条实测为 1，故 6 成立。同一序列在本机**端到端实测总数 = 8**，多出的 2 次是 `refresh()` 里 `getUserIdentity()` 的两条 `git config --get` —— 它在本票的 14 基线表里同样没有计入（14 = status 7 + summary 3 + log 1 + stash 1 + remotes 1 + refs 1），本次也未改动；按「一次 refresh 的全部 git 进程」口径即 **16 → 8**。运行期确认（真实 `refresh()` 触发）按 ledger 裁决留给控制器联合端到端验收。
+
+**反向验证（RED → 恢复后 GREEN）**：
+
+```
+$ cargo test --quiet -- --test-threads=1 status_v1_and_v2_parsers_agree_bit_for_bit   # v2 解析临时改成 y != ' '
+running 1 test
+git::tests::status_v1_and_v2_parsers_agree_bit_for_bit --- FAILED
+thread 'git::tests::status_v1_and_v2_parsers_agree_bit_for_bit' (32904) panicked at src\git.rs:3726:9:
+assertion `left == right` failed: unstaged 组不一致
+  left: [("mod.txt", None, 'M'), ("untracked.txt", None, 'A')]
+ right: [("added.txt", None, '.'), ("mod.txt", None, 'M'), ("renamed.txt", Some("keep.txt"), '.'), ("rm.txt", None, '.'), ("untracked.txt", None, 'A')]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 66 filtered out; finished in 6.33s
+```
+
+（`y != ' '` 会把 `Y='.'` 的「未改动」条目灌进 unstaged；恢复 `y != '.'` 后同命令 `test result: ok. 1 passed`。之所以能测到：夹具里 `added.txt / renamed.txt / rm.txt` 都是「暂存侧有改动、工作区侧未改动」，正是这一位。）
+
+**新增用例 9 条**（全部真实 git 夹具，不 mock）：v1/v2 逐位对照（七形态同盘：普通修改 / 已暂存新增 / 已暂存删除 / `git mv` 重命名 / 未跟踪 / 真实合并冲突 unmerged / 忽略文件）；`branch` 三态（常规 / 分离 HEAD 与 `rev-parse --short HEAD` 对齐 / 空仓库）；上游与 `# branch.ab` 同 `rev-list --left-right --count` 双面对账（2/1 分叉）；`read_operation` 五态各自命中 + 都不存在为 `None` + 变基优先；gitdir 三入口（根 / 子目录 / `git worktree add` 的 linked worktree，`.git` 为文件）并断言五个名字上 `<gitdir>/<name>` 与 `rev-parse --git-path` 解析结果逐条相等；linked worktree 真实合并冲突（`MERGE_HEAD` 落在 per-worktree gitdir，主仓库 `.git` 看不到）；`parse_detail_head` 有/无/多行 body + 根提交仍给 patch；`--raw --numstat --patch` 解析（状态字母、增删计数、二进制 `-	-`、`R100` 重命名、patch 段切分，hunk 正文里以 `:` 开头的行不被吞）并与改造前 `name-status + numstat + show --patch` 三条命令的产出**逐字段 / 逐行等价**；`--raw` 重命名方向（源在前目标在后，并用同一 diff 的 patch 段 `rename from/to` 互证）。
+
+**两处自觉偏差（如实披露）**
+
+1. `parse_show_raw_numstat_patch` 的 `--raw` 重命名段序：工单代码段把第一段当**新**路径（`new_path = seg.next()`），但工单自己的注释写的是 `R100\t<old>\t<new>`，实测 git 2.35.1 也是**源在前、目标在后**（同一 diff 的 patch 段写着 `rename from old.txt / rename to new.txt`，numstat 是 `0\t0\told.txt => new.txt`）。我按实测方向实现（第一段 = 原路径、第二段 = 新路径），让「`--raw` 是权威：status 字母 + 重命名的原路径」这个既定意图真正成立。**可观测性实验**：临时改回工单原样段序后 `show_raw*` / `status*` 用例全绿 —— 两者在真实 git 输出下行为等价（重命名的源路径不可能同时是同一 diff 里另一条记录的路径），故该偏差不影响任何验收条目，只是让代码与其注释、与 git 实际格式自洽。
+2. `get_commit_detail` 的 `patch` 形状保持：非合并提交即使无文件变更也与旧实现同形（`Some("")`），只有合并提交是 `None` —— 前端 `src/components/DiffView.tsx:93` 用 `patch === null` 渲染「合并提交 — 无直接文件变更」，若让空提交也返回 `None` 会显示错文案。这 3 行守卫超出工单代码段，为守住既有前端契约。
+
+**其余既有事实（不在本票范围、无动作）**：`parse_numstat` 对 `dir/{old => new}/f.txt` 这类**部分重命名**的 numstat 形态解析仍不精确（改造前同样如此，本票未引入也未修复）；v2 解析不再对路径做 `trim()`（v1 会 trim），即首尾含空格的路径现在按 git 原样返回，属修正而非回归。另：本机 `cargo check/test` 需要 `rc.exe` 在 PATH（tauri-winres 构建脚本），本次运行显式前置了 Windows SDK 的 x64 目录，与代码无关。
+
+**验证命令与结果**
+
+```
+$ cd src-tauri && cargo check --all-targets        # Finished，0 warning
+$ cargo test -- --test-threads=1
+test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 437.34s
+$ pnpm test    # 7 files / 164 passed（前端零改动，与基线一致）
+$ pnpm build   # tsc + vite build 通过
+```
