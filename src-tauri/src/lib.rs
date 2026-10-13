@@ -19,6 +19,7 @@ pub fn run() {
                 config: std::sync::Mutex::new(cfg),
                 active: std::sync::Mutex::new(None),
                 repo_watcher: std::sync::Mutex::new(None),
+                write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             });
             Ok(())
         })
