@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { FilterBar } from "./FilterBar";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
 import type { ThemeMode } from "../lib/types";
@@ -182,6 +183,9 @@ export function Toolbar() {
         )}
         抓取
       </button>
+      {/* 图谱筛选与搜索同排：搜索过滤「已加载的」，筛选改「加载什么」 */}
+      <div className="mx-1 h-4 w-px shrink-0 bg-brd-soft" aria-hidden />
+      <FilterBar />
       <div className="ml-auto flex h-7 min-w-[200px] items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs text-faint transition-colors focus-within:border-accent">
         <Search size={12} className="shrink-0" aria-hidden />
         <input

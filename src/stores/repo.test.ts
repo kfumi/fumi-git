@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { filterCommits, useRepo } from "./repo";
+import { EMPTY_LOG_FILTER, filterCommits, useRepo } from "./repo";
+import { authorPattern } from "../lib/filterMenu";
 import type { CommitEntry, RepoStatus } from "../lib/types";
 
 // 打桩 IPC（spec 测试决策：前端 store 以打桩 IPC 测状态流转）
@@ -11,6 +12,7 @@ vi.mock("../lib/ipc", () => {
     pickDirectory: vi.fn(),
     openRepo: vi.fn(),
     getLog: vi.fn(),
+    getUserIdentity: vi.fn(async () => ({ name: null, email: null })),
     getCommitDetail: vi.fn(),
     getStatus: vi.fn(),
     getWorktreeDiff: vi.fn(),
@@ -103,6 +105,9 @@ beforeEach(() => {
     summary: null,
     refs: [],
     filter: "",
+    logFilter: { ...EMPTY_LOG_FILTER },
+    identity: null,
+    authorStats: [],
     toasts: [],
     dialog: null,
     conflictView: null,
@@ -1776,5 +1781,211 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     useRepo.getState().amendMessageFlow("h1");
     await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
     expect(useRepo.getState().dialog!.input!.initial).toBe("HEAD 提交");
+  });
+});
+
+describe("图谱筛选（打桩 IPC）", () => {
+  const meta = { name: "demo", path: "D:/demo", branch: "main" };
+  type Seed = Partial<ReturnType<typeof useRepo.getState>>;
+  const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+  const seed = (commits: CommitEntry[], patch: Seed = {}) =>
+    useRepo.setState({ meta, commits, logDone: true, ...patch });
+
+  it("setLogFilter：带上筛选重取第一页，且保留已加载深度", async () => {
+    const many = Array.from({ length: 300 }, (_, i) => c(`c${i}`, `s${i}`));
+    seed(many);
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("x", "only")], done: true });
+
+    await useRepo.getState().setLogFilter({ branch: "feat" });
+
+    expect(useRepo.getState().logFilter.branch).toBe("feat");
+    // 已加载 300 条 → limit = max(PAGE, 300)，换筛不该让列表缩回一页
+    expect(ipc.getLog).toHaveBeenCalledWith(0, 300, { branch: "feat", author: null, since: null });
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["x"]);
+  });
+
+  it("筛选把选中项筛掉时，选中态、详情与文件 tab 一并收起", async () => {
+    seed([c("a", "first"), c("b", "second")], {
+      selectedId: "a",
+      detail: { meta: c("a", "first"), body: "", files: [], patch: null },
+      openFiles: ["f.txt"],
+      detailFile: "f.txt",
+    });
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("b", "second")], done: true });
+
+    await useRepo.getState().setLogFilter({ author: "kevin" });
+
+    const s = useRepo.getState();
+    expect(s.selectedId).toBeNull();
+    expect(s.detail).toBeNull();
+    expect(s.openFiles).toEqual([]);
+    expect(s.detailFile).toBeNull();
+  });
+
+  it("loadMore 与 refresh 都带当前筛选，不被静默重置", async () => {
+    const f = { branch: "feat", author: null, since: "week" as const };
+    seed([c("a", "first")], { logFilter: { ...f }, logDone: false });
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("b", "second")], done: true });
+
+    await useRepo.getState().loadMore();
+    expect(ipc.getLog).toHaveBeenCalledWith(1, 200, f);
+
+    asMock(ipc.getStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+    asMock(ipc.getBranchSummary).mockResolvedValue({
+      branch: "main",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    });
+    await useRepo.getState().refresh();
+    expect(ipc.getLog).toHaveBeenLastCalledWith(0, 200, f);
+    expect(useRepo.getState().commits.map((x) => x.id)).toContain("b");
+  });
+
+  it("提交者筛选生效时作者统计保持上一份快照（仍能切到别人）", async () => {
+    seed([c("a", "first", "kevin"), c("b", "second", "林一帆")]);
+    asMock(ipc.getLog).mockResolvedValue({
+      commits: [c("a", "first", "kevin"), c("b", "second", "林一帆")],
+      done: true,
+    });
+    await useRepo.getState().reloadLog();
+    expect(useRepo.getState().authorStats.map((s) => s.name).sort()).toEqual(
+      ["kevin", "林一帆"].sort(),
+    );
+
+    // 按提交者过滤后：提交本身只剩一个人，但「最近提交者」列表不能被自己收窄
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("z", "kevin only", "kevin")], done: true });
+    await useRepo.getState().setLogFilter({ author: "kevin" });
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["z"]);
+    expect(useRepo.getState().authorStats.map((s) => s.name).sort()).toEqual(
+      ["kevin", "林一帆"].sort(),
+    );
+  });
+
+  it("resetLogFilters：回到默认视角并重取第一页", async () => {
+    seed([c("a", "first")], { logFilter: { branch: "feat", author: "kevin", since: "week" } });
+    asMock(ipc.getLog).mockResolvedValue({
+      commits: [c("a", "first"), c("b", "second")],
+      done: true,
+    });
+
+    await useRepo.getState().resetLogFilters();
+
+    expect(useRepo.getState().logFilter).toEqual(EMPTY_LOG_FILTER);
+    expect(ipc.getLog).toHaveBeenCalledWith(0, 200, EMPTY_LOG_FILTER);
+  });
+
+  it("refresh 落下 git 身份，供「只看我的」使用", async () => {
+    seed([c("a", "first")]);
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("a", "first")], done: true });
+    asMock(ipc.getStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+    asMock(ipc.getBranchSummary).mockResolvedValue({
+      branch: "main",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    });
+    asMock(ipc.getUserIdentity).mockResolvedValue({ name: "林一帆", email: "lin@x.dev" });
+
+    await useRepo.getState().refresh();
+
+    expect(useRepo.getState().identity).toEqual({ name: "林一帆", email: "lin@x.dev" });
+    expect(authorPattern(useRepo.getState().identity)).toBe("lin@x.dev");
+  });
+});
+
+describe("图谱筛选：请求竞态与失败自愈", () => {
+  const meta = { name: "demo", path: "D:/demo", branch: "main" };
+  type Seed = Partial<ReturnType<typeof useRepo.getState>>;
+  const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+  const seed = (commits: CommitEntry[], patch: Seed = {}) =>
+    useRepo.setState({ meta, commits, logDone: true, ...patch });
+
+  it("连点筛选：慢的旧响应不会盖掉新结果", async () => {
+    seed([c("a", "first")]);
+    let release: (v: unknown) => void = () => {};
+    const slow = new Promise((res) => {
+      release = res;
+    });
+    asMock(ipc.getLog).mockReturnValueOnce(slow);
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("new", "newest")], done: true });
+
+    const first = useRepo.getState().setLogFilter({ branch: "feat" });
+    const second = useRepo.getState().setLogFilter({ since: "week" });
+    release({ commits: [c("old", "stale")], done: true });
+    await Promise.all([first, second]);
+
+    expect(useRepo.getState().logFilter).toEqual({ branch: "feat", author: null, since: "week" });
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["new"]);
+  });
+
+  it("换筛选期间落地的旧分页被丢弃（不把旧视角的提交灌进来）", async () => {
+    seed([c("a", "first")], { logDone: false });
+    let release: (v: unknown) => void = () => {};
+    const slow = new Promise((res) => {
+      release = res;
+    });
+    asMock(ipc.getLog).mockReturnValueOnce(slow);
+    const more = useRepo.getState().loadMore();
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("f", "feat only")], done: true });
+
+    await useRepo.getState().setLogFilter({ branch: "feat" });
+    release({ commits: [c("a", "first"), c("old", "stale")], done: false });
+    await more;
+
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["f"]);
+    expect(useRepo.getState().loadingMore).toBe(false);
+  });
+
+  it("筛中的分支已不存在：退回「所有分支」重试一次并提示", async () => {
+    seed([c("a", "first")], { logFilter: { branch: "feat", author: null, since: null } });
+    asMock(ipc.getLog)
+      .mockRejectedValueOnce({ kind: "CommandFailed", message: "分支不存在：feat" })
+      .mockResolvedValue({ commits: [c("a", "first"), c("b", "second")], done: true });
+
+    await useRepo.getState().reloadLog();
+
+    expect(useRepo.getState().logFilter.branch).toBeNull();
+    expect(useRepo.getState().commits).toHaveLength(2);
+    expect(useRepo.getState().toasts.some((t) => t.text.includes("已不存在"))).toBe(true);
+  });
+
+  it("refresh 的日志请求失败时其余数据面照常落地（不再被一项拖死）", async () => {
+    seed([c("a", "first")]);
+    asMock(ipc.getLog).mockRejectedValue(new Error("boom"));
+    asMock(ipc.getStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+    });
+    asMock(ipc.getBranchSummary).mockResolvedValue({
+      branch: "main",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+    });
+    asMock(ipc.listRefs).mockResolvedValue([
+      { name: "other", kind: "branch", tip: "t", upstream: null, time: 0 },
+    ]);
+
+    await useRepo.getState().refresh();
+
+    expect(useRepo.getState().refs.map((r) => r.name)).toEqual(["other"]);
+    // 日志失败时保留现有列表，而不是清空
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["a"]);
   });
 });

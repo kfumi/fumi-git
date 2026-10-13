@@ -9,11 +9,13 @@ import type {
   ConflictVersions,
   GitError,
   GitOperation,
+  LogFilter,
   LogPage,
   RefEntry,
   RepoMeta,
   RepoStatus,
   StashEntry,
+  UserIdentity,
 } from "./types";
 
 const cmd = <T,>(name: string, args?: Record<string, unknown>): Promise<T> =>
@@ -39,7 +41,14 @@ export const ipc = {
     >,
   openRepo: (path: string) => cmd<RepoMeta>("open_repo", { path }),
 
-  getLog: (skip: number, limit: number) => cmd<LogPage>("get_log", { skip, limit }),
+  /**
+   * 拓扑序日志分页。filter 缺省 = 全分支全时间（FumiGit 的默认视角）；
+   * 有筛选时在 git 侧过滤，`done` / `skip` 都算在过滤后的集合上。
+   */
+  getLog: (skip: number, limit: number, filter?: LogFilter | null) =>
+    cmd<LogPage>("get_log", { skip, limit, filter: filter ?? null }),
+  /** 仓库解析出的提交身份，供「只看我的」筛选 */
+  getUserIdentity: () => cmd<UserIdentity>("get_user_identity"),
   getCommitDetail: (hash: string) => cmd<CommitDetail>("get_commit_detail", { hash }),
   getStatus: () => cmd<RepoStatus>("get_status"),
   /** 工作区单文件 diff：staged=true 读已暂存（diff --cached），否则未暂存 */

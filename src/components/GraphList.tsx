@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommitHorizontal } from "lucide-react";
 import { computeGraph, edgeCurve, graphWidth, laneX, windowCols, NODE_R, type Graph } from "../graph/lane";
 import { filterCommits, useRepo } from "../stores/repo";
+import { logFilterActive } from "../lib/filterMenu";
 import { absTime, avatarColor, relTime } from "../lib/format";
 import { classifyRef } from "../lib/refs";
 import type { CommitEntry } from "../lib/types";
@@ -122,6 +123,8 @@ function CanvasGraph({
 export function GraphList() {
   const commits = useRepo((s) => s.commits);
   const filter = useRepo((s) => s.filter);
+  const logFilter = useRepo((s) => s.logFilter);
+  const resetLogFilters = useRepo((s) => s.resetLogFilters);
   const selectedId = useRepo((s) => s.selectedId);
   const select = useRepo((s) => s.select);
   const loadMore = useRepo((s) => s.loadMore);
@@ -310,7 +313,22 @@ export function GraphList() {
       {rows.length === 0 && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 flex-col items-center gap-2 text-center text-faint">
           <GitCommitHorizontal size={22} strokeWidth={1.5} aria-hidden />
-          <span className="text-xs">{filter ? "没有匹配的提交" : "这个仓库还没有提交"}</span>
+          <span className="text-xs">
+            {/* 空态要能区分「筛选筛没了」与「仓库真的空」，前者给一键清除筛选 */}
+            {logFilterActive(logFilter)
+              ? "当前筛选下没有提交"
+              : filter
+                ? "没有匹配的提交"
+                : "这个仓库还没有提交"}
+          </span>
+          {logFilterActive(logFilter) && (
+            <button
+              onClick={() => void resetLogFilters()}
+              className="pointer-events-auto rounded-md border border-brd bg-panel2 px-2 py-1 text-[11.5px] text-dim transition-colors hover:text-ink"
+            >
+              清除筛选
+            </button>
+          )}
         </div>
       )}
     </div>

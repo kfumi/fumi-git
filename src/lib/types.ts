@@ -18,6 +18,22 @@ export interface LogPage {
   done: boolean;
 }
 
+/** 图谱筛选（分支 / 提交者 / 日期）——一律下推 git，见 .scratch/graph-filter */
+export interface LogFilter {
+  /** 本地分支短名；null = 所有分支（--all） */
+  branch: string | null;
+  /** 提交者子串（姓名或邮箱，固定串匹配）；null = 不限 */
+  author: string | null;
+  /** 时间范围档位；null = 全部时间 */
+  since: 'day' | 'week' | 'month' | null;
+}
+
+/** 仓库解析出的提交身份（user.name / user.email）；未配置的项为 null */
+export interface UserIdentity {
+  name: string | null;
+  email: string | null;
+}
+
 export interface FileStat {
   path: string;
   old_path: string | null;

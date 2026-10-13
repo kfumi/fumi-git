@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { asGitError, ipc } from "../lib/ipc";
 import { applyBlockChoice, parseConflictBlocks } from "../lib/conflict";
+import { authorStatsOf, type AuthorStat } from "../lib/filterMenu";
 import type {
   AppConfig,
   BranchSummary,
@@ -12,10 +13,13 @@ import type {
   ConflictVersions,
   FileEntry,
   GitOperation,
+  LogFilter,
+  LogPage,
   RefEntry,
   RepoMeta,
   RepoStatus,
   StashEntry,
+  UserIdentity,
 } from "../lib/types";
 
 /** operation 文案单一来源（横幅 / 继续按钮 / toast 共用） */
@@ -27,6 +31,9 @@ export const OPERATION_LABEL: Record<GitOperation, { progress: string; cont: str
 };
 
 const PAGE = 200;
+
+/** 图谱筛选的默认值：所有分支 / 全部时间 / 全部提交者（须在 create 之前求值） */
+export const EMPTY_LOG_FILTER: LogFilter = { branch: null, since: null, author: null };
 
 export interface Toast {
   id: number;
@@ -100,6 +107,12 @@ interface RepoState {
    */
   refs: RefEntry[];
   filter: string;
+  /** 图谱筛选（分支 / 提交者 / 日期）：下推 git 的那三项，与搜索框的客户端子串过滤正交 */
+  logFilter: LogFilter;
+  /** 仓库解析出的提交身份（user.name / user.email），供「只看我的」；未解析出为 null */
+  identity: UserIdentity | null;
+  /** 「最近提交者」（按已加载提交统计；提交者筛选生效时保持上一份快照） */
+  authorStats: AuthorStat[];
   toasts: Toast[];
   /** 当前打开的通用对话框；null = 关闭 */
   dialog: DialogDesc | null;
@@ -152,6 +165,12 @@ interface RepoState {
   commit: (message: string) => Promise<boolean>;
   remote: (op: "fetch" | "pull" | "push") => Promise<void>;
   setFilter: (f: string) => void;
+  /** 改一项图谱筛选（分支 / 提交者 / 日期）并重取第一页日志 */
+  setLogFilter: (patch: Partial<LogFilter>) => Promise<void>;
+  /** 清除全部图谱筛选，回到默认视角（所有分支 / 全部时间 / 全部提交者） */
+  resetLogFilters: () => Promise<void>;
+  /** 用当前筛选重取第一页日志（保留已加载深度），供筛选变更调用 */
+  reloadLog: () => Promise<void>;
   pushToast: (kind: Toast["kind"], text: string) => number;
   /** 就地改写某条提示（busy → ok/err 的转场复用同一条，不打断视线） */
   updateToast: (id: number, patch: Partial<Pick<Toast, "kind" | "text">>) => void;
@@ -412,6 +431,43 @@ async function runWrite(
   }
 }
 
+/**
+ * 日志请求代次：换筛选 / 刷新即递增，**旧代次的响应一律丢弃**——
+ * 否则慢响应会盖掉新视角的结果（筛选胶囊与列表说的不是同一件事）。
+ */
+let logToken = 0;
+
+/**
+ * 首页日志请求（reloadLog / refresh 共用），顺带自愈一处死结：
+ * 筛中的分支被删除/改名后后端会一直报错，而「先刷新 refs 再发现分支没了」是循环依赖
+ * （失败那次刷新连 refs 都不落地），图谱与侧栏会双双卡住。所以这里退回「所有分支」
+ * 重试一次并提示，让上下文自己恢复。失败返回 null（已提示），调用方保留现有列表。
+ */
+async function fetchLogFirstPage(
+  set: (partial: Partial<RepoState>) => void,
+  get: () => RepoState,
+  limit: number,
+): Promise<LogPage | null> {
+  const filter = get().logFilter;
+  try {
+    return await ipc.getLog(0, limit, filter);
+  } catch (e) {
+    if (!filter.branch) {
+      get().pushToast("err", await errText(e));
+      return null;
+    }
+    const fallback: LogFilter = { ...filter, branch: null };
+    set({ logFilter: fallback });
+    get().pushToast("err", `分支 ${filter.branch} 已不存在，筛选回到「所有分支」`);
+    try {
+      return await ipc.getLog(0, limit, fallback);
+    } catch (e2) {
+      get().pushToast("err", await errText(e2));
+      return null;
+    }
+  }
+}
+
 export const useRepo = create<RepoState>((set, get) => ({
   config: null,
   meta: null,
@@ -435,6 +491,9 @@ export const useRepo = create<RepoState>((set, get) => ({
   remotes: [],
   refs: [],
   filter: "",
+  logFilter: { ...EMPTY_LOG_FILTER },
+  identity: null,
+  authorStats: [],
   toasts: [],
   dialog: null,
   writeBusy: false,
@@ -1037,6 +1096,10 @@ export const useRepo = create<RepoState>((set, get) => ({
         summary: null,
         remotes: [],
         filter: "",
+        logFilter: { ...EMPTY_LOG_FILTER },
+        identity: null,
+        authorStats: [],
+        loadingMore: false,
         dialog: null,
         stashes: [],
         stashView: null,
@@ -1074,6 +1137,10 @@ export const useRepo = create<RepoState>((set, get) => ({
       summary: null,
       remotes: [],
       refs: [],
+      logFilter: { ...EMPTY_LOG_FILTER },
+      identity: null,
+      authorStats: [],
+      loadingMore: false,
       dialog: null,
       stashes: [],
       stashView: null,
@@ -1082,17 +1149,29 @@ export const useRepo = create<RepoState>((set, get) => ({
     }),
 
   loadMore: async () => {
-    const { meta, commits, logDone, loadingMore } = get();
+    const { meta, commits, logDone, loadingMore, logFilter } = get();
     if (!meta || logDone || loadingMore) return;
     set({ loadingMore: true });
+    // 不自增代次：分页不该把别人的请求作废，只求自己不被更晚的状态盖过
+    const token = logToken;
+    const len = commits.length;
     try {
       // 页大小随深度几何增长：--topo-order 每页都要全量走历史（性能 smoke 实测），
       // 固定小页会让深滚动退化成 O(页数 × 历史长度)；大页把总次数压到 ~log 级。
-      const limit = Math.max(PAGE, Math.floor(commits.length / 4));
-      const page = await ipc.getLog(commits.length, limit);
+      const limit = Math.max(PAGE, Math.floor(len / 4));
+      const page = await ipc.getLog(len, limit, logFilter);
+      const now = get();
+      // 期间换筛选 / 换仓库 / 列表被重取：这一页属于旧视角，丢弃（loadingMore 由新请求复位）
+      if (token !== logToken || now.meta !== meta || now.commits.length !== len) return;
       const seen = new Set(commits.map((c) => c.id));
       const fresh = page.commits.filter((c) => !seen.has(c.id));
-      set({ commits: [...commits, ...fresh], logDone: page.done, loadingMore: false });
+      const next = [...commits, ...fresh];
+      set({
+        commits: next,
+        logDone: page.done,
+        loadingMore: false,
+        ...statsPatch(next, logFilter),
+      });
     } catch (e) {
       set({ loadingMore: false });
       get().pushToast("err", await errText(e));
@@ -1100,30 +1179,30 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   refresh: async () => {
-    const { meta, selectedId } = get();
+    const { meta } = get();
     if (!meta) return;
     try {
-      const [page, status, summary, stashes, remotes, refs] = await Promise.all([
-        ipc.getLog(0, Math.max(PAGE, get().commits.length || PAGE)),
+      const token = ++logToken;
+      const [page, status, summary, stashes, remotes, refs, identity] = await Promise.all([
+        fetchLogFirstPage(set, get, Math.max(PAGE, get().commits.length || PAGE)),
         ipc.getStatus().catch(() => null),
         ipc.getBranchSummary().catch(() => null),
         ipc.stashList().catch(() => []),
         ipc.listRemotes().catch(() => [] as string[]),
         ipc.listRefs().catch(() => [] as RefEntry[]),
+        ipc.getUserIdentity().catch(() => null),
       ]);
-      const stillThere = selectedId && page.commits.some((c) => c.id === selectedId);
       set({
-        commits: page.commits,
-        logDone: page.done,
+        // 期间又有更新的日志请求 → 这份日志页作废，但其余数据面照常落地
+        ...(page && token === logToken ? logPagePatch(page, get().logFilter, get()) : {}),
         status,
         summary,
         stashes,
         remotes,
         refs,
-        selectedId: stillThere ? selectedId : null,
-        detail: stillThere ? get().detail : null,
-        openFiles: stillThere ? get().openFiles : [],
-        detailFile: stillThere ? get().detailFile : null,
+        // 身份临时取不到时保留上一份：别把「只看我的」变成灰的
+        identity: identity ?? get().identity,
+        loadingMore: false,
       });
       // 工作区选中文件可能已被提交/外部变更移走：仍在对应列表则刷新 diff，否则收起
       const wf = get().workFile;
@@ -1869,6 +1948,31 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   setFilter: (f) => set({ filter: f }),
+
+  setLogFilter: async (patch) => {
+    set({ logFilter: { ...get().logFilter, ...patch } });
+    await get().reloadLog();
+  },
+
+  resetLogFilters: async () => {
+    set({ logFilter: { ...EMPTY_LOG_FILTER } });
+    await get().reloadLog();
+  },
+
+  /** 用当前筛选重取第一页；已加载深度保留（换筛选不该让列表缩回一页） */
+  reloadLog: async () => {
+    const { meta, commits } = get();
+    if (!meta) return;
+    // 代次自增：连点筛选 / 筛选与刷新交错时，后到的旧响应一律作废
+    const token = ++logToken;
+    const page = await fetchLogFirstPage(set, get, Math.max(PAGE, commits.length || PAGE));
+    if (token !== logToken) return;
+    if (!page) {
+      set({ loadingMore: false });
+      return;
+    }
+    set({ ...logPagePatch(page, get().logFilter, get()), loadingMore: false });
+  },
 }));
 
 /** 按信息/作者子串过滤（spec 故事 11） */
@@ -1882,4 +1986,23 @@ export function filterCommits(
     (c) =>
       c.subject.toLowerCase().includes(f) || c.author_name.toLowerCase().includes(f),
   );
+}
+
+/** 作者统计的落地片段：按提交者筛选中时保持上一份快照（否则列表会被自己的筛选收窄成一个人） */
+function statsPatch(commits: CommitEntry[], f: LogFilter): { authorStats?: AuthorStat[] } {
+  return f.author ? {} : { authorStats: authorStatsOf(commits) };
+}
+
+/** 日志页落地：保留仍存在的选中项（消失则连同详情与文件 tab 一并收起），并刷新作者统计 */
+function logPagePatch(page: LogPage, f: LogFilter, prev: RepoState): Partial<RepoState> {
+  const stillThere = prev.selectedId !== null && page.commits.some((c) => c.id === prev.selectedId);
+  return {
+    commits: page.commits,
+    logDone: page.done,
+    selectedId: stillThere ? prev.selectedId : null,
+    detail: stillThere ? prev.detail : null,
+    openFiles: stillThere ? prev.openFiles : [],
+    detailFile: stillThere ? prev.detailFile : null,
+    ...statsPatch(page.commits, f),
+  };
 }
