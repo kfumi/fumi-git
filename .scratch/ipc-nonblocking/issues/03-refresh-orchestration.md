@@ -328,7 +328,7 @@ async function doRefreshLightOnce(
 
 - `watcher.rs`：新增 `RepoChange { index, refs, head, worktree }`（`Serialize` + `merge` / `needs_log` / `is_empty`）与纯函数 `classify(root, paths)`；防抖从**前沿**改成**尾沿**（`Pending { change, deadline, armed }` + 单计时线程：窗口内每个新事件把 deadline 往后推，静默 500ms 后一次性 `emit("repo-changed", 累积分类)`）。累积变更 `is_empty()` 时**不发事件** —— 只动 objects / logs / lock 的变更不再触发任何刷新。
 - 前端接线：`listenRepoChanged(cb(change))` 带载荷（`listen<RepoChange>("repo-changed", e => cb(e.payload))`）；`App.tsx` 改为 `useRepo.getState().applyRepoChange(change)`（原来那个 `refresh` 选择器随之删除，否则 `noUnusedLocals` 编译不过）。
-- `repo.ts`：`refresh()` 原实现体原样搬进 `doRefreshOnce`；三段右栏修剪抽成 `pruneViews(set, get)`（两档共用，调用方先 `set` 再调，函数内读 state 里的最新一份）；新增 `doRefreshLightOnce`（只拉 status + stash）与统一闸门 `withRefreshGate`（单飞 + 合并 + 等补跑那轮落地才 resolve；补跑档位取「发起调用的档位 ∪ 在飞期间最重的请求」，**只升不降**）；新增 `refreshLight` / `applyRepoChange` 两个入口；`runWrite` 在 git 操作刚落幕时（`try` 里 `await op()` 之后、`catch` 首行）`set({ lastWriteAt: Date.now() })`，**不在 `finally`**（finally 在 refresh 之后，会把窗口起点推后一个刷新时长）。
+- `repo.ts`：`refresh()` 原实现体原样搬进 `doRefreshOnce`；三段右栏修剪抽成 `pruneViews(set, get)`（两档共用，调用方先 `set` 再调，函数内读 state 里的最新一份）；新增 `doRefreshLightOnce`（只拉 status + stash）与统一闸门 `withRefreshGate`（单飞 + 合并 + 等补跑那轮落地才 resolve；补跑档位取「发起调用的档位 ∪ 在飞期间最重的请求」，**只升不降**）；新增 `refreshLight` / `applyRepoChange` 两个入口；打戳统一走 `markWrite(set)` 助手（就是 `set({ lastWriteAt: Date.now() })`），在 git 操作刚落幕时调用、**不在 `finally`**（finally 在 refresh 之后，会把窗口起点推后一个刷新时长）。**打戳覆盖范围**（评审 1 轮修正）：不只 `runWrite`（成功 / 失败两支），还包括 6 条**自己会 `refresh()` 的**非 runWrite 写路径 —— `createBranch` / `renameBranchFlow` / `setUpstreamFlow` / `commit` / `remote`（fetch / pull / push）/ `stashRestore`（含其 catch）；**故意不打戳**的是「自己从不 `refresh()`、只靠 watcher 那轮更新」的 `stage` / `unstage`（打戳会把唯一的刷新抑制掉，面板停在上一次的状态）。
 - `REPO_CHANGE_SUPPRESS_MS = 1200` 导出常量，注释写明必须 > watcher 的 500ms 防抖。
 
 **验证命令与结果**
@@ -362,15 +362,53 @@ $ pnpm test
  Test Files  7 passed (7)      Tests  169 passed (169)
 ```
 
-**两个已知边界（本票不修，如实记录）**
+**四个已知边界（本票不修，如实记录）**
 
 1. **linked worktree 下没有外部变更监听**：那里 `root/.git` 是**文件**（内容是 `gitdir: …`），`watcher.watch(root.join(".git"), Recursive)` 会失败，`commands.rs:130` 的 `.ok()` 把错误吞掉 → 该仓库的 `repo_watcher` 直接是 `None`（连工作区那条 watch 也拿不到，因为 `?` 之后的两行都没执行）。既有缺陷、非本票引入；本票的尾沿防抖 / 分类 / 抑制在 linked worktree 上等于「没有 watcher 事件可抑制」。
 2. **工作区监听是 `RecursiveMode::NonRecursive`**：只有仓库**根目录下的直接文件**变更会被看到，`src/**` 里的存盘不触发任何事件（git 自己的写操作仍由 `.git` 那条 Recursive 监听覆盖）。故「工作区变更不重拉 log」的收益目前只覆盖根目录文件；改成 Recursive 会显著放大事件量，属另一票的取舍。
+3. **`.git/config` 变更现在不发事件**：`classify` 的兜底分支吞掉所有「不是 `index` / `refs/**` / `packed-refs` / `HEAD`」的 `.git/**` 路径（`.git/config`、`.git/hooks/**` 等），而改造前的**前沿**实现是「任何 `.git` 变更都发事件」→ 外部 `git remote add` / `git config` / `branch --set-upstream-to` 不再自动刷新 remotes / identity，要等下一个别的事件（或用户自己触发一次刷新）。控制器裁决：**记录边界、不修**（正确修法要新增一个分类位，超出本票范围）。
+4. **新的防抖 / flush 代码没有测试**：工单只要求 `classify` 的纯函数用例，故 `armed` 复位、计时线程单实例互斥、`is_empty` 不发事件这三条只有人工走查（`cargo test` 里 `watcher::tests` 的 8 条全是 `classify` / `merge`）。
 
-**改动范围**（`git show --numstat 7b3ba8d`）：`src-tauri/src/watcher.rs` +193/−16、`src/stores/repo.ts` +154/−45、`src/stores/repo.test.ts` +141/−2、`src/lib/types.ts` +8、`src/lib/ipc.ts` +3/−2、`src/App.tsx` +1/−2。**未动** `commands.rs` / `git.rs` / `lib.rs` / 其它组件。
+**改动范围**：首轮 `7b3ba8d`（`git show --numstat 7b3ba8d`）`src-tauri/src/watcher.rs` +193/−16、`src/stores/repo.ts` +154/−45、`src/stores/repo.test.ts` +141/−2、`src/lib/types.ts` +8、`src/lib/ipc.ts` +3/−2、`src/App.tsx` +1/−2；评审 1 轮 `d506e9e`（`git show --numstat d506e9e`）`src-tauri/src/watcher.rs` +43/−22、`src/stores/repo.test.ts` +28/−0、`src/stores/repo.ts` +23/−2。**未动** `commands.rs` / `git.rs` / `lib.rs` / 其它组件。
 
 **如实披露的三处偏差**
 
 1. 工单代码段里 `watcher.rs` 的 `let root = root.to_path_buf();` 会被 `move` 闭包拿走，外层再 `watcher.watch(root, …)` 既借不到 `&Path`（`watch` 只收 `&Path`）也已是 moved value，**编译不过**。改成三份：`watch_root`（给闭包做 `classify`）、`git_dir`、`worktree`（两个 watch 各借一份），语义不变。
 2. `RepoChange::needs_log()` 在 Rust 侧没有调用点（emit 只判 `is_empty`，分流在前端做），为保住 `cargo build` 零 warning 加了 `#[allow(dead_code)]` 并注明「前端按同一语义分流」；Rust 用例仍直接断言它。
 3. `src/lib/types.ts` 全文用单引号，新接口按该文件风格写（`ipc.ts` / `repo.ts` / `App.tsx` 按工单片段用双引号）。
+
+**评审 1 轮整改**（1 Important + 2 Minor + 1 文档项；代码提交 `d506e9e`）
+
+评审结论：闸门 / 尾沿加锁 / `pruneViews` 抽取 / 前端契约正确，两组反向验证确实只红对应用例；以下是本轮整改。
+
+1. **Important（plan-mandated）—— 抑制只覆盖 `runWrite`，`commit` / `push` / `pull` / `fetch` 仍是 2 轮**：逐条枚举了 `repo.ts` 里**所有**不在 `runWrite(...)` 参数列表内的变更类 `ipc.*` 调用点，并核对「同一函数随后是否 `get().refresh()`」，结论是**该打戳的正好 6 条**（行号均为本轮改完后）：`createBranch`（675→683）、`renameBranchFlow`（779→783）、`setUpstreamFlow`（919→923）、`commit`（1477→1485）、`remote`（1499→1503）、`stashRestore`（1709→1712，以及 catch 里 1713→1716 那次 refresh 之前）。**故意不打戳**：`stage` / `unstage`（1459 / 1468 之后只 `set({ status })`，从不 refresh —— 打戳会把它们唯一的刷新抑制掉）；`guardDirtyTree` 的 stash 分支（`stashPush` 之后走 `opts.proceed()`，那条 runWrite 自己会打戳）。打戳统一走新助手 `markWrite(set)`（`runWrite` 里那两处也改用它），助手注释写明「只给自己接着会 `refresh()` 的写路径用」。
+   **新增两条用例**：① `commit` 之后紧接 `applyRepoChange({ refs: true, … })` → 零额外 `getLog`，`vi.setSystemTime` 推过窗口后才 +1；② `stage` 之后 `lastWriteAt === 0` 且 `applyRepoChange({ index: true, … })` 仍触发 1 次 `getStatus`（把「不许给 stage 打戳」也钉成用例）。**反向验证**：删掉 `commit` 里那行 `markWrite(set)` → ① 变红（原文见下）。
+2. **Minor —— 锁中毒会永久掐死外部变更通知**：`pending.lock()` 失败时回调与计时线程都直接 `return`，`armed` 永远停在 `true`。改为 `lock_pending()` 助手（`unwrap_or_else(|e| e.into_inner())`，与 `commands.rs:59` 的写锁同一约定），并把计时线程的创建改成 `thread::Builder::spawn`（返回 `io::Result`）：起不来线程就复位 `armed`，下个事件重新尝试 —— 不再有「`armed` 已置位却没人跑」的窗口。
+3. **Minor —— 1200ms 窗口余量只有 ~200ms**：flush 循环原来每轮固定睡 `DEBOUNCE`，emit 最晚可晚一整个防抖周期。改为睡「距 deadline 的剩余时间」（且**不持锁睡**），窗口被推后时只补睡差额 → emit 贴着 deadline 落地（最多晚调度抖动），1200 − 500 的 ~700ms 余量才真正可用；注释写明为什么不是固定睡 DEBOUNCE。
+4. **文档项 —— 又记两个已知边界**：见上「四个已知边界」的第 3、4 条（`.git/config` 不再发事件；防抖 / flush 只有人工走查），并修正了首轮 Comments 里「抑制已生效」未加限定的说法。
+
+**本轮验证命令与结果**
+
+```
+$ pnpm test                                   # 7 files / 171 passed（基线 164 + 本票 7 条）
+$ pnpm build                                  # tsc && vite build 通过（exit 0）
+$ cd src-tauri && cargo test -- --test-threads=1
+test result: ok. 74 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 293.34s
+```
+
+**本轮反向验证 RED → 恢复后 GREEN**
+
+```
+# 删掉 commit 里那行 markWrite(set)
+$ pnpm test
+ ❯ src/stores/repo.test.ts (100 tests | 1 failed) 1414ms
+   × 写后抑制覆盖非 runWrite 的写路径：commit 落幕后的 refs 事件不再触发第二轮 9ms
+AssertionError: expected 0 to be greater than 0
+ Test Files  1 failed | 6 passed (7)      Tests  1 failed | 170 passed (171)
+
+# 用备份文件覆盖恢复（sha256 与破坏前一致：B44E4B55885D23B02E50D97BE7C3F4C2ED6DCA6D1B2062B5B97372D9633EDAFE）
+$ pnpm test
+ Test Files  7 passed (7)      Tests  171 passed (171)
+```
+
+**端到端观测口径（留给控制器联合验收）**：验收「做一次写操作 → 只发生 1 轮刷新」请用**提交（commit）**而不是暂存（stage）—— `stage` 自己从不 `refresh()`，它的「1 轮」来自 watcher，无论抑制是否生效都看起来是 1 轮；`commit` 自带一轮全量刷新，抑制生效时 watcher 那轮不再叠加（本票用例 ① 钉的就是这条）。临时 `console.debug` 观测点建议打在 `doRefreshOnce` / `doRefreshLightOnce` 入口。
