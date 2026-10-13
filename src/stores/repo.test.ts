@@ -2155,4 +2155,57 @@ describe("刷新编排：单飞合并 / 档位 / 分流 / 写后抑制（工单 
     await flush();
     expect(asMock(ipc.getStatus)).toHaveBeenCalledTimes(1); // 轻档照常跑，面板不会停在旧状态
   });
+
+  it("写后抑制覆盖 mergeUpstreamFlow：合并落幕后的 refs 事件不再触发第二轮", async () => {
+    seed();
+    asMock(ipc.mergeRef).mockResolvedValue("merge ok");
+    await useRepo.getState().mergeUpstreamFlow("origin/main"); // 分叉确认框
+    const d = useRepo.getState().dialog!;
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.mergeRef).toHaveBeenCalledWith("origin/main"));
+    await flush(); // 让合并自己那轮刷新落地
+
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1);
+    expect(useRepo.getState().lastWriteAt).toBeGreaterThan(0); // 合并刚落幕就打戳了
+
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 抑制生效：没有第二轮
+
+    vi.setSystemTime(Date.now() + REPO_CHANGE_SUPPRESS_MS + 1); // 推过抑制窗口
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(2); // 窗口过后照常刷新
+  });
+
+  it("写后抑制也覆盖合并失败那支：catch 里的 refresh 之前同样打戳", async () => {
+    seed();
+    asMock(ipc.mergeRef).mockRejectedValue({ kind: "CommandFailed", message: "冲突" });
+    await useRepo.getState().mergeUpstreamFlow("origin/main");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.mergeRef).toHaveBeenCalledWith("origin/main"));
+    await flush();
+
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // catch 里那次刷新
+    expect(useRepo.getState().lastWriteAt).toBeGreaterThan(0); // 失败也打了戳
+
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 抑制生效：没有第二轮
+  });
+
+  it("换仓库清抑制窗口：A 仓库刚写完，开 B 仓库后的第一个事件不被压掉", async () => {
+    seed();
+    await useRepo.getState().commit("feat: 提交"); // 在 A 仓库打上窗口
+    expect(useRepo.getState().lastWriteAt).toBeGreaterThan(0);
+
+    asMock(ipc.openRepo).mockResolvedValue({ name: "other", path: "D:/other", branch: "main" });
+    await useRepo.getState().openRepo("D:/other"); // 切到 B 仓库（openRepo 自己会 refresh 一轮）
+    expect(useRepo.getState().lastWriteAt).toBe(0); // 窗口不得跨仓库泄漏
+
+    asMock(ipc.getLog).mockClear();
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // B 仓库的第一个事件照常刷新
+  });
 });

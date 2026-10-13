@@ -1259,6 +1259,8 @@ export const useRepo = create<RepoState>((set, get) => ({
         stashView: null,
         conflictView: null,
         compare: null,
+        // 换仓库即清抑制窗口：上一个仓库的写操作绝不能压掉新仓库的第一轮 watcher 刷新
+        lastWriteAt: 0,
       });
       await get().refresh();
       // 刷新最近列表
@@ -1300,6 +1302,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       stashView: null,
       conflictView: null,
       compare: null,
+      lastWriteAt: 0,
     }),
 
   loadMore: async () => {
@@ -1637,9 +1640,11 @@ export const useRepo = create<RepoState>((set, get) => ({
               const id = get().pushToast("busy", `合并 ${refName}…`);
               try {
                 await ipc.mergeRef(refName);
+                markWrite(set); // 非 runWrite 的写路径同样要打戳（合并会改 refs / HEAD / index / 工作区）
                 get().updateToast(id, { kind: "ok", text: "合并完成" });
                 await get().refresh();
               } catch (e) {
+                markWrite(set); // 失败也可能写了 .git（MERGE_HEAD 等），下面同样会 refresh
                 const err = await asGitError(e);
                 await get().refresh();
                 const st = get().status;

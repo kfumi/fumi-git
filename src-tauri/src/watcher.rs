@@ -100,8 +100,16 @@ pub fn start(app: &AppHandle, root: &Path) -> notify::Result<RecommendedWatcher>
         p.armed = true;
         drop(p);
         if spawn_flush(app.clone(), Arc::clone(&pending)).is_err() {
-            // 计时线程起不来（资源耗尽）：复位 armed，下个事件重新尝试，别让监听永久哑掉
-            lock_pending(&pending).armed = false;
+            // 计时线程起不来（资源耗尽）：这一轮的累积变更没有计时器再来发了，就地发出
+            // （前置防抖的老实现也是从这个回调里 emit），否则要等下一个事件才可能被看见
+            let mut p = lock_pending(&pending);
+            let change = std::mem::take(&mut p.change);
+            p.deadline = None;
+            p.armed = false;
+            drop(p);
+            if !change.is_empty() {
+                let _ = app.emit("repo-changed", change);
+            }
         }
     })?;
     watcher.watch(&git_dir, RecursiveMode::Recursive)?;
