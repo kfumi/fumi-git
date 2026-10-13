@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 结构化错误：前端据此渲染引导/指引，而不是裸报错。
 #[derive(Debug, Clone, Serialize)]
@@ -260,21 +260,119 @@ fn parse_log_output(raw: &str) -> Vec<CommitEntry> {
     commits
 }
 
-/// 全分支拓扑序提交日志（children 恒排在 parent 之前），供前端建图。
-pub fn get_log(repo: &GitRepo, skip: usize, limit: usize) -> GitResult<LogPage> {
-    let skip = skip.to_string();
+/// 日志侧筛选（前端「分支 / 提交者 / 日期」三块下拉）。
+///
+/// 刻意下推到 git 而不是客户端过滤：`--skip` / `--max-count` / `done` 全都在**过滤后**的
+/// 集合上算，分页与空态才不会骗人；分支筛选顶掉 `--all`，并发 lane 随之收窄。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LogFilter {
+    /// 本地分支短名（后端按 `refs/heads/<name>` 校验后使用）；None = 所有分支（`--all`）
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// 提交者子串（姓名或邮箱，固定串匹配）；None = 不限
+    #[serde(default)]
+    pub author: Option<String>,
+    /// 时间范围白名单：day / week / month；None = 全部时间
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+impl LogFilter {
+    fn branch(&self) -> Option<&str> {
+        self.branch.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    fn author(&self) -> Option<&str> {
+        self.author.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    fn since(&self) -> Option<&str> {
+        self.since.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+}
+
+/// 时间范围白名单 → git 能解析的时间串（前端只传档位，不接受任意日期表达式）。
+fn since_spec(range: &str) -> GitResult<&'static str> {
+    match range {
+        "day" => Ok("24 hours ago"),
+        "week" => Ok("7 days ago"),
+        "month" => Ok("1 month ago"),
+        other => Err(GitError::CommandFailed(format!("非法时间范围：{other}"))),
+    }
+}
+
+/// 分支筛选的 ref 解析：先拒绝空值与以 `-` 开头的值（否则会被当成 git 选项），
+/// 再按 `refs/heads/<name>` 校验存在——用全名而非短名，避开与同名标签的歧义。
+fn resolve_branch_ref(repo: &GitRepo, name: &str) -> GitResult<String> {
+    let name = name.trim();
+    if name.is_empty() || name.starts_with('-') {
+        return Err(GitError::CommandFailed(format!("非法分支名：{name}")));
+    }
+    let full = format!("refs/heads/{name}");
+    if !repo.run_ok(&["rev-parse", "--verify", "--quiet", &format!("{full}^{{commit}}")]) {
+        return Err(GitError::CommandFailed(format!("分支不存在：{name}")));
+    }
+    Ok(full)
+}
+
+/// 拓扑序提交日志（children 恒排在 parent 之前），供前端建图。
+/// 无筛选 = 全分支 `--all`（FumiGit 的默认并发展示）；带筛选则收窄到对应子集。
+pub fn get_log_filtered(
+    repo: &GitRepo,
+    skip: usize,
+    limit: usize,
+    filter: &LogFilter,
+) -> GitResult<LogPage> {
+    let skip_s = skip.to_string();
     let count = limit.to_string();
-    let raw = repo.run(&[
-        "log",
-        "--all",
-        "--topo-order",
-        &format!("--skip={skip}"),
-        &format!("--max-count={count}"),
-        &format!("--format={LOG_FORMAT}"),
-    ])?;
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        "--topo-order".to_string(),
+        format!("--skip={skip_s}"),
+        format!("--max-count={count}"),
+        format!("--format={LOG_FORMAT}"),
+    ];
+    // `--author` 默认按正则解释（`a.b` 会连 `axb` 一起命中），必须固定串匹配
+    if let Some(a) = filter.author() {
+        args.push("--fixed-strings".to_string());
+        args.push(format!("--author={a}"));
+    }
+    if let Some(r) = filter.since() {
+        args.push(format!("--since={}", since_spec(r)?));
+    }
+    // 版本范围放最后（git 的 revision 参数位）
+    match filter.branch() {
+        Some(b) => args.push(resolve_branch_ref(repo, b)?),
+        None => args.push("--all".to_string()),
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let raw = repo.run(&argv)?;
     let commits = parse_log_output(&raw);
     let done = commits.len() < limit;
     Ok(LogPage { commits, done })
+}
+
+// ── 提交身份 ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UserIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// 本仓库解析出的提交身份（`user.name` / `user.email`，含全局配置继承），
+/// 供「只看我的」筛选。未配置的项为 None，前端据此禁用该入口。
+pub fn get_user_identity(repo: &GitRepo) -> UserIdentity {
+    let get = |key: &str| {
+        repo.run(&["config", "--get", "--default=", key])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    UserIdentity {
+        name: get("user.name"),
+        email: get("user.email"),
+    }
 }
 
 // ── 引用列表 ─────────────────────────────────────────────────────────────────
@@ -3163,5 +3261,179 @@ mod tests {
         assert!(self_cmp.files.is_empty());
         assert!(self_cmp.patch.is_none());
     }
+
+    // ── 图谱筛选（分支 / 提交者 / 日期） ──
+
+    /// 指定作者与提交时间造一个提交：筛选测试必须能控制「谁」和「什么时候」。
+    fn commit_as(
+        dir: &Path,
+        path: &str,
+        content: &str,
+        msg: &str,
+        name: &str,
+        email: &str,
+        secs_ago: u64,
+    ) {
+        fs::write(dir.join(path), content).unwrap();
+        git(dir, &["add", "--", path]);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - secs_ago;
+        let when = format!("{ts} +0000");
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-q", "-m", msg])
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_AUTHOR_DATE", &when)
+            .env("GIT_COMMITTER_DATE", &when)
+            .output()
+            .expect("git commit 执行失败");
+        assert!(
+            out.status.success(),
+            "git commit 失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// 夹具：main 两个提交（10 天前的 a.b、1 小时前的 axb），再分出 feat / other 各一个提交。
+    fn filter_fixture() -> TempDir {
+        let t = repo();
+        commit_as(t.path(), "a.txt", "1\n", "old commit", "a.b", "ab@x.dev", 10 * 24 * 3600);
+        commit_as(t.path(), "b.txt", "2\n", "recent axb", "axb", "axb@x.dev", 3600);
+        git(t.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_as(t.path(), "c.txt", "3\n", "feat work", "Cara", "c@x.dev", 1800);
+        git(t.path(), &["checkout", "-q", "main"]);
+        git(t.path(), &["checkout", "-q", "-b", "other"]);
+        commit_as(t.path(), "d.txt", "4\n", "other work", "Dan", "d@x.dev", 600);
+        t
+    }
+
+    #[test]
+    fn log_filter_branch_author_and_since() {
+        let t = filter_fixture();
+        let r = GitRepo::open(t.path()).unwrap();
+        let subjects = |f: &LogFilter| {
+            get_log_filtered(&r, 0, 50, f)
+                .unwrap()
+                .commits
+                .iter()
+                .map(|c| c.subject.clone())
+                .collect::<Vec<_>>()
+        };
+        let only = |b: &str| LogFilter {
+            branch: Some(b.to_string()),
+            ..Default::default()
+        };
+
+        // 无筛选 = 既有行为：--all 全分支（4 个提交）
+        assert_eq!(subjects(&LogFilter::default()).len(), 4);
+        // 分支筛选：main 不含两个分叉分支上的提交
+        let main = subjects(&only("main"));
+        assert_eq!(main.len(), 2);
+        assert!(!main.iter().any(|s| s == "feat work" || s == "other work"));
+        assert_eq!(subjects(&only("feat")).len(), 3);
+        assert_eq!(subjects(&only("other")).len(), 3);
+        // 空白分支名视为未筛选（前端清筛选时可能传空串）
+        assert_eq!(subjects(&only("   ")).len(), 4);
+
+        // 提交者：固定串匹配——`a.b` 若按正则解释会连 `axb` 一起命中
+        let author = |a: &str| LogFilter {
+            author: Some(a.to_string()),
+            ..Default::default()
+        };
+        assert_eq!(subjects(&author("a.b")), vec!["old commit"]);
+        assert_eq!(subjects(&author("axb@x.dev")), vec!["recent axb"]);
+        assert_eq!(subjects(&author("Cara")), vec!["feat work"]);
+
+        // 时间：10 天前的提交落在 day / week 之外，落在 month 之内
+        let since = |s: &str| LogFilter {
+            since: Some(s.to_string()),
+            ..Default::default()
+        };
+        assert_eq!(subjects(&since("day")).len(), 3);
+        assert_eq!(subjects(&since("week")).len(), 3);
+        assert_eq!(subjects(&since("month")).len(), 4);
+        assert!(!subjects(&since("day")).iter().any(|s| s == "old commit"));
+
+        // 组合：分支 + 提交者 + 时间同时生效
+        let combo = LogFilter {
+            branch: Some("feat".to_string()),
+            author: Some("Cara".to_string()),
+            since: Some("week".to_string()),
+        };
+        assert_eq!(subjects(&combo), vec!["feat work"]);
+
+        // 分页在过滤后的集合上算：main 只有 2 个提交
+        let f = only("main");
+        let first = get_log_filtered(&r, 0, 1, &f).unwrap();
+        assert_eq!(first.commits.len(), 1);
+        assert!(!first.done);
+        let past_end = get_log_filtered(&r, 2, 1, &f).unwrap();
+        assert!(past_end.commits.is_empty());
+        assert!(past_end.done);
+    }
+
+    #[test]
+    fn log_filter_rejects_bad_args() {
+        let t = filter_fixture();
+        let r = GitRepo::open(t.path()).unwrap();
+
+        // 不存在的分支：给可读错误，而不是把 git 的 stderr 直接抛给用户
+        let missing = LogFilter {
+            branch: Some("nope".to_string()),
+            ..Default::default()
+        };
+        match get_log_filtered(&r, 0, 10, &missing) {
+            Err(GitError::CommandFailed(m)) => assert!(m.contains("分支不存在"), "{m}"),
+            other => panic!("应拒绝不存在的分支，实际：{other:?}"),
+        }
+        // 以 `-` 开头：防把它当成 git 选项（参数注入）。文案要和「分支不存在」可区分，
+        // 否则这条断言在删掉 starts_with('-') 检查后依然会通过（两条路径都会 rev-parse 失败）
+        let injected = LogFilter {
+            branch: Some("--all".to_string()),
+            ..Default::default()
+        };
+        match get_log_filtered(&r, 0, 10, &injected) {
+            Err(GitError::CommandFailed(m)) => assert!(m.contains("非法分支名"), "{m}"),
+            other => panic!("应拒绝以 - 开头的分支名，实际：{other:?}"),
+        }
+        // 时间范围白名单之外的档位一律拒绝
+        let bad_since = LogFilter {
+            since: Some("year".to_string()),
+            ..Default::default()
+        };
+        match get_log_filtered(&r, 0, 10, &bad_since) {
+            Err(GitError::CommandFailed(m)) => assert!(m.contains("非法时间范围"), "{m}"),
+            other => panic!("应拒绝非法时间范围，实际：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_identity_from_config() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1\n", "init");
+        let r = GitRepo::open(t.path()).unwrap();
+
+        let id = get_user_identity(&r);
+        assert_eq!(id.name.as_deref(), Some("Fumi Test"));
+        assert_eq!(id.email.as_deref(), Some("test@fumigit.dev"));
+
+        // 配置被清空（或只有空白）→ None，而不是回落到全局配置
+        git(t.path(), &["config", "user.email", ""]);
+        git(t.path(), &["config", "user.name", "   "]);
+        let blank = get_user_identity(&r);
+        assert_eq!(blank.email, None);
+        assert_eq!(blank.name, None);
+    }
+    /// 无筛选日志（既有用例的默认视角）：等价 `get_log_filtered(.., &LogFilter::default())`。
+    /// 生产路径只有带筛选的版本（commands.rs 传 `LogFilter`），这里留一个三参数别名，
+    /// 免得二十来条既有断言被筛选参数淹掉。
+    fn get_log(repo: &GitRepo, skip: usize, limit: usize) -> GitResult<LogPage> {
+        get_log_filtered(repo, skip, limit, &LogFilter::default())
+    }
+
 }
 

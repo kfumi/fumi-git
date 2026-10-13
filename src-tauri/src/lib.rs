@@ -28,6 +28,7 @@ pub fn run() {
             commands::open_repo,
             commands::remove_recent,
             commands::get_log,
+            commands::get_user_identity,
             commands::get_commit_detail,
             commands::get_status,
             commands::get_worktree_diff,

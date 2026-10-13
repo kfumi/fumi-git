@@ -105,8 +105,20 @@ pub fn remove_recent(state: State<'_, AppState>, path: String) {
 }
 
 #[tauri::command]
-pub fn get_log(state: State<'_, AppState>, skip: usize, limit: usize) -> Result<LogPage, GitError> {
-    with_active(&state, |repo| git::get_log(repo, skip, limit))
+pub fn get_log(
+    state: State<'_, AppState>,
+    skip: usize,
+    limit: usize,
+    filter: Option<git::LogFilter>,
+) -> Result<LogPage, GitError> {
+    let filter = filter.unwrap_or_default();
+    with_active(&state, |repo| git::get_log_filtered(repo, skip, limit, &filter))
+}
+
+/// 本仓库的提交身份（user.name / user.email），供「只看我的」筛选
+#[tauri::command]
+pub fn get_user_identity(state: State<'_, AppState>) -> Result<git::UserIdentity, GitError> {
+    with_active(&state, |repo| Ok(git::get_user_identity(repo)))
 }
 
 #[tauri::command]
