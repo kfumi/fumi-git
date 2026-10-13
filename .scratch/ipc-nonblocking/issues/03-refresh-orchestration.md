@@ -381,7 +381,7 @@ $ pnpm test
 
 评审结论：闸门 / 尾沿加锁 / `pruneViews` 抽取 / 前端契约正确，两组反向验证确实只红对应用例；以下是本轮整改。
 
-1. **Important（plan-mandated）—— 抑制只覆盖 `runWrite`，`commit` / `push` / `pull` / `fetch` 仍是 2 轮**：逐条枚举了 `repo.ts` 里**所有**不在 `runWrite(...)` 参数列表内的变更类 `ipc.*` 调用点，并核对「同一函数随后是否 `get().refresh()`」，结论是**该打戳的正好 6 条**（行号均为本轮改完后）：`createBranch`（675→683）、`renameBranchFlow`（779→783）、`setUpstreamFlow`（919→923）、`commit`（1477→1485）、`remote`（1499→1503）、`stashRestore`（1709→1712，以及 catch 里 1713→1716 那次 refresh 之前）。**故意不打戳**：`stage` / `unstage`（1459 / 1468 之后只 `set({ status })`，从不 refresh —— 打戳会把它们唯一的刷新抑制掉）；`guardDirtyTree` 的 stash 分支（`stashPush` 之后走 `opts.proceed()`，那条 runWrite 自己会打戳）。打戳统一走新助手 `markWrite(set)`（`runWrite` 里那两处也改用它），助手注释写明「只给自己接着会 `refresh()` 的写路径用」。
+1. **Important（plan-mandated）—— 抑制只覆盖 `runWrite`，`commit` / `push` / `pull` / `fetch` / `merge` 仍是 2 轮**：枚举 `repo.ts` 里**所有**不在 `runWrite(...)` 参数列表内的变更类 `ipc.*` 调用点，并核对「同一函数随后是否 `get().refresh()`」。**评审 2 轮更正**：首轮这份清单漏了 `mergeUpstreamFlow`（`ipc.mergeRef` 不在任何 runWrite 里，成功与 catch 两支都自己 refresh），还把 `writeWorktreeFile` 误记成「在 runWrite 里」。机械重做（TypeScript AST 遍历，见「评审 2 轮整改」的完整表格）后结论是**该打戳的 7 条**、**故意不打戳的 4 条**。7 条打戳点（行号为本轮改完后）：`createBranch`（675→683）、`renameBranchFlow`（779→783）、`setUpstreamFlow`（919→923）、`commit`（1480→1488）、`remote`（1502→1506，fetch / pull / push）、`mergeUpstreamFlow`（1642→1645，catch 支 1649）、`stashRestore`（1714→1717，catch 支 1721）。**故意不打戳**：`stage` / `unstage`（1462 / 1471 之后只 `set({ status })`，从不 refresh —— 打戳会把它们唯一的刷新抑制掉）、`applyConflictBlock` 的 `writeWorktreeFile`（1854，只改 `conflictView`）、`guardDirtyTree` 的 stash 分支（395，随后走 `opts.proceed()`，那条 runWrite 自己打戳）。打戳统一走新助手 `markWrite(set)`（`runWrite` 里那两处也改用它），助手注释写明「只给自己接着会 `refresh()` 的写路径用」。
    **新增两条用例**：① `commit` 之后紧接 `applyRepoChange({ refs: true, … })` → 零额外 `getLog`，`vi.setSystemTime` 推过窗口后才 +1；② `stage` 之后 `lastWriteAt === 0` 且 `applyRepoChange({ index: true, … })` 仍触发 1 次 `getStatus`（把「不许给 stage 打戳」也钉成用例）。**反向验证**：删掉 `commit` 里那行 `markWrite(set)` → ① 变红（原文见下）。
 2. **Minor —— 锁中毒会永久掐死外部变更通知**：`pending.lock()` 失败时回调与计时线程都直接 `return`，`armed` 永远停在 `true`。改为 `lock_pending()` 助手（`unwrap_or_else(|e| e.into_inner())`，与 `commands.rs:59` 的写锁同一约定），并把计时线程的创建改成 `thread::Builder::spawn`（返回 `io::Result`）：起不来线程就复位 `armed`，下个事件重新尝试 —— 不再有「`armed` 已置位却没人跑」的窗口。
 3. **Minor —— 1200ms 窗口余量只有 ~200ms**：flush 循环原来每轮固定睡 `DEBOUNCE`，emit 最晚可晚一整个防抖周期。改为睡「距 deadline 的剩余时间」（且**不持锁睡**），窗口被推后时只补睡差额 → emit 贴着 deadline 落地（最多晚调度抖动），1200 − 500 的 ~700ms 余量才真正可用；注释写明为什么不是固定睡 DEBOUNCE。
@@ -412,3 +412,61 @@ $ pnpm test
 ```
 
 **端到端观测口径（留给控制器联合验收）**：验收「做一次写操作 → 只发生 1 轮刷新」请用**提交（commit）**而不是暂存（stage）—— `stage` 自己从不 `refresh()`，它的「1 轮」来自 watcher，无论抑制是否生效都看起来是 1 轮；`commit` 自带一轮全量刷新，抑制生效时 watcher 那轮不再叠加（本票用例 ① 钉的就是这条）。临时 `console.debug` 观测点建议打在 `doRefreshOnce` / `doRefreshLightOnce` 入口。
+
+**评审 2 轮整改**（1 Important 未闭环 + 1 新 Minor + 1 顺带 Minor；代码提交 `716a6be`）
+
+1. **Finding 1 补闭环 —— `mergeUpstreamFlow` 漏打戳**：`ipc.mergeRef`（`mergeUpstreamFlow` 的对话框 IIFE 内，1642）不在任何 `runWrite` 里，成功支 1645 与 catch 支 1649 都自己 `refresh()`，而整个 IIFE（1639-1658）没有 `markWrite` —— 一次 `git merge` 改 refs / HEAD / index / 工作区，watcher 的 `{refs:true}` 事件不被抑制，`applyRepoChange` 会再发一轮全量刷新。已补两处戳（成功支紧随 `ipc.mergeRef` 之后、catch 支在 `asGitError` 与 refresh 之前，与 `stashRestore` 同构）。
+   **机械重做枚举**（TypeScript AST：找出所有 `ipc.<x>(...)`，判断是否落在某个 `runWrite(...)` 实参树内、最内层函数与所在 store 方法是否含 `refresh()` / `markWrite`）：`repo.ts` 共 81 个 `ipc.*` 调用点，48 个变更类，其中 **35 个在 `runWrite(...)` 内**（由 runWrite 打戳），**13 个不在**（去重后 11 处代码位置，因 `remote` 一行三选一算 3 条）。13 条的完整判定如下（行号为本轮改完后）：
+
+| # | 调用点 | 所在位置 | 自己 `get().refresh()`？ | 已打戳？ |
+| --- | --- | --- | --- | --- |
+| 1 | `ipc.stashPush` 395 | `guardDirtyTree` 的 stash 动作（fn 393） | 否（随后走 `opts.proceed()`，那条 runWrite 打戳） | 否 ✓ |
+| 2 | `ipc.createBranch` 675 | `createBranch` | 是（683） | **是** ✓ |
+| 3 | `ipc.renameBranch` 779 | `renameBranchFlow` 对话框动作（fn 775） | 是（783） | **是** ✓ |
+| 4 | `ipc.setUpstream` 919 | `setUpstreamFlow` 对话框动作（fn 916） | 是（923） | **是** ✓ |
+| 5 | `ipc.stage` 1462 | `stage` | 否（只 `set({ status })`） | 否 ✓ |
+| 6 | `ipc.unstage` 1471 | `unstage` | 否 | 否 ✓ |
+| 7 | `ipc.commit` 1480 | `commit` | 是（1488） | **是** ✓ |
+| 8 | `ipc.fetch` / `pull` / `push` 1502 | `remote` | 是（1506） | **是** ✓ |
+| 9 | `ipc.mergeRef` 1642 | `mergeUpstreamFlow` 的 IIFE（fn 1639） | 是（成功 1645 / catch 1649） | **是**（本轮补） ✓ |
+| 10 | `ipc.stashApply` 1714 | `stashRestore` | 是（成功 1717 / catch 1721） | **是** ✓ |
+| 11 | `ipc.writeWorktreeFile` 1854 | `applyConflictBlock` | 否（只改 `conflictView`） | 否 ✓ |
+
+   即：**「自己 refresh」的 9 条全部有戳（9/9），「不 refresh」的 4 条全部没有戳（4/4）**；`runWrite` 内的 35 条由 runWrite 统一打戳。首轮把 `writeWorktreeFile` 归进「runWrite 内」、把 `mergeUpstreamFlow` 整个漏掉，本轮已更正。
+2. **新 Minor —— 起线程失败会把这一轮变更搁死**：`spawn_flush` 失败时只复位 `armed`，`deadline = Some(...)` 与累积的 `change` 留在原地而没有计时器 —— 若之后没有新事件，这次变更永远不发、UI 停在旧状态。改为**就地发出**（`mem::take` 累积分类、清 `deadline` / `armed`、放锁后 `emit`；前置防抖的老实现也是从这个回调里 emit），并留一行注释说明原因。
+3. **顺带 Minor —— 抑制窗口跨仓库泄漏**：`lastWriteAt` 从未在换仓库时复位（只在类型 135 / 打戳 428 / 初值 647 / 判定 1347 出现）。A 仓库写完 1200ms 内打开 B 仓库，B 的第一个 watcher 事件会被压掉。已在 `openRepo` 的状态重置块（1262-1263）与 `closeRepo`（1305）各加一行 `lastWriteAt: 0`（各带一句注释），不动其它结构。
+   **新增三条用例**：① `mergeUpstreamFlow` 成功支（合并后 `lastWriteAt > 0`、`{refs:true}` 事件零额外 `getLog`、推过窗口后 +1）；② `mergeUpstreamFlow` **catch 支**（失败也打戳 + 抑制生效 —— 这就是「带 catch 刷新的旁路路径」的覆盖）；③ 换仓库清窗口（A 仓库 commit 打上窗口 → `openRepo` 到 B 仓库后 `lastWriteAt === 0`，B 的第一个事件照常刷新）。
+
+**评审 2 轮验证命令与结果**
+
+```
+$ pnpm test                                   # 7 files / 174 passed（基线 164 + 本票 10 条）
+$ pnpm build                                  # tsc && vite build 通过（exit 0）
+$ cd src-tauri && cargo test -- --test-threads=1
+test result: ok. 74 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 249.35s
+```
+
+**评审 2 轮反向验证（RED → 恢复后 GREEN）**
+
+```
+# ① 删掉 mergeUpstreamFlow 的两处 markWrite（成功支 + catch 支）
+$ pnpm test
+ ❯ src/stores/repo.test.ts (103 tests | 2 failed) 1461ms
+   × 写后抑制覆盖 mergeUpstreamFlow：合并落幕后的 refs 事件不再触发第二轮 27ms
+   × 写后抑制也覆盖合并失败那支：catch 里的 refresh 之前同样打戳 1ms
+AssertionError: expected 0 to be greater than 0   # 两条都是 lastWriteAt 没打上
+ Test Files  1 failed | 6 passed (7)      Tests  2 failed | 172 passed (174)
+
+# ② 删掉 openRepo 的 lastWriteAt 复位
+$ pnpm test
+ ❯ src/stores/repo.test.ts (103 tests | 1 failed) 1477ms
+   × 换仓库清抑制窗口：A 仓库刚写完，开 B 仓库后的第一个事件不被压掉 13ms
+AssertionError: expected 1791899227710 to be +0 // Object.is equality
+ Test Files  1 failed | 6 passed (7)      Tests  1 failed | 173 passed (174)
+
+# 两次都用备份文件覆盖恢复（sha256 = BFCEC604256D37E0D8E13F16B79D53015CF24BFF6492F2668928549D75549D1C，与破坏前一致）
+$ pnpm test
+ Test Files  7 passed (7)      Tests  174 passed (174)
+```
+
+**评审 2 轮改动范围**（`git show --numstat 716a6be`）：`src/stores/repo.ts` +5/−0、`src/stores/repo.test.ts` +53/−0、`src-tauri/src/watcher.rs` +10/−2。**未动** `commands.rs` / `git.rs` / `lib.rs`；`refresh` 签名与既有用例语义不变。
