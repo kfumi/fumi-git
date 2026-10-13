@@ -20,8 +20,8 @@ import type {
 /** operation 文案单一来源（横幅 / 继续按钮 / toast 共用） */
 export const OPERATION_LABEL: Record<GitOperation, { progress: string; cont: string }> = {
   merge: { progress: "合并进行中", cont: "继续合并" },
-  "cherry-pick": { progress: "摘取（cherry-pick）进行中", cont: "继续摘取" },
-  revert: { progress: "还原（revert）进行中", cont: "继续还原" },
+  "cherry-pick": { progress: "拣选（cherry-pick）进行中", cont: "继续拣选" },
+  revert: { progress: "反转提交（revert）进行中", cont: "继续反转提交" },
 };
 
 const PAGE = 200;
@@ -145,14 +145,18 @@ interface RepoState {
   /** 就地改写某条提示（busy → ok/err 的转场复用同一条，不打断视线） */
   updateToast: (id: number, patch: Partial<Pick<Toast, "kind" | "text">>) => void;
   dismissToast: (id: number) => void;
+  /** 复制文本到剪贴板（navigator.clipboard → execCommand 兜底），成功后 toast「已复制<label>」 */
+  copyText: (text: string, label: string) => Promise<void>;
+  /** 复制提交的完整信息（subject + body，按需拉取详情） */
+  copyCommitMessage: (commitId: string) => Promise<void>;
   openDialog: (desc: DialogDesc) => void;
   closeDialog: () => void;
-  /** 迁出到本地分支；脏工作树时先经安全拦截对话框（ui-spec §4） */
+  /** 检出到本地分支；脏工作树时先经安全拦截对话框（ui-spec §4） */
   checkout: (branch: string) => Promise<void>;
-  /** 新建分支（对话框表单：名称 + 建完即迁出勾选）；返回校验错误给对话框显示 */
+  /** 新建分支（对话框表单：名称 + 建完即检出勾选）；返回校验错误给对话框显示 */
   createBranch: (name: string, checkoutAfter: boolean, at?: string) => Promise<string | void>;
-  /** 新建分支对话框入口；at 缺省基于当前 HEAD，传入提交 id 则基于该提交 */
-  createBranchFlow: (atCommit?: string) => void;
+  /** 新建分支对话框入口；from 缺省基于当前 HEAD，传入 ref（提交 id / 分支名 / 远程 ref）则基于该处 */
+  createBranchFlow: (from?: { ref: string; label: string }) => void;
   /** 删除分支入口：先取未合入计数，按结果弹一次确认或强制删除确认 */
   deleteBranchFlow: (branch: string) => Promise<void>;
   /** 分支改名（对话框表单，预填原名） */
@@ -191,9 +195,9 @@ interface RepoState {
   openConflictInEditor: (path: string) => Promise<void>;
   /** 冲突块逐块取舍：把第 index 块替换为所选一侧内容并写回工作区（不自动 add） */
   applyConflictBlock: (path: string, blockIndex: number, side: "ours" | "theirs") => Promise<void>;
-  /** 摘取提交到当前分支（脏树拒绝；空提交给跳过/放弃选择） */
+  /** 拣选提交到当前分支（脏树拒绝；空提交给跳过/放弃选择） */
   cherryPickFlow: (commitId: string) => Promise<void>;
-  /** 还原提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
+  /** 反转提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
   revertFlow: (commitId: string) => Promise<void>;
   /** 把本地分支合并进当前分支（冲突进 operation=merge 流程） */
   mergeBranchFlow: (branch: string) => Promise<void>;
@@ -212,12 +216,41 @@ interface RepoState {
 
 const errText = async (e: unknown): Promise<string> => {
   const err = await asGitError(e);
-  // git 自身拦截（如迁出/合并时改动会被覆盖）的常见场景给可读中文（US32）
+  // git 自身拦截（如检出/合并时改动会被覆盖）的常见场景给可读中文（US32）
   if (/would be overwritten|local changes/i.test(err.message)) {
     return "操作失败：工作区改动会与目标冲突，请先提交或 stash 后重试";
   }
   return `操作失败：${err.message}`;
 };
+
+/**
+ * 写剪贴板：优先异步 Clipboard API；WebView2 下若不可用（非安全上下文 / 无权限）
+ * 回退到 execCommand。两者都失败返回 false，由调用方给错误 toast —— 不静默。
+ */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 落到下面的兜底
+  }
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(el);
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 /** 分支名客户端预检（表单即时反馈；后端仍以 check-ref-format 为准） */
 const BAD_BRANCH_CHARS = new Set([" ", "~", "^", ":", "?", "*", "[", "]", "\\", "\t"]);
@@ -311,24 +344,24 @@ export const useRepo = create<RepoState>((set, get) => ({
     const st = await ipc.getStatus().catch(() => null);
     const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
     const doSwitch = () =>
-      runWrite(set, get, `迁出到 ${branch}…`, `已迁出到 ${branch}`, async () => {
+      runWrite(set, get, `检出到 ${branch}…`, `已检出 ${branch}`, async () => {
         await ipc.switchBranch(branch);
       });
     if (dirtyFiles.length > 0) {
       get().openDialog({
-        title: `迁出到 ${branch}`,
+        title: `检出到 ${branch}`,
         message:
-          "工作区有未提交改动。带着改动迁出时，若与目标分支冲突，git 会拒绝且现状不变。",
+          "工作区有未提交改动。带着改动检出时，若与目标分支冲突，git 会拒绝且现状不变。",
         files: dirtyFiles,
         actions: [
-          { label: "带着改动迁出", kind: "primary", run: () => void doSwitch() },
+          { label: "带着改动检出", kind: "primary", run: () => void doSwitch() },
           {
-            label: "stash 后迁出",
+            label: "stash 后检出",
             kind: "ghost",
             run: () => {
               void (async () => {
                 try {
-                  await ipc.stashPush("迁出前自动暂存");
+                  await ipc.stashPush("检出前自动暂存");
                   get().pushToast("ok", "改动已存入 stash，可随时恢复");
                   await doSwitch();
                 } catch (e) {
@@ -351,7 +384,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       await ipc.createBranch(trimmed, checkoutAfter, at);
       get().pushToast(
         "ok",
-        checkoutAfter ? `已创建并迁出到 ${trimmed}` : `已创建分支 ${trimmed}`,
+        checkoutAfter ? `已创建并检出到 ${trimmed}` : `已创建分支 ${trimmed}`,
       );
       await get().refresh();
     } catch (e) {
@@ -359,18 +392,17 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  createBranchFlow: (atCommit) => {
-    const short = atCommit ? atCommit.slice(0, 7) : "";
+  createBranchFlow: (from) => {
     get().openDialog({
       title: "新建分支",
-      message: atCommit ? `基于提交 ${short} 创建新分支。` : "基于当前 HEAD 创建新分支。",
+      message: from ? `基于${from.label}创建新分支。` : "基于当前 HEAD 创建新分支。",
       input: { placeholder: "分支名，如 feat/login", validate: validateBranchName },
-      checkbox: { label: "创建后立即迁出", initial: true },
+      checkbox: { label: "创建后立即检出", initial: true },
       actions: [
         {
           label: "创建",
           kind: "primary",
-          run: (name, checkoutAfter) => get().createBranch(name, checkoutAfter, atCommit),
+          run: (name, checkoutAfter) => get().createBranch(name, checkoutAfter, from?.ref),
         },
       ],
     });
@@ -468,7 +500,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         },
       );
     };
-    // 硬重置销毁未提交改动：脏树时先过安全拦截（与迁出共用模型）
+    // 硬重置销毁未提交改动：脏树时先过安全拦截（与检出共用模型）
     const confirmHard = async () => {
       const st = await ipc.getStatus().catch(() => null);
       const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
@@ -518,6 +550,21 @@ export const useRepo = create<RepoState>((set, get) => ({
   updateToast: (id, patch) =>
     set({ toasts: get().toasts.map((t) => (t.id === id ? { ...t, ...patch } : t)) }),
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+
+  copyText: async (text, label) => {
+    const ok = await writeClipboard(text);
+    if (ok) get().pushToast("ok", `已复制${label}`);
+    else get().pushToast("err", `复制${label}失败：剪贴板不可用`);
+  },
+
+  copyCommitMessage: async (commitId) => {
+    try {
+      const detail = await ipc.getCommitDetail(commitId);
+      await get().copyText(detail.body.trim() || detail.meta.subject, "提交信息");
+    } catch (e) {
+      get().pushToast("err", await errText(e));
+    }
+  },
 
   hydrate: async () => {
     const cfg = await ipc.getConfig();
@@ -1147,15 +1194,15 @@ export const useRepo = create<RepoState>((set, get) => ({
     if (!(await ensureCleanTree(get))) return;
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     get().openDialog({
-      title: "摘取此提交",
-      message: `把 ${commitId.slice(0, 7)} 的改动摘取到当前分支 ${branch}（git cherry-pick）。`,
+      title: "拣选此提交",
+      message: `把 ${commitId.slice(0, 7)} 的改动拣选到当前分支 ${branch}（git cherry-pick）。`,
       actions: [
         {
-          label: "摘取",
+          label: "拣选",
           kind: "primary",
           run: () => {
             void (async () => {
-              await runWrite(set, get, "摘取提交…", "已摘取该提交", async () => {
+              await runWrite(set, get, "拣选提交…", "已拣选该提交", async () => {
                 await ipc.cherryPick(commitId);
               });
               // runWrite 的失败分支不刷新——先拉取最新状态再做语义分类
@@ -1185,10 +1232,10 @@ export const useRepo = create<RepoState>((set, get) => ({
                       },
                     },
                     {
-                      label: "放弃本次摘取",
+                      label: "放弃本次拣选",
                       kind: "danger",
                       run: () => {
-                        void runWrite(set, get, "放弃摘取…", "已放弃本次摘取", async () => {
+                        void runWrite(set, get, "放弃拣选…", "已放弃本次拣选", async () => {
                           await ipc.abortOperation("cherry-pick");
                         });
                       },
@@ -1212,9 +1259,9 @@ export const useRepo = create<RepoState>((set, get) => ({
     const commit = get().commits.find((c) => c.id === commitId);
     if (commit && commit.parents.length > 1) {
       get().openDialog({
-        title: "无法还原合并提交",
+        title: "合并提交无法反转",
         message:
-          "这是合并提交：还原它需要指定保留哪条主线（git revert -m），暂不支持。可以先还原其单个父提交序列，或在终端处理。",
+          "这是合并提交：反转它需要指定保留哪条主线（git revert -m），暂不支持。可以先反转其单个父提交序列，或在终端处理。",
         actions: [],
       });
       return;
@@ -1222,20 +1269,20 @@ export const useRepo = create<RepoState>((set, get) => ({
     if (!(await ensureCleanTree(get))) return;
     const branch = get().summary?.branch ?? get().meta?.branch ?? "";
     get().openDialog({
-      title: "还原此提交",
+      title: "反转此提交",
       message: `生成一个反向提交撤销 ${commitId.slice(0, 7)} 的改动，落在分支 ${branch} 上（git revert，不改写历史）。`,
       actions: [
         {
-          label: "还原",
+          label: "反转",
           kind: "primary",
           run: () => {
-            void runWrite(set, get, "还原提交…", "已还原该提交", async () => {
+            void runWrite(set, get, "反转提交…", "已反转该提交", async () => {
               try {
                 await ipc.revertCommit(commitId);
               } catch (e) {
                 await get().refresh();
                 if (get().status?.operation === "revert") {
-                  get().pushToast("err", `还原产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`);
+                  get().pushToast("err", `反转提交产生冲突：${get().status?.unmerged.length ?? 0} 个冲突文件，点开冲突文件处理或中止。`);
                   return;
                 }
                 throw e;

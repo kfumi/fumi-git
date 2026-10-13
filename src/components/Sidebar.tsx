@@ -18,6 +18,7 @@ import { useRepo } from "../stores/repo";
 import { groupBranches, groupRemotes } from "../lib/refs";
 import { relTime } from "../lib/format";
 import type { BranchSummary, StashEntry } from "../lib/types";
+import { branchMenu as buildBranchMenu, type BranchMenuActions, type BranchTarget } from "../lib/menus";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 const GROUPS_KEY = "fumigit.expanded-branch-groups";
@@ -70,10 +71,14 @@ export function Sidebar() {
   const stashFlow = useRepo((s) => s.stashFlow);
   const stashRestore = useRepo((s) => s.stashRestore);
   const stashDropFlow = useRepo((s) => s.stashDropFlow);
+  const copyText = useRepo((s) => s.copyText);
   // 分支右键菜单：{ 位置, 分支全名 }
-  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; branch: string } | null>(
-    null,
-  );
+  // 分支右键菜单：{ 位置, 目标 }；菜单项由 lib/menus.ts 单点构造（ui-spec §4）
+  const [branchMenu, setBranchMenu] = useState<{
+    x: number;
+    y: number;
+    target: BranchTarget;
+  } | null>(null);
   // stash 条目右键菜单：{ 位置, 条目 }
   const [stashMenu, setStashMenu] = useState<{ x: number; y: number; entry: StashEntry } | null>(
     null,
@@ -86,43 +91,23 @@ export function Sidebar() {
     { label: "删除…", danger: true, onSelect: () => stashDropFlow(entry.index) },
   ];
 
-// 三组动作：把当前分支指到该分支 / 该分支自身的增删改名 / 破坏性
-  const branchMenuItems = (branch: string): MenuItem[] => {
-    const current = summary?.branch === branch;
-    const moveItems: MenuItem[] = [
-      {
-        label: "迁出到该分支",
-        disabled: current,
-        hint: current ? "当前分支" : undefined,
-        onSelect: () => void checkout(branch),
-      },
-      {
-        label: "合并到当前分支…",
-        disabled: current,
-        hint: current ? "当前分支" : undefined,
-        onSelect: () => void mergeBranchFlow(branch),
-      },
-    ];
-    const manageItems: MenuItem[] = [
-      { label: "新建分支…", hint: "基于当前 HEAD", onSelect: () => createBranchFlow() },
-      { label: "重命名…", onSelect: () => renameBranchFlow(branch) },
-    ];
-    const destructiveItems: MenuItem[] = [
-      {
-        label: "删除该分支…",
-        disabled: current,
-        hint: current ? "当前分支" : undefined,
-        danger: true,
-        onSelect: () => deleteBranchFlow(branch),
-      },
-    ];
-    return [
-      ...moveItems,
-      { kind: "separator" },
-      ...manageItems,
-      { kind: "separator" },
-      ...destructiveItems,
-    ];
+  // 动作包：本票只铺已有能力；03 / 04 / 07 接入后在此补对应动作，菜单项随之出现
+  const menuActions: BranchMenuActions = {
+    checkout: (b) => void checkout(b),
+    mergeBranch: (ref) => void mergeBranchFlow(ref),
+    createBranchFrom: (ref, label) => createBranchFlow({ ref, label }),
+    copy: (text, label) => void copyText(text, label),
+    renameBranch: (b) => renameBranchFlow(b),
+    deleteBranch: (b) => void deleteBranchFlow(b),
+  };
+
+  const openBranchMenu = (e: React.MouseEvent, name: string) => {
+    e.preventDefault();
+    setBranchMenu({
+      x: e.clientX,
+      y: e.clientY,
+      target: { name, current: summary?.branch === name },
+    });
   };
 
   // 按后端给的 kind 直接分流；同名 ref（origin/main 与 main）各归各类，互不覆盖
@@ -245,10 +230,7 @@ export function Sidebar() {
           current={summary?.branch === name}
           summary={summary}
           onSelect={() => void selectRefTip(id)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setBranchMenu({ x: e.clientX, y: e.clientY, branch: name });
-          }}
+          onContextMenu={(e) => openBranchMenu(e, name)}
         />
       ))}
       {tree.groups.map(([prefix, members]) => {
@@ -284,14 +266,7 @@ export function Sidebar() {
                   current={summary?.branch === prefix + "/" + rest}
                   summary={summary}
                   onSelect={() => void selectRefTip(id)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setBranchMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      branch: prefix + "/" + rest,
-                    });
-                  }}
+                  onContextMenu={(e) => openBranchMenu(e, prefix + "/" + rest)}
                 />
               ))}
           </div>
@@ -302,7 +277,7 @@ export function Sidebar() {
         <ContextMenu
           x={branchMenu.x}
           y={branchMenu.y}
-          items={branchMenuItems(branchMenu.branch)}
+          items={buildBranchMenu(branchMenu.target, menuActions)}
           onClose={() => setBranchMenu(null)}
         />
       )}

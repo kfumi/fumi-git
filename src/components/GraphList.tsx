@@ -8,7 +8,8 @@ import { absTime, avatarColor, relTime } from "../lib/format";
 import { classifyRef } from "../lib/refs";
 import type { CommitEntry } from "../lib/types";
 import { RefChips } from "./RefChips";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ContextMenu } from "./ContextMenu";
+import { commitMenu as buildCommitMenu, type CommitMenuActions, type CommitTarget } from "../lib/menus";
 
 export const ROW_H = 52;
 
@@ -128,49 +129,43 @@ export function GraphList() {
   const revertFlow = useRepo((s) => s.revertFlow);
   const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
   const summary = useRepo((s) => s.summary);
-  // 提交右键菜单：挂本地分支才出现迁出项（ui-spec 决策：不做 detached HEAD）
-  const [commitMenu, setCommitMenu] = useState<{ x: number; y: number; commit: CommitEntry } | null>(
-    null,
-  );
+  const copyText = useRepo((s) => s.copyText);
+  const copyCommitMessage = useRepo((s) => s.copyCommitMessage);
+  const remotes = useRepo((s) => s.remotes);
 
-  // 三组动作：把本地分支指到该提交 / 基于该提交派生改动 / 破坏性改写指针
-  const commitMenuItems = (commit: CommitEntry): MenuItem[] => {
-    const branches = commit.refs.filter((r) => classifyRef(r) === "branch");
-    const short = commit.short_id.slice(0, 7);
-    const moveItems: MenuItem[] = [];
-    for (const b of branches) {
-      const isCurrent = b === summary?.branch;
-      moveItems.push({
-        label: `迁出到 ${b}`,
-        disabled: isCurrent,
-        hint: isCurrent ? "当前分支" : undefined,
-        onSelect: () => void checkout(b),
-      });
-      // 提交挂着别的分支尖 → 可直接把它合并进当前分支
-      if (!isCurrent) {
-        moveItems.push({
-          label: `合并 ${b} 到当前分支…`,
-          onSelect: () => void mergeBranchFlow(b),
-        });
-      }
-    }
+  // 提交右键菜单：{ 位置, 目标 }；菜单项由 lib/menus.ts 单点构造（ui-spec §4）
+  const [commitMenu, setCommitMenu] = useState<{
+    x: number;
+    y: number;
+    target: CommitTarget;
+  } | null>(null);
 
-    const deriveItems: MenuItem[] = [
-      { label: "新建分支…", hint: "基于此提交", onSelect: () => createBranchFlow(commit.id) },
-      { label: "摘取此提交…", hint: "cherry-pick", onSelect: () => void cherryPickFlow(commit.id) },
-      { label: "还原此提交…", hint: "revert", onSelect: () => void revertFlow(commit.id) },
-    ];
+  // 动作包：本票只铺已有能力；05 / 06 / 08 / 09 接入后在此补对应动作，菜单项随之出现
+  const menuActions: CommitMenuActions = {
+    checkout: (b) => void checkout(b),
+    mergeBranch: (ref) => void mergeBranchFlow(ref),
+    createBranchFrom: (ref, label) => createBranchFlow({ ref, label }),
+    copy: (text, label) => void copyText(text, label),
+    showDetail: (id) => void select(id),
+    copyCommitMessage: (id) => void copyCommitMessage(id),
+    cherryPick: (id) => void cherryPickFlow(id),
+    revert: (id) => void revertFlow(id),
+    resetTo: (id) => resetBranchTo(id),
+  };
 
-    const destructiveItems: MenuItem[] = [
-      {
-        label: `重置当前分支到 ${short}…`,
-        danger: true,
-        onSelect: () => resetBranchTo(commit.id),
+  const openCommitMenu = (e: React.MouseEvent, commit: CommitEntry) => {
+    e.preventDefault();
+    setCommitMenu({
+      x: e.clientX,
+      y: e.clientY,
+      target: {
+        id: commit.id,
+        short: commit.short_id.slice(0, 7),
+        branches: commit.refs.filter((r) => classifyRef(r, remotes) === "branch"),
+        isHead: commit.refs.includes("HEAD"),
+        currentBranch: summary?.branch ?? null,
       },
-    ];
-
-    const groups = [moveItems, deriveItems, destructiveItems].filter((g) => g.length > 0);
-    return groups.flatMap((g, i) => (i === 0 ? g : [{ kind: "separator" } as const, ...g]));
+    });
   };
 
   const rows = useMemo(() => filterCommits(commits, filter), [commits, filter]);
@@ -286,10 +281,7 @@ export function GraphList() {
             top={vi.start}
             graphW={graphW}
             onSelect={() => select(rows[vi.index].id)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setCommitMenu({ x: e.clientX, y: e.clientY, commit: rows[vi.index] });
-            }}
+            onContextMenu={(e) => openCommitMenu(e, rows[vi.index])}
           />
         ))}
       </div>
@@ -297,7 +289,7 @@ export function GraphList() {
         <ContextMenu
           x={commitMenu.x}
           y={commitMenu.y}
-          items={commitMenuItems(commitMenu.commit)}
+          items={buildCommitMenu(commitMenu.target, menuActions)}
           onClose={() => setCommitMenu(null)}
         />
       )}
