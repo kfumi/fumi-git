@@ -8,6 +8,7 @@ import type {
   BranchSummary,
   CommitDetail,
   CommitEntry,
+  CompareResult,
   ConflictVersions,
   FileEntry,
   GitOperation,
@@ -22,6 +23,7 @@ export const OPERATION_LABEL: Record<GitOperation, { progress: string; cont: str
   merge: { progress: "合并进行中", cont: "继续合并" },
   "cherry-pick": { progress: "拣选（cherry-pick）进行中", cont: "继续拣选" },
   revert: { progress: "反转提交（revert）进行中", cont: "继续反转提交" },
+  rebase: { progress: "变基进行中", cont: "继续变基" },
 };
 
 const PAGE = 200;
@@ -53,6 +55,8 @@ export interface DialogDesc {
   input?: {
     initial?: string;
     placeholder?: string;
+    /** 多行输入（提交信息等长文本）：渲染 textarea，Enter 不触发主动作（换行） */
+    multiline?: boolean;
     validate?: (value: string) => string | null;
   };
   checkbox?: { label: string; initial?: boolean };
@@ -113,6 +117,13 @@ interface RepoState {
     loading: boolean;
   } | null;
 
+  /** 右栏「比较」模式（与 HEAD 比较，工单 08）：进入后压过提交详情 / 工作区 diff */
+  compare: {
+    base: string;
+    head: string;
+    data: CompareResult | null;
+    loading: boolean;
+  } | null;
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
   removeRecent: (path: string) => Promise<void>;
@@ -166,7 +177,8 @@ interface RepoState {
   /** 当前分支名；分离 HEAD / 空仓库返回 null（无法作为 push 目标） */
   currentBranch: () => string | null;
   /** push 无上游时的建立关联弹框（选远程 → push -u） */
-  pushUpstreamFlow: () => Promise<void>;
+  /** push 无上游时的建立关联弹框（选远程 → push -u）；branch 缺省用当前分支 */
+  pushUpstreamFlow: (branch?: string) => Promise<void>;
   /** 推到指定远程（不建立上游）；remote 为空则走「选远程」弹框 */
   pushToFlow: (remote?: string) => Promise<void>;
   /** 当前分支推到所有远程 */
@@ -200,7 +212,40 @@ interface RepoState {
   /** 反转提交（合并提交解释性拦截；冲突进 operation=revert 流程） */
   revertFlow: (commitId: string) => Promise<void>;
   /** 把本地分支合并进当前分支（冲突进 operation=merge 流程） */
+  /** 把本地分支合并进当前分支（冲突进 operation=merge 流程） */
   mergeBranchFlow: (branch: string) => Promise<void>;
+
+  // ── 右键菜单对齐批次（工单 03–09）──
+  /** 03：检出远程分支（建同名本地跟踪分支并检出；脏树走既有三选拦截） */
+  checkoutRemote: (fullRef: string, branch: string) => Promise<void>;
+  /** 03：把某分支推到指定远程的同名分支（不建立、不改变上游关联） */
+  pushToRemote: (remote: string, branch: string) => Promise<void>;
+  /** 03 / 04：抓取；带远程名只抓该远程，缺省抓全部 */
+  fetchRemoteFlow: (remote?: string) => Promise<void>;
+  /** 03：删除远程分支（危险项，二次确认） */
+  deleteRemoteBranchFlow: (remote: string, branch: string) => Promise<void>;
+  /** 04：设置上游分支（对话框输入远程分支，即时校验） */
+  setUpstreamFlow: (branch: string) => void;
+  /** 04：取消上游关联 */
+  unsetUpstream: (branch: string) => Promise<void>;
+  /** 04：推送某个本地分支（无上游时弹「建立上游关联并推送」） */
+  pushBranchFlow: (branch: string) => Promise<void>;
+  /** 04：抓取某个本地分支对应的远程（无上游时全量抓取） */
+  fetchForBranch: (branch: string) => Promise<void>;
+  /** 05：新建标签（名称 + 可选备注 → 有备注即附注标签） */
+  createTagFlow: (commitId: string) => void;
+  /** 06：检出该修订（分离 HEAD；脏树走既有三选拦截） */
+  checkoutCommitFlow: (commitId: string) => Promise<void>;
+  /** 07：把当前分支变基到 <ref>（确认 → 脏树拦截 → 冲突落既有冲突视图） */
+  rebaseOntoFlow: (ref: string) => Promise<void>;
+  /** 07：变基冲突时跳过本次提交（仅 rebase 进行中可用） */
+  skipOperationFlow: () => Promise<void>;
+  /** 08：与 HEAD 比较（右栏进入比较模式） */
+  compareWithHead: (commitId: string) => Promise<void>;
+  /** 08：退出比较模式 */
+  closeCompare: () => void;
+  /** 09：修改 HEAD 提交信息（对话框预填 + 暂存区警告） */
+  amendMessageFlow: (commitId: string) => void;
   /**
    * 丢弃工作区改动（US22–25，支持批量多选）：未暂存组 M/D → 从 index 恢复，
    * 'A'（未跟踪）→ 删除文件；均带不可恢复确认。
@@ -263,6 +308,63 @@ async function ensureCleanTree(get: () => RepoState): Promise<boolean> {
     return false;
   }
   return true;
+}
+
+/** 当前工作区的脏文件清单（已暂存 + 未暂存）；读状态失败视为干净 */
+async function dirtyFiles(): Promise<string[]> {
+  const st = await ipc.getStatus().catch(() => null);
+  return st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
+}
+
+/**
+ * 脏工作树三选拦截（ui-spec §4 安全模型）：干净直接执行；脏则弹「继续 / stash 后继续 / 取消」。
+ * 检出、检出该修订、变基共用这一模型，文案与主动作的危险级别由调用方给
+ * （破坏性主动作必须 `proceedKind: "danger"`，否则 Enter 会误触）。
+ */
+async function guardDirtyTree(
+  get: () => RepoState,
+  opts: {
+    title: string;
+    message: string;
+    files: string[];
+    proceedLabel: string;
+    proceedKind?: "primary" | "danger";
+    stashLabel: string;
+    stashMessage: string;
+    proceed: () => void | Promise<void>;
+  },
+): Promise<void> {
+  if (opts.files.length === 0) {
+    await opts.proceed();
+    return;
+  }
+  get().openDialog({
+    title: opts.title,
+    message: opts.message,
+    files: opts.files,
+    actions: [
+      {
+        label: opts.proceedLabel,
+        kind: opts.proceedKind ?? "primary",
+        run: () => void opts.proceed(),
+      },
+      {
+        label: opts.stashLabel,
+        kind: "ghost",
+        run: () => {
+          void (async () => {
+            try {
+              await ipc.stashPush(opts.stashMessage);
+              get().pushToast("ok", "改动已存入 stash，可随时恢复");
+              await opts.proceed();
+            } catch (e) {
+              get().pushToast("err", await errText(e));
+            }
+          })();
+        },
+      },
+    ],
+  });
 }
 
 export function validateBranchName(name: string): string | null {
@@ -336,45 +438,24 @@ export const useRepo = create<RepoState>((set, get) => ({
   stashes: [],
   stashView: null,
   conflictView: null,
+  compare: null,
 
   openDialog: (desc) => set({ dialog: desc }),
   closeDialog: () => set({ dialog: null }),
 
   checkout: async (branch) => {
-    const st = await ipc.getStatus().catch(() => null);
-    const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
-    const doSwitch = () =>
-      runWrite(set, get, `检出到 ${branch}…`, `已检出 ${branch}`, async () => {
-        await ipc.switchBranch(branch);
-      });
-    if (dirtyFiles.length > 0) {
-      get().openDialog({
-        title: `检出到 ${branch}`,
-        message:
-          "工作区有未提交改动。带着改动检出时，若与目标分支冲突，git 会拒绝且现状不变。",
-        files: dirtyFiles,
-        actions: [
-          { label: "带着改动检出", kind: "primary", run: () => void doSwitch() },
-          {
-            label: "stash 后检出",
-            kind: "ghost",
-            run: () => {
-              void (async () => {
-                try {
-                  await ipc.stashPush("检出前自动暂存");
-                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
-                  await doSwitch();
-                } catch (e) {
-                  get().pushToast("err", await errText(e));
-                }
-              })();
-            },
-          },
-        ],
-      });
-      return;
-    }
-    await doSwitch();
+    await guardDirtyTree(get, {
+      title: `检出到 ${branch}`,
+      message: "工作区有未提交改动。带着改动检出时，若与目标分支冲突，git 会拒绝且现状不变。",
+      files: await dirtyFiles(),
+      proceedLabel: "带着改动检出",
+      stashLabel: "stash 后检出",
+      stashMessage: "检出前自动暂存",
+      proceed: () =>
+        runWrite(set, get, `检出到 ${branch}…`, `已检出 ${branch}`, async () => {
+          await ipc.switchBranch(branch);
+        }),
+    });
   },
 
   createBranch: async (name, checkoutAfter, at) => {
@@ -438,7 +519,16 @@ export const useRepo = create<RepoState>((set, get) => ({
       get().openDialog({
         title: `删除分支 ${branch}`,
         message: `该分支有 ${unmerged} 个提交未合入当前分支。继续将进入强制删除确认。`,
-        actions: [{ label: "继续", run: () => forceDelete() }],
+        actions: [
+          {
+            label: "继续",
+            // 返回 false：接下来打开的强制删除确认框不能被宿主关掉（DialogHost 只在非 false 时 onClose）
+            run: () => {
+              void forceDelete();
+              return false;
+            },
+          },
+        ],
       });
     } else {
       get().openDialog({
@@ -500,35 +590,17 @@ export const useRepo = create<RepoState>((set, get) => ({
         },
       );
     };
-    // 硬重置销毁未提交改动：脏树时先过安全拦截（与检出共用模型）
+    // 硬重置销毁未提交改动：脏树时先过安全拦截（与检出共用模型；主动作危险样式，避免 Enter 误触）
     const confirmHard = async () => {
-      const st = await ipc.getStatus().catch(() => null);
-      const dirtyFiles = st ? [...st.staged, ...st.unstaged].map((f) => f.path) : [];
-      if (dirtyFiles.length === 0) {
-        doReset("hard");
-        return;
-      }
-      get().openDialog({
+      await guardDirtyTree(get, {
         title: "硬重置将丢弃未提交改动",
         message: "硬重置会把工作区与暂存区一起退回目标提交，下列改动将无法找回。",
-        files: dirtyFiles,
-        actions: [
-          { label: "硬重置（丢弃改动）", kind: "danger", run: () => doReset("hard") },
-          {
-            label: "stash 后硬重置",
-            run: () => {
-              void (async () => {
-                try {
-                  await ipc.stashPush("硬重置前自动暂存");
-                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
-                  doReset("hard");
-                } catch (e) {
-                  get().pushToast("err", await errText(e));
-                }
-              })();
-            },
-          },
-        ],
+        files: await dirtyFiles(),
+        proceedLabel: "硬重置（丢弃改动）",
+        proceedKind: "danger",
+        stashLabel: "stash 后硬重置",
+        stashMessage: "硬重置前自动暂存",
+        proceed: () => doReset("hard"),
       });
     };
     get().openDialog({
@@ -542,6 +614,355 @@ export const useRepo = create<RepoState>((set, get) => ({
     });
   },
 
+
+  // ── 工单 03：远程分支 ──────────────────────────────────────────────────────
+
+  checkoutRemote: async (fullRef, branch) => {
+    await guardDirtyTree(get, {
+      title: `检出 ${fullRef}`,
+      message: `会在本地创建分支 ${branch} 并跟踪 ${fullRef}。带着改动检出时，若与目标分支冲突，git 会拒绝且现状不变。`,
+      files: await dirtyFiles(),
+      proceedLabel: "带着改动检出",
+      stashLabel: "stash 后检出",
+      stashMessage: "检出前自动暂存",
+      proceed: () =>
+        runWrite(set, get, `检出 ${fullRef}…`, `已检出 ${branch} 并跟踪 ${fullRef}`, async () => {
+          await ipc.createBranch(branch, true, fullRef);
+        }),
+    });
+  },
+
+  pushToRemote: async (remote, branch) => {
+    await runWrite(set, get, `推送 ${branch} 到 ${remote}…`, "", async () => {
+      await ipc.pushTo(remote, branch);
+    });
+  },
+
+  fetchRemoteFlow: async (remote) => {
+    await runWrite(
+      set,
+      get,
+      remote ? `抓取 ${remote}…` : "抓取全部远程…",
+      remote ? `已抓取 ${remote}` : "抓取完成",
+      async () => {
+        await ipc.fetch(remote);
+      },
+    );
+  },
+
+  deleteRemoteBranchFlow: async (remote, branch) => {
+    get().openDialog({
+      title: `删除远程分支 ${remote}/${branch}`,
+      message: "远程分支会被删除，且无法从本地恢复；其他协作者下次抓取时也会看到它消失。",
+      actions: [
+        {
+          label: "删除远程分支",
+          kind: "danger",
+          run: () => {
+            void runWrite(
+              set,
+              get,
+              `删除 ${remote}/${branch}…`,
+              `已删除远程分支 ${remote}/${branch}`,
+              async () => {
+                await ipc.deleteRemoteBranch(remote, branch);
+              },
+            );
+          },
+        },
+      ],
+    });
+  },
+
+  // ── 工单 04：上游管理 + 推送 / 抓取入口 ────────────────────────────────────
+
+  setUpstreamFlow: (branch) => {
+    const remoteRefs = get()
+      .refs.filter((r) => r.kind === "remote")
+      .map((r) => r.name);
+    get().openDialog({
+      title: `设置 ${branch} 的上游分支`,
+      message:
+        remoteRefs.length > 0
+          ? `输入要关联的远程分支，例如 ${remoteRefs[0]}。需要更换已有上游时，先「取消上游关联」再设置。`
+          : "仓库里还没有远程分支（先抓取一次），无法设置上游。",
+      input: {
+        placeholder: "远程分支，如 origin/main",
+        validate: (v) => {
+          const n = v.trim();
+          if (!n) return "上游分支不能为空";
+          if (!remoteRefs.includes(n)) return "必须是本仓库已有的远程分支（可先抓取一次）";
+          return null;
+        },
+      },
+      actions: [
+        {
+          label: "设置上游",
+          kind: "primary",
+          run: async (value) => {
+            const upstream = value.trim();
+            try {
+              await ipc.setUpstream(branch, upstream);
+              get().pushToast("ok", `已把 ${branch} 的上游设为 ${upstream}`);
+              await get().refresh();
+            } catch (e) {
+              return (await asGitError(e)).message;
+            }
+          },
+        },
+      ],
+    });
+  },
+
+  unsetUpstream: async (branch) => {
+    await runWrite(
+      set,
+      get,
+      `取消 ${branch} 的上游关联…`,
+      `已取消 ${branch} 的上游关联`,
+      async () => {
+        await ipc.unsetUpstream(branch);
+      },
+    );
+  },
+
+  pushBranchFlow: async (branch) => {
+    const upstream = get().refs.find((r) => r.kind === "branch" && r.name === branch)?.upstream;
+    if (!upstream) {
+      await get().pushUpstreamFlow(branch);
+      return;
+    }
+    const remote = upstream.split("/")[0];
+    await runWrite(set, get, `推送 ${branch}…`, `已推送 ${branch} 到 ${upstream}`, async () => {
+      await ipc.pushTo(remote, branch);
+    });
+  },
+
+  fetchForBranch: async (branch) => {
+    const upstream = get().refs.find((r) => r.kind === "branch" && r.name === branch)?.upstream;
+    await get().fetchRemoteFlow(upstream ? upstream.split("/")[0] : undefined);
+  },
+
+  // ── 工单 05：新建标签 ──────────────────────────────────────────────────────
+
+  createTagFlow: (commitId) => {
+    const short = commitId.slice(0, 7);
+    const existing = new Set(get().refs.filter((r) => r.kind === "tag").map((r) => r.name));
+    const validateTagName = (v: string): string | null => {
+      const n = v.trim();
+      if (!n) return "标签名不能为空";
+      if (
+        [...n].some((ch) => BAD_BRANCH_CHARS.has(ch)) ||
+        n.includes("..") ||
+        /^[.\-]/.test(n) ||
+        n.endsWith(".lock")
+      ) {
+        return "非法标签名（不能含空格 ~ ^ : ? * [ \\，不能以 . 或 - 开头）";
+      }
+      if (existing.has(n)) return "已存在同名标签（可在侧栏标签区看到它）";
+      return null;
+    };
+    const create = (name: string, message?: string) => {
+      void runWrite(set, get, `新建标签 ${name}…`, `已新建标签 ${name}`, async () => {
+        await ipc.createTag(name, commitId, message);
+      });
+    };
+    get().openDialog({
+      title: "新建标签",
+      message: `在提交 ${short} 上打标签。勾选「附加备注」会生成附注标签（发布点推荐）。`,
+      input: { placeholder: "标签名，如 v1.0.0", validate: validateTagName },
+      checkbox: { label: "附加备注（生成附注标签）" },
+      actions: [
+        {
+          label: "创建",
+          kind: "primary",
+          run: (value, withMessage) => {
+            const name = value.trim();
+            if (!withMessage) {
+              create(name);
+              return;
+            }
+            get().openDialog({
+              title: `标签 ${name} 的备注`,
+              message: "备注会写进附注标签；留空则退化为轻量标签。",
+              input: { placeholder: "备注，如「首个可用版本」" },
+              actions: [
+                {
+                  label: "创建附注标签",
+                  kind: "primary",
+                  run: (msg) => create(name, msg.trim() || undefined),
+                },
+              ],
+            });
+            // 返回 false：刚打开的备注框不能被宿主关掉
+            return false;
+          },
+        },
+      ],
+    });
+  },
+
+  // ── 工单 06：检出该修订（分离 HEAD） ───────────────────────────────────────
+
+  checkoutCommitFlow: async (commitId) => {
+    const short = commitId.slice(0, 7);
+    await guardDirtyTree(get, {
+      title: `检出 ${short}（分离 HEAD）`,
+      message:
+        "检出后 HEAD 停在这个提交上、不在任何分支（分离 HEAD）。查看与提交照常；推送等需要分支的操作要先「从此处新建分支」。",
+      files: await dirtyFiles(),
+      proceedLabel: "带着改动检出",
+      stashLabel: "stash 后检出",
+      stashMessage: "检出前自动暂存",
+      proceed: async () => {
+        await runWrite(set, get, `检出 ${short}…`, `已检出 ${short}（分离 HEAD）`, async () => {
+          await ipc.checkoutCommit(commitId);
+        });
+        get().pushToast("ok", "当前不在任何分支上：可用「从此处新建分支」把提交挂回分支");
+      },
+    });
+  },
+
+  // ── 工单 07：变基 ─────────────────────────────────────────────────────────
+
+  rebaseOntoFlow: async (ref) => {
+    if (get().writeBusy) {
+      get().pushToast("err", "有操作正在进行中，请稍候");
+      return;
+    }
+    const current = get().currentBranch();
+    if (!current) {
+      get().pushToast("err", "分离 HEAD：请先「从此处新建分支」，再变基");
+      return;
+    }
+    const upstream = get().summary?.upstream ?? null;
+    get().openDialog({
+      title: `把 ${current} 变基到 ${ref}`,
+      message:
+        "变基会把当前分支的本地提交重写到目标基线上（提交哈希改变）。已推送过的分支需要 force push，本应用暂不提供；工作区不干净时会先拦下来。",
+      actions: [
+        {
+          label: "继续",
+          kind: "primary",
+          run: () => {
+            void (async () => {
+              await guardDirtyTree(get, {
+                title: `变基 ${current} 到 ${ref}`,
+                message: "变基需要干净的工作区，带着改动变基可能半途失败。",
+                files: await dirtyFiles(),
+                proceedLabel: "继续变基",
+                stashLabel: "stash 后变基",
+                stashMessage: "变基前自动暂存",
+                proceed: async () => {
+                  let done = false;
+                  await runWrite(
+                    set,
+                    get,
+                    `变基 ${current} 到 ${ref}…`,
+                    `已把 ${current} 变基到 ${ref}`,
+                    async () => {
+                      await ipc.rebase(ref);
+                      done = true;
+                    },
+                  );
+                  // runWrite 的失败分支不刷新——先拉状态再按 operation 分类
+                  await get().refresh();
+                  const st = get().status;
+                  if (st?.operation === "rebase") {
+                    get().pushToast(
+                      "err",
+                      `变基产生冲突：${st.unmerged.length} 个冲突文件，解决后继续、跳过本次提交或中止变基。`,
+                    );
+                    return;
+                  }
+                  if (done && upstream) {
+                    get().pushToast(
+                      "ok",
+                      "该分支已有上游：历史被重写，推送需要 force push（本应用暂不提供）",
+                    );
+                  }
+                },
+              });
+            })();
+          },
+        },
+      ],
+    });
+  },
+
+  skipOperationFlow: async () => {
+    if (get().status?.operation !== "rebase") return;
+    await runWrite(set, get, "跳过本次提交…", "已跳过本次提交", async () => {
+      await ipc.continueOperation("rebase", "skip");
+    });
+    await get().refresh();
+    set({ conflictView: null });
+  },
+
+  // ── 工单 08：与 HEAD 比较 ─────────────────────────────────────────────────
+
+  compareWithHead: async (commitId) => {
+    set({
+      mainTab: "history",
+      compare: { base: "HEAD", head: commitId, data: null, loading: true },
+    });
+    try {
+      const data = await ipc.getCompare("HEAD", commitId);
+      if (get().compare?.head === commitId) {
+        set({ compare: { base: "HEAD", head: commitId, data, loading: false } });
+      }
+    } catch (e) {
+      if (get().compare?.head === commitId) set({ compare: null });
+      get().pushToast("err", await errText(e));
+    }
+  },
+
+  closeCompare: () => set({ compare: null }),
+
+  // ── 工单 09：修改提交信息（仅 HEAD） ───────────────────────────────────────
+
+  amendMessageFlow: (commitId) => {
+    const row = get().commits.find((c) => c.id === commitId);
+    if (!row || !row.refs.includes("HEAD")) {
+      get().pushToast("err", "只能修改 HEAD 提交的信息（改写更早的历史暂不支持）");
+      return;
+    }
+    const short = commitId.slice(0, 7);
+    void (async () => {
+      let initial = "";
+      try {
+        const detail = await ipc.getCommitDetail(commitId);
+        initial = detail.body.trim() || detail.meta.subject;
+      } catch (e) {
+        get().pushToast("err", await errText(e));
+        return;
+      }
+      const staged = get().status?.staged.length ?? 0;
+      get().openDialog({
+        title: `修改提交信息（${short}）`,
+        message:
+          staged > 0
+            ? `暂存区有 ${staged} 个已暂存文件，将一并并入本次提交（commit --amend 的固有行为）。`
+            : "只改写提交信息，不改动文件内容。",
+        input: {
+          initial,
+          multiline: true,
+          validate: (v) => (v.trim() ? null : "提交信息不能为空"),
+        },
+        actions: [
+          {
+            label: "保存",
+            kind: "primary",
+            run: (value) => {
+              void runWrite(set, get, "修改提交信息…", "已修改提交信息", async () => {
+                await ipc.amendMessage(value.trim());
+              });
+            },
+          },
+        ],
+      });
+    })();
+  },
   pushToast: (kind, text) => {
     const id = ++toastSeq;
     set({ toasts: [...get().toasts, { id, kind, text }] });
@@ -594,6 +1015,7 @@ export const useRepo = create<RepoState>((set, get) => ({
         stashes: [],
         stashView: null,
         conflictView: null,
+        compare: null,
       });
       await get().refresh();
       // 刷新最近列表
@@ -630,6 +1052,7 @@ export const useRepo = create<RepoState>((set, get) => ({
       stashes: [],
       stashView: null,
       conflictView: null,
+      compare: null,
     }),
 
   loadMore: async () => {
@@ -698,6 +1121,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   select: async (id) => {
+    // 选中另一个提交即退出比较模式（ui-spec §4 比较模式的退出条件）
+    if (get().compare) set({ compare: null });
     if (id === null) {
       set({ selectedId: null, detail: null, openFiles: [], detailFile: null });
       return;
@@ -760,7 +1185,7 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  setMainTab: (tab) => set({ mainTab: tab }),
+  setMainTab: (tab) => set({ mainTab: tab, compare: null }),
 
   selectRefTip: async (id) => {
     // refs 是全量的，tip 可能还没被分页加载进来（图谱上根本没有这一行）。
@@ -783,7 +1208,11 @@ export const useRepo = create<RepoState>((set, get) => ({
   },
 
   closeRightPane: () => {
-    // 冲突视图 > stash 查看 > 按 tab 语义移除触发条件
+    // 比较模式 > 冲突视图 > stash 查看 > 按 tab 语义移除触发条件
+    if (get().compare) {
+      set({ compare: null });
+      return;
+    }
     if (get().conflictView) {
       set({ conflictView: null });
       return;
@@ -818,6 +1247,10 @@ export const useRepo = create<RepoState>((set, get) => ({
     try {
       await ipc.commit(message);
       get().pushToast("ok", "提交完成");
+      // 分离 HEAD：提交不挂在任何分支上，提示把提交挂回分支（工单 06）
+      if (!get().currentBranch()) {
+        get().pushToast("ok", "提交未挂在任何分支上，建议「从此处新建分支」把提交挂回分支");
+      }
       await get().refresh();
       return true;
     } catch (e) {
@@ -860,8 +1293,8 @@ export const useRepo = create<RepoState>((set, get) => ({
     return branch && !branch.startsWith("(") ? branch : null;
   },
 
-  pushUpstreamFlow: async () => {
-    const branch = get().currentBranch();
+  pushUpstreamFlow: async (target) => {
+    const branch = target ?? get().currentBranch();
     if (!branch) {
       get().pushToast("err", "当前不在常规分支上，无法建立上游关联");
       return;

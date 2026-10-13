@@ -5,6 +5,7 @@ import type {
   AppConfig,
   BranchSummary,
   CommitDetail,
+  CompareResult,
   ConflictVersions,
   GitError,
   GitOperation,
@@ -76,7 +77,8 @@ export const ipc = {
   unstage: (paths: string[]) => cmd<void>("unstage_paths", { paths }),
   commit: (message: string) => cmd<string>("commit_staged", { message }),
 
-  fetch: () => cmd<string>("fetch_remote"),
+  /** 抓取指定远程；省略 remote 时抓取全部远程 */
+  fetch: (remote?: string) => cmd<string>("fetch_remote", { remote: remote ?? null }),
   pull: () => cmd<string>("pull_remote"),
   push: () => cmd<string>("push_remote"),
   pushUpstream: (remote: string, branch: string) =>
@@ -99,7 +101,8 @@ export const ipc = {
   /** 选边解决：整文件采用我方/对方并标记已解决 */
   resolveTake: (path: string, ours: boolean) => cmd<void>("resolve_take", { path, ours }),
   /** 完成进行中的操作（--continue，沿用默认提交信息） */
-  continueOperation: (op: GitOperation) => cmd<string>("continue_operation", { op }),
+  continueOperation: (op: GitOperation, action?: "continue" | "skip") =>
+    cmd<string>("continue_operation", { op, action: action ?? null }),
   /** 用系统默认应用打开文件（手动编辑冲突） */
   openInEditor: (path: string) => cmd<void>("open_file_in_editor", { path }),
   /** 反转提交（revert）普通提交；合并提交被后端拦截 */
@@ -110,6 +113,25 @@ export const ipc = {
   cherryPickSkip: () => cmd<void>("cherry_pick_skip"),
   /** 空提交场景下仍然提交（--allow-empty） */
   cherryPickKeep: () => cmd<string>("cherry_pick_keep"),
+  /** 删除远程分支（push <remote> --delete） */
+  deleteRemoteBranch: (remote: string, branch: string) =>
+    cmd<string>("delete_remote_branch", { remote, branch }),
+  /** 建立上游关联；upstream 形如 `origin/main` */
+  setUpstream: (branch: string, upstream: string) =>
+    cmd<void>("set_upstream", { branch, upstream }),
+  /** 取消上游关联 */
+  unsetUpstream: (branch: string) => cmd<void>("unset_upstream", { branch }),
+  /** 新建标签；带 message 即附注标签 */
+  createTag: (name: string, hash: string, message?: string) =>
+    cmd<void>("create_tag", { name, hash, message: message ?? null }),
+  /** 检出提交（分离 HEAD） */
+  checkoutCommit: (hash: string) => cmd<void>("checkout_commit", { hash }),
+  /** 把当前分支变基到 refName */
+  rebase: (refName: string) => cmd<string>("rebase", { refName }),
+  /** 两提交比较：base..head 的文件统计 + 统一 diff */
+  getCompare: (base: string, head: string) => cmd<CompareResult>("get_compare", { base, head }),
+  /** 改写 HEAD 提交信息（--amend --only） */
+  amendMessage: (message: string) => cmd<string>("amend_message", { message }),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

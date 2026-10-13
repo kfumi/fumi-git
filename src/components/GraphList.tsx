@@ -9,7 +9,12 @@ import { classifyRef } from "../lib/refs";
 import type { CommitEntry } from "../lib/types";
 import { RefChips } from "./RefChips";
 import { ContextMenu } from "./ContextMenu";
-import { commitMenu as buildCommitMenu, type CommitMenuActions, type CommitTarget } from "../lib/menus";
+import {
+  commitMenu as buildCommitMenu,
+  detachedHead,
+  type CommitMenuActions,
+  type CommitTarget,
+} from "../lib/menus";
 
 export const ROW_H = 52;
 
@@ -132,6 +137,10 @@ export function GraphList() {
   const copyText = useRepo((s) => s.copyText);
   const copyCommitMessage = useRepo((s) => s.copyCommitMessage);
   const remotes = useRepo((s) => s.remotes);
+  const createTagFlow = useRepo((s) => s.createTagFlow);
+  const checkoutCommitFlow = useRepo((s) => s.checkoutCommitFlow);
+  const compareWithHead = useRepo((s) => s.compareWithHead);
+  const amendMessageFlow = useRepo((s) => s.amendMessageFlow);
 
   // 提交右键菜单：{ 位置, 目标 }；菜单项由 lib/menus.ts 单点构造（ui-spec §4）
   const [commitMenu, setCommitMenu] = useState<{
@@ -140,7 +149,7 @@ export function GraphList() {
     target: CommitTarget;
   } | null>(null);
 
-  // 动作包：本票只铺已有能力；05 / 06 / 08 / 09 接入后在此补对应动作，菜单项随之出现
+  // 动作包：菜单项由 lib/menus.ts 单点构造（ui-spec §4）；缺席的动作对应项不出现
   const menuActions: CommitMenuActions = {
     checkout: (b) => void checkout(b),
     mergeBranch: (ref) => void mergeBranchFlow(ref),
@@ -151,6 +160,10 @@ export function GraphList() {
     cherryPick: (id) => void cherryPickFlow(id),
     revert: (id) => void revertFlow(id),
     resetTo: (id) => resetBranchTo(id),
+    createTag: (id) => createTagFlow(id),
+    checkoutCommit: (id) => void checkoutCommitFlow(id),
+    compareWithHead: (id) => void compareWithHead(id),
+    amendMessage: (id) => amendMessageFlow(id),
   };
 
   const openCommitMenu = (e: React.MouseEvent, commit: CommitEntry) => {
@@ -163,7 +176,7 @@ export function GraphList() {
         short: commit.short_id.slice(0, 7),
         branches: commit.refs.filter((r) => classifyRef(r, remotes) === "branch"),
         isHead: commit.refs.includes("HEAD"),
-        currentBranch: summary?.branch ?? null,
+        currentBranch: detachedHead(summary) ? null : (summary?.branch ?? null),
       },
     });
   };

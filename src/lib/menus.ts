@@ -119,6 +119,8 @@ export interface BranchTarget {
   current: boolean;
   /** 上游（`%(upstream:short)`；04 之后由 refs 提供，未提供视为未知） */
   upstream?: string | null;
+  /** 分离 HEAD（无当前分支）：推送/抓取/合并/变基/重命名/删除/上游类动作一律禁用并提示 */
+  detached: boolean;
 }
 
 /** 侧栏远程分支行 */
@@ -131,6 +133,8 @@ export interface RemoteTarget {
   full: string;
   /** 本地是否已有同名分支 */
   hasLocal: boolean;
+  /** 分离 HEAD（无当前分支）：同步类动作禁用并提示 */
+  detached: boolean;
 }
 
 /** 历史列表的提交行 */
@@ -148,6 +152,18 @@ export interface CommitTarget {
 
 const SEPARATOR: MenuSeparator = { kind: "separator" };
 
+/** 分离 HEAD 下写操作禁用时的统一提示（ui-spec §4 分离 HEAD 矩阵） */
+export const DETACHED_HINT = "先从此处新建分支";
+
+/**
+ * 分离 HEAD 判定：后端 `current_branch()` 在分离态返回 `(HEAD detached at <短号>)`，
+ * 这里按该格式解出短号（侧栏状态行与工具栏用）；不在分离态返回 null。
+ */
+export function detachedHead(summary: { branch: string } | null): { short: string } | null {
+  const m = summary?.branch.match(/^\(HEAD detached at ([0-9a-f]+)\)$/);
+  return m ? { short: m[1] } : null;
+}
+
 /** 按语义分组拼接，空组直接丢弃（不留悬空分隔线） */
 function grouped(groups: MenuItem[][]): MenuItem[] {
   return groups
@@ -157,6 +173,8 @@ function grouped(groups: MenuItem[][]): MenuItem[] {
 
 /** 侧栏「本地分支」右键菜单 */
 export function branchMenu(t: BranchTarget, a: BranchMenuActions): MenuItem[] {
+  // 分离 HEAD：写操作禁用并统一提示（检出、新建分支、复制类不受影响）
+  const off = t.detached ? DETACHED_HINT : undefined;
   const move: MenuItem[] = [
     {
       label: "检出",
@@ -170,51 +188,69 @@ export function branchMenu(t: BranchTarget, a: BranchMenuActions): MenuItem[] {
     },
     {
       label: "合并到当前分支…",
-      hint: t.current ? "当前分支" : undefined,
-      disabled: t.current,
+      hint: t.detached ? off : t.current ? "当前分支" : undefined,
+      disabled: t.current || t.detached,
       onSelect: () => a.mergeBranch(t.name),
     },
   ];
   if (a.rebaseOnto) {
     move.push({
       label: "将当前分支变基到此分支…",
-      hint: t.current ? "当前分支" : "rebase",
-      disabled: t.current,
+      hint: t.detached ? off : t.current ? "当前分支" : "rebase",
+      disabled: t.current || t.detached,
       onSelect: () => a.rebaseOnto!(t.name),
     });
   }
 
-  const manage: MenuItem[] = [{ label: "重命名…", onSelect: () => a.renameBranch(t.name) }];
+  const manage: MenuItem[] = [
+    {
+      label: "重命名…",
+      hint: off,
+      disabled: t.detached,
+      onSelect: () => a.renameBranch(t.name),
+    },
+  ];
   const hasUpstream = Boolean(t.upstream);
   if (a.setUpstream) {
     manage.push({
       label: "设置上游分支…",
-      hint: hasUpstream ? "已有 upstream" : undefined,
-      disabled: hasUpstream,
+      hint: t.detached ? off : hasUpstream ? "已有 upstream" : undefined,
+      disabled: hasUpstream || t.detached,
       onSelect: () => a.setUpstream!(t.name),
     });
   }
   if (a.unsetUpstream) {
     manage.push({
       label: "取消上游关联",
-      disabled: !hasUpstream,
+      hint: off,
+      disabled: !hasUpstream || t.detached,
       onSelect: () => a.unsetUpstream!(t.name),
     });
   }
   manage.push({
     label: "删除…",
-    hint: t.current ? "当前分支" : undefined,
-    disabled: t.current,
+    hint: t.detached ? off : t.current ? "当前分支" : undefined,
+    disabled: t.current || t.detached,
     danger: true,
     onSelect: () => a.deleteBranch(t.name),
   });
 
   const sync: MenuItem[] = [{ label: "复制分支名", onSelect: () => a.copy(t.name, "分支名") }];
   if (a.pushBranch) {
-    sync.push({ label: "推送", onSelect: () => a.pushBranch!(t.name) });
+    sync.push({
+      label: "推送",
+      hint: off,
+      disabled: t.detached,
+      onSelect: () => a.pushBranch!(t.name),
+    });
   }
   if (a.fetchForBranch) {
-    sync.push({ label: "抓取", onSelect: () => a.fetchForBranch!(t.name) });
+    sync.push({
+      label: "抓取",
+      hint: off,
+      disabled: t.detached,
+      onSelect: () => a.fetchForBranch!(t.name),
+    });
   }
 
   return grouped([move, manage, sync]);
@@ -222,6 +258,7 @@ export function branchMenu(t: BranchTarget, a: BranchMenuActions): MenuItem[] {
 
 /** 侧栏「远程分支」右键菜单 */
 export function remoteMenu(t: RemoteTarget, a: RemoteMenuActions): MenuItem[] {
+  const off = t.detached ? DETACHED_HINT : undefined;
   const move: MenuItem[] = [
     {
       label: "检出",
@@ -233,12 +270,18 @@ export function remoteMenu(t: RemoteTarget, a: RemoteMenuActions): MenuItem[] {
       label: "从此处新建分支…",
       onSelect: () => a.createBranchFrom(t.full, `远程分支 ${t.full}`),
     },
-    { label: "合并到当前分支…", onSelect: () => a.mergeBranch(t.full) },
+    {
+      label: "合并到当前分支…",
+      hint: off,
+      disabled: t.detached,
+      onSelect: () => a.mergeBranch(t.full),
+    },
   ];
   if (a.rebaseOnto) {
     move.push({
       label: "将当前分支变基到此分支…",
-      hint: "rebase",
+      hint: off ?? "rebase",
+      disabled: t.detached,
       onSelect: () => a.rebaseOnto!(t.full),
     });
   }
@@ -256,13 +299,18 @@ export function remoteMenu(t: RemoteTarget, a: RemoteMenuActions): MenuItem[] {
   if (a.pushToRemote) {
     sync.push({
       label: "推送",
-      hint: t.hasLocal ? undefined : "无同名本地分支",
-      disabled: !t.hasLocal,
+      hint: t.detached ? off : t.hasLocal ? undefined : "无同名本地分支",
+      disabled: !t.hasLocal || t.detached,
       onSelect: () => a.pushToRemote!(t.remote, t.branch),
     });
   }
   if (a.fetch) {
-    sync.push({ label: "抓取", onSelect: () => a.fetch!(t.remote) });
+    sync.push({
+      label: "抓取",
+      hint: off,
+      disabled: t.detached,
+      onSelect: () => a.fetch!(t.remote),
+    });
   }
 
   return grouped([move, manage, sync]);

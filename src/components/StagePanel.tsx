@@ -89,20 +89,21 @@ export function CommitDetailPanel() {
   );
 }
 
-function FileRow({
+export function FileRow({
   file,
   active,
   onClick,
 }: {
   file: FileStat;
   active: boolean;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   return (
     <div
       onClick={onClick}
       className={
-        "flex cursor-pointer items-center gap-2 border-b border-brd-soft px-3 py-[7px] text-xs last:border-b-0 transition-colors " +
+        "flex items-center gap-2 border-b border-brd-soft px-3 py-[7px] text-xs last:border-b-0 transition-colors " +
+        (onClick ? "cursor-pointer " : "") +
         (active ? "bg-sel" : "hover:bg-hover")
       }
     >
@@ -138,6 +139,7 @@ export function ChangesPanel() {
   const workStaged = useRepo((s) => s.workStaged);
   const abortOperation = useRepo((s) => s.abortOperation);
   const continueOperationFlow = useRepo((s) => s.continueOperationFlow);
+  const skipOperationFlow = useRepo((s) => s.skipOperationFlow);
   const discardWorktreeFlow = useRepo((s) => s.discardWorktreeFlow);
   const discardStagedFlow = useRepo((s) => s.discardStagedFlow);
   const discardAllFlow = useRepo((s) => s.discardAllFlow);
@@ -317,6 +319,15 @@ export function ChangesPanel() {
               className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-ink transition-colors hover:bg-hover"
             >
               {OPERATION_LABEL[status.operation].cont}
+            </button>
+          )}
+          {status.operation === "rebase" && (
+            <button
+              onClick={() => void skipOperationFlow()}
+              title="丢弃这一步的改动，继续变基后面的提交"
+              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn transition-colors hover:bg-hover"
+            >
+              跳过本次提交
             </button>
           )}
           <button

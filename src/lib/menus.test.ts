@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { MenuAction, MenuItem } from "../components/ContextMenu";
 import {
   branchMenu,
+  DETACHED_HINT,
+  detachedHead,
   commitMenu,
   remoteMenu,
   type BranchTarget,
@@ -70,6 +72,7 @@ function itemOf(items: MenuItem[], label: string): MenuAction {
 const branch = (over: Partial<BranchTarget> = {}): BranchTarget => ({
   name: "feat/login",
   current: false,
+  detached: false,
   ...over,
 });
 
@@ -78,6 +81,7 @@ const remote = (over: Partial<RemoteTarget> = {}): RemoteTarget => ({
   branch: "feat/login",
   full: "origin/feat/login",
   hasLocal: false,
+  detached: false,
   ...over,
 });
 
@@ -287,5 +291,44 @@ describe("commitMenu（提交）", () => {
     itemOf(commitMenu(commit({ id: "deadbeefcafe", short: "deadbee" }), a), "从此处新建分支…")
       .onSelect?.();
     expect(a.createBranchFrom).toHaveBeenCalledWith("deadbeefcafe", "提交 deadbee");
+  });
+});
+
+describe("分离 HEAD 矩阵（ui-spec §4）", () => {
+  it("detachedHead：解析后端 `(HEAD detached at <短号>)`；普通分支与无 summary 返回 null", () => {
+    expect(detachedHead({ branch: "(HEAD detached at 1a2b3c4)" })).toEqual({ short: "1a2b3c4" });
+    expect(detachedHead({ branch: "main" })).toBeNull();
+    expect(detachedHead(null)).toBeNull();
+  });
+
+  it("本地分支菜单：同步与管理类全部禁用并统一提示，检出/新建分支/复制不受影响", () => {
+    const items = branchMenu(
+      branch({ detached: true, upstream: "origin/feat/login" }),
+      fullActions(),
+    );
+    for (const label of [
+      "合并到当前分支…",
+      "将当前分支变基到此分支…",
+      "重命名…",
+      "设置上游分支…",
+      "取消上游关联",
+      "删除…",
+      "推送",
+      "抓取",
+    ]) {
+      expect(itemOf(items, label)).toMatchObject({ disabled: true, hint: DETACHED_HINT });
+    }
+    expect(itemOf(items, "检出").disabled).toBeFalsy();
+    expect(itemOf(items, "从此处新建分支…").disabled).toBeFalsy();
+    expect(itemOf(items, "复制分支名").disabled).toBeFalsy();
+  });
+
+  it("远程分支菜单：合并/变基/推送/抓取禁用并提示；检出与删除远程分支仍可用", () => {
+    const items = remoteMenu(remote({ detached: true }), fullActions());
+    for (const label of ["合并到当前分支…", "将当前分支变基到此分支…", "推送", "抓取"]) {
+      expect(itemOf(items, label)).toMatchObject({ disabled: true, hint: DETACHED_HINT });
+    }
+    expect(itemOf(items, "检出").disabled).toBeFalsy();
+    expect(itemOf(items, "删除远程分支…").disabled).toBeFalsy();
   });
 });

@@ -20,6 +20,7 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
 import type { ThemeMode } from "../lib/types";
+import { DETACHED_HINT, detachedHead } from "../lib/menus";
 
 const MODES: ThemeMode[] = ["dark", "light", "system"];
 
@@ -92,6 +93,8 @@ export function Toolbar() {
   const ThemeIcon = THEME_ICON[mode];
   // 推送目标 = 上游远程（无上游时留空，由点击后的弹框引导）
   const pushTarget = summary?.upstream?.split("/")[0] ?? "";
+  // 分离 HEAD：工具栏的同步类按钮全部禁用并给统一引导（ui-spec §4 矩阵）
+  const detached = detachedHead(summary);
 
   return (
     <div className="flex h-[42px] shrink-0 items-center gap-1.5 border-b border-brd bg-panel px-3">
@@ -101,7 +104,7 @@ export function Toolbar() {
       </span>
       <span className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium">
         <GitBranch size={11} className="shrink-0 text-accent-ink" aria-hidden />
-        {summary?.branch ?? meta.branch}
+        {detached ? "HEAD（分离）" : (summary?.branch ?? meta.branch)}
         {summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
           <span className="tnum flex items-center gap-1 text-[10.5px] font-normal">
             {summary.ahead > 0 && (
@@ -118,8 +121,9 @@ export function Toolbar() {
         )}
       </span>
       <button
-        disabled={busy !== null}
+        disabled={busy !== null || detached !== null}
         onClick={() => void run("pull")}
+        title={detached ? DETACHED_HINT : undefined}
         className="btn-ghost disabled:opacity-50"
       >
         {busy === "pull" ? (
@@ -132,9 +136,9 @@ export function Toolbar() {
       {/* 推送 = 分裂按钮：主体推上游，caret 选远程（多远程仓库需要） */}
       <div className="relative flex items-center">
         <button
-          disabled={busy !== null}
+          disabled={busy !== null || detached !== null}
           onClick={() => void run("push")}
-          title={pushTarget ? `推送到 ${pushTarget}` : "推送（尚未建立上游关联）"}
+          title={detached ? DETACHED_HINT : pushTarget ? `推送到 ${pushTarget}` : "推送（尚未建立上游关联）"}
           className="btn-ghost rounded-r-none border-r border-brd-soft disabled:opacity-50"
         >
           {busy === "push" ? (
@@ -145,12 +149,12 @@ export function Toolbar() {
           推送
         </button>
         <button
-          disabled={busy !== null || remotes.length === 0}
+          disabled={busy !== null || remotes.length === 0 || detached !== null}
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             setPushMenu({ x: r.left, y: r.bottom + 4 });
           }}
-          title="选择推送目标远程"
+          title={detached ? DETACHED_HINT : "选择推送目标远程"}
           aria-label="选择推送目标远程"
           className="btn-ghost icon-btn rounded-l-none pl-0 disabled:opacity-50"
         >
@@ -166,8 +170,9 @@ export function Toolbar() {
         )}
       </div>
       <button
-        disabled={busy !== null}
+        disabled={busy !== null || detached !== null}
         onClick={() => void run("fetch")}
+        title={detached ? DETACHED_HINT : undefined}
         className="btn-ghost disabled:opacity-50"
       >
         {busy === "fetch" ? (
