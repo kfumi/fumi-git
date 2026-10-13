@@ -55,12 +55,12 @@ Status: ready-for-agent
 
 **P1 调用折叠**：`status --porcelain=v2 --branch -z` 一次拿全状态 + 分支 + 上游 + 领先/落后；
 `GitRepo` 缓存 gitdir 让 `read_operation` 归零；`show` / `diff` 的输出格式合一。
-一轮 `refresh()` 从 **14 个进程降到 3~4 个**。
-
+一轮 `refresh()` 从 **14 个进程降到 6 个**（log / status-v2 / summary / stash / refs / remotes；
+分离 HEAD 时 7）。
 **P2 刷新编排**：`repo-changed` 事件携带变更分类，前端按分类决定刷什么、单飞合并、
 写操作后抑制自己触发的那一轮。写操作刷新轮数 **2 → 1**，纯工作区变更不再重拉 log。
 
-三者叠加后的目标形态：任何 git 操作期间窗口保持可交互；一轮刷新墙钟与手动跑同样 3~4 条
+三者叠加后的目标形态：任何 git 操作期间窗口保持可交互；一轮刷新墙钟与手动跑同样 6 条
 git 命令同量级。
 
 **交付批次**（分批的理由：让 P0 的收益最早可验收；机制若有问题可独立回滚；风险分批暴露。
@@ -116,11 +116,13 @@ git 命令同量级。
   但会抛出 `Unable to create '.../index.lock': File exists` 这类难懂错误。
 - 实现：`AppState` 增 `repo_write_lock: Arc<Mutex<()>>`；`offload_write` 在 **blocking 闭包内部**
   抢锁（闭包是同步代码，`std::sync::Mutex` 可正常使用，不跨 await），保证同仓库写操作串行。
-- 覆盖范围：所有会写 `.git` 的命令（约 25 个：stage / unstage / commit / amend / checkout /
-  switch / create / delete / rename / reset / merge / rebase / revert / cherry-pick / stash-* /
-  discard-* / tag / upstream / push / pull / fetch / abort / continue / resolve / write 等）。
-  读命令（get_log / get_status / refs / diff / compare / conflict_versions / read_worktree_file）
-  **不加锁**，保持真并发。
+- 覆盖范围：**38 个**会写 `.git` 或工作区的命令（stage / unstage / commit / fetch / pull / push* /
+  merge / abort / continue / revert / cherry-pick* / switch / stash_push|apply|drop / discard* /
+  create_branch / reset_branch / delete_branch / rename_branch / delete_remote_branch /
+  set_upstream / unset_upstream / create_tag / checkout_commit / amend_message / rebase /
+  write_worktree_file / resolve_take）。
+- **读 14 个不加锁**（`get_*` / `list_*` / `conflict_versions` / `read_worktree_file` /
+  `stash_list` / `stash_diff` / `branch_unmerged_count`），保持真并发；`open_repo` 特殊处理。
 - 前端 `writeBusy` 保留（即时反馈 + 拒绝重复触发），两者职责不同：前者是后端正确性，后者是交互反馈。
 
 **调用折叠（每条都已用真实 git 实测，见附录 B）**
@@ -160,10 +162,10 @@ git 命令同量级。
 - 前端 `refresh()` 改为**单飞 + 合并**：已有刷新在飞时只置 dirty 标记，落地后再补跑一轮，
   而不是并发起多轮。
 - 前端按分类分流：只有 refs / head 变才重拉 log；只有 index / worktree 变只重拉 status（+ stash）。
-- 写操作后 500ms 内抑制自己触发的 `repo-changed`，消除「runWrite 的 refresh + watcher 的 refresh」
-  双轮。
-- `get_branch_summary` 的调用点删除，summary 由 `status` 派生（`src/lib/types.ts` 的
-  `BranchSummary` 保留为派生视图，渲染层不动）。
+- 写操作后 **1200ms** 内抑制自己触发的 `repo-changed`（窗口必须 ≥ watcher 的 500ms 防抖 + 余量，
+  否则抑制不住那一轮，等于白做），消除「runWrite 的 refresh + watcher 的 refresh」双轮。
+- `get_branch_summary` **保留**（不删命令、不改契约）：它被 20+ 处前端与 Rust 测试直接消费，
+  为省 1 次 git 调用去动这个契约是收益/风险倒挂；工单 02 已把它从 3 次降到 1 次。
 
 **前置**
 
@@ -221,7 +223,7 @@ git 命令同量级。
 1. 打开 10 万提交夹具（先修脚本）并触发刷新 → 窗口可拖动、可切 tab、可滚动，
    **不出现 Windows「无响应」**。
 2. 刷新期间 `Get-Process git` 能观测到 **≥3 个 `git.exe` 并发存在**（证明主线程串行化已解除）。
-3. 一轮刷新的墙钟时间与在终端手动跑同样 3~4 条 git 命令**同量级**（判据：不出现「多出数倍」的差距，
+3. 一轮刷新的墙钟时间与在终端手动跑同样 6 条 git 命令**同量级**（判据：不出现「多出数倍」的差距，
    即刷新墙钟 ≤ 手动墙钟 + 一次进程启动开销，本机约 0.3 s）。
 4. 写操作触发的自动刷新 **≤ 1 轮**。
 5. 写操作并发（切分支中途点提交）→ **排队**，不出现 git lock 报错。
