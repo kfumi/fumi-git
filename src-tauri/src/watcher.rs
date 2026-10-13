@@ -91,7 +91,7 @@ pub fn start(app: &AppHandle, root: &Path) -> notify::Result<RecommendedWatcher>
     }));
     let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
         let Ok(event) = res else { return };
-        let Ok(mut p) = pending.lock() else { return };
+        let mut p = lock_pending(&pending);
         p.change.merge(classify(&watch_root, &event.paths));
         p.deadline = Some(Instant::now() + DEBOUNCE);
         if p.armed {
@@ -99,35 +99,56 @@ pub fn start(app: &AppHandle, root: &Path) -> notify::Result<RecommendedWatcher>
         }
         p.armed = true;
         drop(p);
-        spawn_flush(app.clone(), Arc::clone(&pending));
+        if spawn_flush(app.clone(), Arc::clone(&pending)).is_err() {
+            // 计时线程起不来（资源耗尽）：复位 armed，下个事件重新尝试，别让监听永久哑掉
+            lock_pending(&pending).armed = false;
+        }
     })?;
     watcher.watch(&git_dir, RecursiveMode::Recursive)?;
     watcher.watch(&worktree, RecursiveMode::NonRecursive)?;
     Ok(watcher)
 }
 
-/// 尾沿防抖：窗口内持续有新事件就不断延后，静默 DEBOUNCE 后一次性发出累积分类
-fn spawn_flush(app: AppHandle, pending: Arc<Mutex<Pending>>) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(DEBOUNCE);
-        let Ok(mut p) = pending.lock() else { return };
-        let Some(deadline) = p.deadline else {
+/// 取 pending 的锁。锁中毒（持锁者 panic 过）时照常取出内层数据 —— 与写锁同一约定：
+/// 一次 panic 不能让外部变更通知从此静默失效（那会让 `armed` 永远停在 true）。
+fn lock_pending(pending: &Mutex<Pending>) -> std::sync::MutexGuard<'_, Pending> {
+    pending.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 尾沿防抖：窗口内持续有新事件就不断延后，静默 DEBOUNCE 后一次性发出累积分类。
+///
+/// 睡眠按「距 deadline 的剩余时间」算（且不持锁睡），而不是每轮固定睡 DEBOUNCE：
+/// 窗口被推后时只补睡差额，emit 因此贴着 deadline 落地（最多晚调度抖动），
+/// 前端的抑制窗口才留得下余量 —— 固定睡 DEBOUNCE 会让 emit 最多晚一整个防抖周期。
+fn spawn_flush(app: AppHandle, pending: Arc<Mutex<Pending>>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("repo-watch-flush".to_string())
+        .spawn(move || loop {
+            let wait = {
+                let p = lock_pending(&pending);
+                p.deadline
+                    .map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()))
+            };
+            std::thread::sleep(wait);
+            let mut p = lock_pending(&pending);
+            let Some(deadline) = p.deadline else {
+                p.armed = false; // 没有待发窗口：交还计时线程
+                return;
+            };
+            if Instant::now() < deadline {
+                continue; // 窗口被推后：下一轮只补睡差额
+            }
+            let change = std::mem::take(&mut p.change);
+            p.deadline = None;
             p.armed = false;
+            drop(p);
+            // 只动了 objects / logs 之类的变更不改变任何可见数据面 → 不发事件
+            if !change.is_empty() {
+                let _ = app.emit("repo-changed", change);
+            }
             return;
-        };
-        if Instant::now() < deadline {
-            continue; // 窗口被推后，继续等（guard 在下一轮循环重新获取）
-        }
-        let change = std::mem::take(&mut p.change);
-        p.deadline = None;
-        p.armed = false;
-        drop(p);
-        // 只动了 objects / logs 之类的变更不改变任何可见数据面 → 不发事件
-        if !change.is_empty() {
-            let _ = app.emit("repo-changed", change);
-        }
-        return;
-    });
+        })
+        .map(|_| ())
 }
 
 #[cfg(test)]

@@ -420,6 +420,15 @@ export function validateBranchName(name: string): string | null {
 }
 
 /**
+ * 打「刚写完仓库」的时间戳：抑制窗口的起点是 git 操作刚落幕这一刻。
+ * 只给「自己接着会 refresh()」的写路径用 —— 不自己刷新、只靠 watcher 那轮更新的路径
+ * （stage / unstage）绝不能打，否则唯一的刷新会被抑制掉，面板停在上一次的状态。
+ */
+function markWrite(set: (partial: Partial<RepoState>) => void): void {
+  set({ lastWriteAt: Date.now() });
+}
+
+/**
  * 通用写操作包裹（US31）：writeBusy 期间拒绝新写操作；
  * busy 提示就地转场为 op 返回的文案（ok）或结构化错误（err），完成后刷新；
  * 返回是否成功——调用方据此决定要不要补后续提示，避免失败后仍发成功语义的 toast。
@@ -440,12 +449,12 @@ async function runWrite(
   try {
     const msg = await op();
     // 抑制窗口的起点是 git 操作刚落幕这一刻（不能放 finally：那会把起点推后一个刷新时长）
-    set({ lastWriteAt: Date.now() });
+    markWrite(set);
     get().updateToast(id, { kind: "ok", text: typeof msg === "string" && msg ? msg : okText });
     await get().refresh();
     return true;
   } catch (e) {
-    set({ lastWriteAt: Date.now() }); // 失败也可能写了 .git（冲突留下的 MERGE_HEAD 等）
+    markWrite(set); // 失败也可能写了 .git（冲突留下的 MERGE_HEAD 等）
     get().updateToast(id, { kind: "err", text: await errText(e) });
     return false;
   } finally {
@@ -664,6 +673,8 @@ export const useRepo = create<RepoState>((set, get) => ({
     if (!trimmed) return "分支名不能为空";
     try {
       await ipc.createBranch(trimmed, checkoutAfter, at);
+      // 非 runWrite 的写路径同样要打戳：紧接着的 refresh() 是这一轮的收尾
+      markWrite(set);
       get().pushToast(
         "ok",
         checkoutAfter ? `已创建并检出到 ${trimmed}` : `已创建分支 ${trimmed}`,
@@ -766,6 +777,8 @@ export const useRepo = create<RepoState>((set, get) => ({
             if (!newName || newName === branch) return false;
             try {
               await ipc.renameBranch(branch, newName);
+              // 非 runWrite 的写路径同样要打戳（同 createBranch）
+              markWrite(set);
               get().pushToast("ok", `已重命名分支：${branch} → ${newName}`);
               await get().refresh();
             } catch (e) {
@@ -904,6 +917,8 @@ export const useRepo = create<RepoState>((set, get) => ({
             const upstream = value.trim();
             try {
               await ipc.setUpstream(branch, upstream);
+              // 非 runWrite 的写路径同样要打戳
+              markWrite(set);
               get().pushToast("ok", `已把 ${branch} 的上游设为 ${upstream}`);
               await get().refresh();
             } catch (e) {
@@ -1460,6 +1475,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   commit: async (message) => {
     try {
       await ipc.commit(message);
+      // 非 runWrite 的写路径同样要打戳：watcher 的 refs 事件约 500ms 后到，别让它再触发第二轮
+      markWrite(set);
       get().pushToast("ok", "提交完成");
       // 分离 HEAD：提交不挂在任何分支上，提示把提交挂回分支（工单 06）
       if (!get().currentBranch()) {
@@ -1480,6 +1497,8 @@ export const useRepo = create<RepoState>((set, get) => ({
     );
     try {
       const msg = await (op === "fetch" ? ipc.fetch() : op === "pull" ? ipc.pull() : ipc.push());
+      // 非 runWrite 的写路径同样要打戳（fetch / pull / push 都可能改 refs）
+      markWrite(set);
       get().updateToast(id, { kind: "ok", text: msg });
       await get().refresh();
     } catch (e) {
@@ -1688,9 +1707,11 @@ export const useRepo = create<RepoState>((set, get) => ({
     const id = get().pushToast("busy", pop ? "恢复中（弹出）…" : "恢复中（保留副本）…");
     try {
       await ipc.stashApply(index, pop);
+      markWrite(set); // 同上：stash 恢复也会改 refs（stash 引用）
       get().updateToast(id, { kind: "ok", text: pop ? "已恢复并移除 stash 条目" : "已恢复，stash 条目保留" });
       await get().refresh();
     } catch (e) {
+      markWrite(set); // 失败也可能写了 .git（冲突状态），下面同样会 refresh
       const err = await asGitError(e);
       await get().refresh();
       const stillThere = get().stashes.some((s) => s.index === index);

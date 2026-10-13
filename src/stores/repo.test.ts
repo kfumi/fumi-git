@@ -2127,4 +2127,32 @@ describe("刷新编排：单飞合并 / 档位 / 分流 / 写后抑制（工单 
     await flush();
     expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(2); // 窗口过后照常刷新
   });
+
+  it("写后抑制覆盖非 runWrite 的写路径：commit 落幕后的 refs 事件不再触发第二轮", async () => {
+    seed();
+    asMock(ipc.commit).mockResolvedValue("abc123");
+    await useRepo.getState().commit("feat: 提交"); // 不走 runWrite，自带 1 轮全量刷新
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1);
+    expect(useRepo.getState().lastWriteAt).toBeGreaterThan(0); // 提交刚落幕就打戳了
+
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 抑制生效：没有第二轮
+
+    vi.setSystemTime(Date.now() + REPO_CHANGE_SUPPRESS_MS + 1); // 推过抑制窗口
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(2); // 窗口过后照常刷新
+  });
+
+  it("不自己刷新的写路径（stage）不打戳：watcher 那轮仍是它唯一的更新", async () => {
+    seed();
+    await useRepo.getState().stage(["a.txt"]); // stage 只 set(status)，从不 refresh
+    expect(useRepo.getState().lastWriteAt).toBe(0); // 打戳会把唯一的刷新抑制掉 → 必须为 0
+
+    asMock(ipc.getStatus).mockClear();
+    useRepo.getState().applyRepoChange({ index: true, refs: false, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getStatus)).toHaveBeenCalledTimes(1); // 轻档照常跑，面板不会停在旧状态
+  });
 });
