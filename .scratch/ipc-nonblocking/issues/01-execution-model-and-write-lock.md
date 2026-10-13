@@ -246,14 +246,63 @@ mod tests {
 
 **Status:** ready-for-agent
 
-- [ ] `cargo build` 通过；`cargo test -- --test-threads=1` 全绿（既有用例一行未改）
-- [ ] 新增 2 个用例通过，且**反向验证有效**：临时删掉 `run_write` 里的抢锁 → `write_lock_serializes_overlapping_writes` 变红
-- [ ] `#[tauri::command]` 数量仍为 57，其中 `async fn` = 53（4 个 config 命令保持同步），`with_active` 已消失
-- [ ] 命令名 / 参数名 / 返回类型与改造前逐一相同（前端零改动 + `pnpm build` 的 tsc 通过即为证）
-- [ ] 端到端：10 万提交夹具下触发刷新 → 窗口可拖动、可切 tab、可滚动，**不出现 Windows「无响应」**
-- [ ] 端到端：刷新期间 `Get-Process git` 观测到 **≥3 个 git.exe 并发存在**
-- [ ] 端到端：切分支进行中再点提交 → **排队**，无 git lock 报错
+- [x] `cargo build` 通过；`cargo test -- --test-threads=1` 全绿（既有用例一行未改）—— `cargo build` 0 warning；`test result: ok. 57 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 234.62s`；附带 `pnpm test` = 7 files / 164 passed（与基线 `5c5b669` 一致）
+- [x] 新增 2 个用例通过，且**反向验证有效**：临时删掉 `run_write` 里的抢锁 → `write_lock_serializes_overlapping_writes` 变红 —— RED/GREEN 原文见 Comments（RED = `写操作没有被串行化：151.0271ms`）
+- [x] `#[tauri::command]` 数量仍为 57，其中 `async fn` = 53（4 个 config 命令保持同步），`with_active` 已消失 —— 实测 **57 / 53 / 0**
+- [x] 命令名 / 参数名 / 返回类型与改造前逐一相同（前端零改动 + `pnpm build` 的 tsc 通过即为证）—— 57 个 `pub [async] fn` 的「名字 + 参数表 + 返回类型」与改造前逐条比对无差异；`pnpm build`（`tsc && vite build`）通过、1938 modules
+- [ ] 端到端：10 万提交夹具下触发刷新 → 窗口可拖动、可切 tab、可滚动，**不出现 Windows「无响应」**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+- [ ] 端到端：刷新期间 `Get-Process git` 观测到 **≥3 个 git.exe 并发存在**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+- [ ] 端到端：切分支进行中再点提交 → **排队**，无 git lock 报错。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 
 **Comments**
 
-（执行时回填：验收观测值、commit hash）
+**执行记录（PowerShell 7 + cargo 1.97.1 / node v22.20.0）**
+
+实现（`16c76f1`，只含 `src-tauri/src/commands.rs`（+265/−125）与 `src-tauri/src/lib.rs`（+1）两个文件；`git.rs` 一行未动，未引入 `gitdir`，无任何命令签名变更）：
+
+- `AppState` 增 `write_lock: Arc<std::sync::Mutex<()>>`，`lib.rs` 的 `.setup()` 里初始化 `std::sync::Arc::new(std::sync::Mutex::new(()))`。
+- 删除 `with_active`，换成 `active_repo` / `run_read` / `run_write` / `offload` / `offload_write` 五个助手：取激活仓库只在克隆 `GitRepo` 时持锁；读路径不抢写锁（读命令之间保持真并发）；写路径在**阻塞闭包内**抢写锁（守卫数据是 `()`，中毒用 `unwrap_or_else(|e| e.into_inner())` 恢复，不让写操作永久失败）；`spawn_blocking` 的 `JoinError` 映射为 `GitError::Io("git 任务执行失败：{e}")`。**没有任何锁跨越 `.await`**（`active_repo` 的守卫在 `?` 之前释放；`open_repo` 三处 `if let Ok(guard)` 都是块内无 await 的短临界区）。
+- 53 个 git-bound 命令改 `pub async fn`：读 14 条走 `offload`、写 38 条走 `offload_write`（参数 `move` 进闭包）；`abort_operation` / `continue_operation` 先把 `parse_operation` 这个纯字符串映射做掉再入池。
+- `open_repo` 单独处理：`GitRepo::open` + `git::repo_meta` 入阻塞池，回到 async 上下文依次改 `active` / 重绑 `repo_watcher` / `touch_recent` + `save_config`。
+- `commands.rs` 末尾新增 `#[cfg(test)] mod tests`（本票规定的 2 个用例逐字落地；`dummy_repo()` 按当前 `GitRepo { root }` 单字段构造）。
+
+命令计数（实测）：`#[tauri::command]` = **57**、`pub async fn` = **53**、`fn with_active` = **0**；未入池的 5 个 = 4 个不碰 git 的同步命令（`get_app_config` / `set_theme` / `remove_recent` / `open_file_in_editor`）+ `open_repo`（自带 `spawn_blocking`）。另用脚本按 `#[tauri::command]` 切块抽取每个命令体内实际调用的 helper 复核：读 14 / 写 38 两个集合与本票「分类」清单**逐条一致**。
+
+测试证据：
+
+- `cargo build`（`src-tauri/`）：`Finished dev profile [unoptimized + debuginfo] target(s) in 18.10s`，**0 warning**，退出码 0。
+- `cargo test -- --test-threads=1`（`src-tauri/`）：`test result: ok. 57 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 234.62s`（既有 55 条用例一行未改）。
+- `pnpm test`：`Test Files 7 passed (7)` / `Tests 164 passed (164)`，与基线 `5c5b669` 相同。
+- `pnpm build`：`$ tsc && vite build` → `✓ 1938 modules transformed` → `✓ built in 1.54s`，退出码 0（前端零改动仍过 tsc ⇒ IPC 契约未变）。
+- 签名等价（机械比对，作为上一条的正向证据）：从改造前后两个版本各抽取 57 个 `pub [async] fn` 的「函数名 + 参数表（空白与尾逗号归一）+ 返回类型」做 `Compare-Object` → **无差异**，即命令名 / 参数名 / 参数类型 / 返回类型逐条相同（唯一区别是 `async` 关键字）。
+- `git show --stat HEAD` = `2 files changed, 267 insertions(+), 126 deletions(-)`；`git diff --check HEAD~1 HEAD` 无输出（无空白/行尾问题）；工作区文件仍为 CRLF，与仓库其余文件一致，**无行尾重写**。
+
+**反向验证（裁决 R3；破坏态未提交）**
+
+把 `run_write` 里的 `let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());` 临时换成 `let _guard = lock;`（不抢锁），`cargo test --lib commands::` 输出：
+
+```
+test commands::tests::read_is_not_blocked_by_write_lock ... ok
+test commands::tests::write_lock_serializes_overlapping_writes ... FAILED
+
+---- commands::tests::write_lock_serializes_overlapping_writes stdout ----
+thread 'commands::tests::write_lock_serializes_overlapping_writes' (18172) panicked at src\commands.rs:573:9:
+写操作没有被串行化：151.0271ms
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.15s
+```
+
+（真并行 151ms < 290ms 阈值 ⇒ 用例确实测到「抢锁」这一行为。`read_is_not_blocked_by_write_lock` 在破坏态下仍绿是预期的：它只锁「读不被写锁阻塞」这一条不变量。）随即恢复原行并重跑：
+
+```
+test commands::tests::read_is_not_blocked_by_write_lock ... ok
+test commands::tests::write_lock_serializes_overlapping_writes ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.30s
+```
+
+恢复后文件逐字节回到破坏前状态，破坏态从未 `git add`，`16c76f1` 只含最终版本。
+
+**唯一披露的偏差**：本票代码段里的助手用到 `GitResult<T>`，但 `commands.rs` 原本只导入 `GitError`（`use crate::git::{self, BranchSummary, CommitDetail, GitError, GitRepo, LogPage, RepoMeta, RepoStatus}`）。首次 `cargo build` 因此报 2 处 `E0425: cannot find type GitResult`（都在 `F: FnOnce(&GitRepo) -> GitResult<T>` 约束上）；在导入列表补 `GitResult` 后即 0 warning 通过，其余实现与本票代码段逐字一致。
+
+既有事实（不在本票范围，无动作）：`cargo fmt --check` 显示仓库整体不是 rustfmt-clean（本文件相关 crate 内 `commands.rs` 4 处 Diff、`git.rs` 多处），仓库无 `rustfmt.toml`、无 fmt 门禁，故不做格式化波及以免越界改动。
+
+提交：`16c76f1`（`feat(ipc): git 命令改 async + spawn_blocking 并引入仓库写锁（工单 01）`），只含上述两个源文件；本工单文本随后以 `docs(tickets)` 提交收口。
