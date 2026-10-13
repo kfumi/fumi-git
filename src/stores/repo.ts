@@ -331,7 +331,7 @@ async function guardDirtyTree(
     proceedKind?: "primary" | "danger";
     stashLabel: string;
     stashMessage: string;
-    proceed: () => void | Promise<void>;
+    proceed: () => void | Promise<unknown>;
   },
 ): Promise<void> {
   if (opts.files.length === 0) {
@@ -383,7 +383,8 @@ export function validateBranchName(name: string): string | null {
 
 /**
  * 通用写操作包裹（US31）：writeBusy 期间拒绝新写操作；
- * busy 提示就地转场为 op 返回的文案（ok）或结构化错误（err），完成后刷新。
+ * busy 提示就地转场为 op 返回的文案（ok）或结构化错误（err），完成后刷新；
+ * 返回是否成功——调用方据此决定要不要补后续提示，避免失败后仍发成功语义的 toast。
  */
 async function runWrite(
   set: (partial: Partial<RepoState>) => void,
@@ -391,10 +392,10 @@ async function runWrite(
   busyText: string,
   okText: string,
   op: () => Promise<string | void>,
-): Promise<void> {
+): Promise<boolean> {
   if (get().writeBusy) {
     get().pushToast("err", "有操作正在进行中，请稍候");
-    return;
+    return false;
   }
   set({ writeBusy: true });
   const id = get().pushToast("busy", busyText);
@@ -402,8 +403,10 @@ async function runWrite(
     const msg = await op();
     get().updateToast(id, { kind: "ok", text: typeof msg === "string" && msg ? msg : okText });
     await get().refresh();
+    return true;
   } catch (e) {
     get().updateToast(id, { kind: "err", text: await errText(e) });
+    return false;
   } finally {
     set({ writeBusy: false });
   }
@@ -820,10 +823,19 @@ export const useRepo = create<RepoState>((set, get) => ({
       stashLabel: "stash 后检出",
       stashMessage: "检出前自动暂存",
       proceed: async () => {
-        await runWrite(set, get, `检出 ${short}…`, `已检出 ${short}（分离 HEAD）`, async () => {
-          await ipc.checkoutCommit(commitId);
-        });
-        get().pushToast("ok", "当前不在任何分支上：可用「从此处新建分支」把提交挂回分支");
+        const ok = await runWrite(
+          set,
+          get,
+          `检出 ${short}…`,
+          `已检出 ${short}（分离 HEAD）`,
+          async () => {
+            await ipc.checkoutCommit(commitId);
+          },
+        );
+        // 失败（脏树冲突 / 写忙）时 runWrite 已经报过错，这里不能再补一句成功语义的提示
+        if (ok) {
+          get().pushToast("ok", "当前不在任何分支上：可用「从此处新建分支」把提交挂回分支");
+        }
       },
     });
   },
@@ -859,6 +871,7 @@ export const useRepo = create<RepoState>((set, get) => ({
                 stashLabel: "stash 后变基",
                 stashMessage: "变基前自动暂存",
                 proceed: async () => {
+                  const headBefore = get().commits[0]?.id ?? null;
                   let done = false;
                   await runWrite(
                     set,
@@ -880,7 +893,11 @@ export const useRepo = create<RepoState>((set, get) => ({
                     );
                     return;
                   }
-                  if (done && upstream) {
+                  // 目标已是祖先时 git 直接 exit 0（HEAD 不变）：没有历史被重写，不该提示 force push
+                  const headAfter = get().commits[0]?.id ?? null;
+                  const rewritten =
+                    headBefore !== null && headAfter !== null && headBefore !== headAfter;
+                  if (done && upstream && rewritten) {
                     get().pushToast(
                       "ok",
                       "该分支已有上游：历史被重写，推送需要 force push（本应用暂不提供）",
@@ -897,11 +914,12 @@ export const useRepo = create<RepoState>((set, get) => ({
 
   skipOperationFlow: async () => {
     if (get().status?.operation !== "rebase") return;
-    await runWrite(set, get, "跳过本次提交…", "已跳过本次提交", async () => {
+    const ok = await runWrite(set, get, "跳过本次提交…", "已跳过本次提交", async () => {
       await ipc.continueOperation("rebase", "skip");
     });
     await get().refresh();
-    set({ conflictView: null });
+    // 失败时不要把冲突视图关掉：操作还在进行，用户得能接着处理
+    if (ok || get().status?.operation !== "rebase") set({ conflictView: null });
   },
 
   // ── 工单 08：与 HEAD 比较 ─────────────────────────────────────────────────
@@ -909,6 +927,8 @@ export const useRepo = create<RepoState>((set, get) => ({
   compareWithHead: async (commitId) => {
     set({
       mainTab: "history",
+      // 清掉 stash 查看：右栏优先级里 stash 高于比较模式，留着会把比较面板整个挡住（点了像没反应）
+      stashView: null,
       compare: { base: "HEAD", head: commitId, data: null, loading: true },
     });
     try {
@@ -937,7 +957,8 @@ export const useRepo = create<RepoState>((set, get) => ({
       let initial = "";
       try {
         const detail = await ipc.getCommitDetail(commitId);
-        initial = detail.body.trim() || detail.meta.subject;
+        const body = detail.body.trim();
+        initial = body ? `${detail.meta.subject}\n\n${body}` : detail.meta.subject;
       } catch (e) {
         get().pushToast("err", await errText(e));
         return;

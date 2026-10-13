@@ -1510,10 +1510,19 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(texts).toContain("提交未挂在任何分支上");
   });
 
-  it("07 rebaseOntoFlow：确认后变基，成功且已推送过时附 force push 说明", async () => {
+  it("07 rebaseOntoFlow：确认后变基，历史被改写且已有上游时附 force push 说明", async () => {
     withRepo();
-    logOk();
     status();
+    // 变基前 HEAD = oldhead；refresh 重取日志后 HEAD 变成 newhead（历史被改写）
+    useRepo.setState({ commits: [{ ...c("oldhead", "变基前 HEAD"), refs: ["HEAD", "main"] }] });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({
+      commits: [{ ...c("newhead", "变基后 HEAD"), refs: ["HEAD", "main"] }],
+      done: true,
+    });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+
     await useRepo.getState().rebaseOntoFlow("origin/main");
     const confirm = useRepo.getState().dialog!;
     expect(confirm.title).toContain("origin/main");
@@ -1522,6 +1531,41 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     await vi.waitFor(() =>
       expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).toContain("force push"),
     );
+  });
+
+  it("07 rebaseOntoFlow：目标已是祖先（HEAD 未变）时不误报 force push", async () => {
+    withRepo();
+    status();
+    useRepo.setState({ commits: [{ ...c("samehead", "HEAD"), refs: ["HEAD", "main"] }] });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({
+      commits: [{ ...c("samehead", "HEAD"), refs: ["HEAD", "main"] }],
+      done: true,
+    });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(lastToast().text).toContain("已把 main 变基到"));
+    // 流程尾部不追加新提示：最后一条仍是这次变基的 ok 结果
+    await new Promise((r) => setTimeout(r, 25));
+    expect(lastToast().text).toContain("已把 main 变基到");
+    expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).not.toContain("force push");
+  });
+
+  it("06 checkoutCommitFlow：检出失败时不补「不在任何分支上」的成功提示", async () => {
+    withRepo();
+    logOk();
+    status();
+    (ipc.checkoutCommit as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "工作区改动会与目标冲突",
+    });
+    await useRepo.getState().checkoutCommitFlow("abc1234def");
+    const texts = useRepo.getState().toasts.map((t) => t.text).join(" ");
+    expect(texts).toContain("工作区改动会与目标冲突");
+    expect(texts).not.toContain("当前不在任何分支上");
   });
 
   it("07 rebaseOntoFlow：冲突时按 operation=rebase 给「跳过本次提交」出口提示", async () => {
@@ -1629,6 +1673,21 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(lastToast().text).toContain("unknown revision");
   });
 
+
+  it("08 进入比较模式会收起 stash 查看（右栏优先级里 stash 高于比较，留着会挡住比较面板）", async () => {
+    withRepo();
+    useRepo.setState({ stashView: { index: 0, patch: "diff", loading: false } });
+    (ipc.getCompare as ReturnType<typeof vi.fn>).mockResolvedValue({
+      base: c("h1", "HEAD 提交"),
+      head: c("c2", "被比较的提交"),
+      files: [],
+      patch: null,
+    });
+    await useRepo.getState().compareWithHead("c2");
+    expect(useRepo.getState().stashView).toBeNull();
+    expect(useRepo.getState().mainTab).toBe("history");
+    expect(useRepo.getState().compare?.loading).toBe(false);
+  });
   it("08 比较模式退出：切换 tab / 选中提交 / 关闭右栏都退出", async () => {
     withRepo();
     const seed = { base: "HEAD", head: "c2", data: null, loading: false };
@@ -1680,7 +1739,7 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
     const d = useRepo.getState().dialog!;
     expect(d.title).toContain("h1");
-    expect(d.input!.initial).toBe("详细说明");
+    expect(d.input!.initial).toBe("HEAD 提交\n\n详细说明");
     expect(d.input!.multiline).toBe(true);
     expect(d.input!.validate!("   ")).toBe("提交信息不能为空");
     expect(d.message).toBe("只改写提交信息，不改动文件内容。");
@@ -1701,5 +1760,21 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     useRepo.getState().amendMessageFlow("h1");
     await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
     expect(useRepo.getState().dialog!.message).toContain("1 个已暂存文件");
+    // 只有 subject（无 body）时预填不残留空行
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: c("h1", "HEAD 提交"),
+      body: "",
+      files: [],
+      patch: null,
+    });
+    // 上一段 runWrite 的 refresh 已把 commits 刷空，这里补回 HEAD 行（amendMessageFlow 只认已加载的行）
+    useRepo.setState({
+      commits: [{ ...c("h1", "HEAD 提交"), refs: ["HEAD", "main"] }],
+      status: null,
+      dialog: null,
+    });
+    useRepo.getState().amendMessageFlow("h1");
+    await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
+    expect(useRepo.getState().dialog!.input!.initial).toBe("HEAD 提交");
   });
 });

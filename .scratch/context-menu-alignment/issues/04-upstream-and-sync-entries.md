@@ -20,3 +20,4 @@
 
 - 2026-10-11 完成（前端提交 995e553）。`REF_FORMAT` 增 `%(upstream:short)` → `RefEntry.upstream`（远程 ref 与标签恒 `null`）；`set_upstream` / `unset_upstream` 落地；本地分支菜单接入「设置上游分支… / 取消上游关联 / 推送 / 抓取」，推送目标恒为被右键的分支（无上游时走既有「建立上游关联并推送」对话框，作用对象同样是该分支而非当前分支）。
 - 验证：Rust `upstream_set_unset_and_list_refs_field`（含空参数拒绝）；store 侧 setUpstreamFlow（非法远程分支即时拦截 + 成功）、unsetUpstream、pushBranchFlow（有上游 → 上游远程同名分支；无上游 → push -u 对话框）、fetchForBranch（有上游只抓该远程 / 无上游全量）；`cargo test -- --test-threads=1` 52 passed / 1 ignored，`pnpm test` 134 passed。
+- 评审整改（单轮只读评审 e1cc525..075c3ee）：`upstream_set_unset_and_list_refs_field` 增补真实 git 断言——领先 1 个提交时 `ahead == 1`，`unset_upstream main` 后 `upstream == None` 且 `ahead/behind` 归零（此前「徽章归零」只有 mock 证据）。

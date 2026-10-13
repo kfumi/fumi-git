@@ -130,8 +130,8 @@ export const ipc = {
   rebase: (refName: string) => cmd<string>("rebase", { refName }),
   /** 两提交比较：base..head 的文件统计 + 统一 diff */
   getCompare: (base: string, head: string) => cmd<CompareResult>("get_compare", { base, head }),
-  /** 改写 HEAD 提交信息（--amend --only） */
-  amendMessage: (message: string) => cmd<string>("amend_message", { message }),
+  /** 改写 HEAD 提交信息（git commit --amend；已暂存的改动会一并并入） */
+  amendMessage: (message: string) => cmd<void>("amend_message", { message }),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

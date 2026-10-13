@@ -91,6 +91,7 @@ const commit = (over: Partial<CommitTarget> = {}): CommitTarget => ({
   branches: [],
   isHead: false,
   currentBranch: "main",
+  detached: false,
   ...over,
 });
 
@@ -330,5 +331,21 @@ describe("分离 HEAD 矩阵（ui-spec §4）", () => {
     }
     expect(itemOf(items, "检出").disabled).toBeFalsy();
     expect(itemOf(items, "删除远程分支…").disabled).toBeFalsy();
+  });
+
+  it("提交菜单：动态「合并 …」与「修改提交信息…」在分离 HEAD 下禁用并给提示", () => {
+    const items = commitMenu(
+      commit({ detached: true, branches: ["feat/a"], isHead: true }),
+      fullActions(),
+    );
+    expect(itemOf(items, "合并 feat/a 到当前分支…")).toMatchObject({
+      disabled: true,
+      hint: DETACHED_HINT,
+    });
+    expect(itemOf(items, "修改提交信息…")).toMatchObject({ disabled: true, hint: DETACHED_HINT });
+    // 检出 / 新建分支 / 复制类在分离态仍可用（ui-spec §4 矩阵的「可用」列）
+    expect(itemOf(items, "检出到 feat/a").disabled).toBeFalsy();
+    expect(itemOf(items, "从此处新建分支…").disabled).toBeFalsy();
+    expect(itemOf(items, "复制修订号").disabled).toBeFalsy();
   });
 });

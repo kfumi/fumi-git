@@ -2794,6 +2794,16 @@ mod tests {
         // 解除上游（upstream 是快照字段，须重新读取引用列表）
         unset_upstream(&r, "feature").unwrap();
         assert_eq!(up_of("feature"), "");
+
+        // 取消当前分支上游后，branch_summary 的 ahead/behind 必须归零（侧栏徽章依据）
+        commit_file(work.path(), "ahead.txt", "x", "ahead");
+        let s = get_branch_summary(&r).unwrap();
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (1, 0));
+        unset_upstream(&r, "main").unwrap();
+        let s = get_branch_summary(&r).unwrap();
+        assert_eq!(s.upstream, None);
+        assert_eq!((s.ahead, s.behind), (0, 0));
         let refs2 = list_refs(&r).unwrap();
         assert_eq!(
             refs2.iter().find(|e| e.name == "feature").unwrap().upstream,

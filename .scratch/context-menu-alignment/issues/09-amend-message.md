@@ -19,3 +19,4 @@
 
 - 2026-10-11 完成（前端提交 995e553）。后端 `amend_message`（`git commit --amend -m <message>`，不经编辑器，多行信息原样传入）；菜单项仅 HEAD 可用（非 HEAD 禁用 + hint「仅 HEAD」），store 侧对「不在已加载提交里」的 id 也一律拒绝（不靠菜单的单点把关）；对话框预填完整信息（`get_commit_detail` 的 body 优先、退回 subject），`multiline` 走 DialogHost 新增的 textarea（Enter 只换行、不触发主动作），暂存区非空时正文追加「暂存区有 N 个已暂存文件，将一并并入本次提交」。
 - 验证：Rust `amend_message_rewrites_head_and_folds_staged`（`git show --stat` 断言暂存改动并入）；store 侧非 HEAD 与未加载行拒绝、HEAD 预填（initial = body、multiline）、空信息被 `validate` 拦截、暂存警告文案、改写调用 `amendMessage`；`cargo test -- --test-threads=1` 52 passed / 1 ignored，`pnpm test` 134 passed。
+- 评审整改（Critical）：预填此前只取 `detail.body`，而 `CommitDetail.body` 来自 `git show -s --format=%b`——**不含 subject**，因此对「有 subject + body」的 HEAD 提交，保存后原 subject 会被正文首行顶掉（信息静默丢失）。现按 `subject + "\n\n" + body` 拼全量信息，测试里固化的旧断言（`initial === body`）已改成真值语义并覆盖「只有 subject」「subject+body」两种。另修：`ipc.amendMessage` 返回类型改 `void`（Rust 侧是 `Result<(),_>`），并改正「--amend --only」的错误注释（无 `--only`，暂存改动确实会并入）。

@@ -176,6 +176,7 @@ export function GraphList() {
         short: commit.short_id.slice(0, 7),
         branches: commit.refs.filter((r) => classifyRef(r, remotes) === "branch"),
         isHead: commit.refs.includes("HEAD"),
+        detached: detachedHead(summary) !== null,
         currentBranch: detachedHead(summary) ? null : (summary?.branch ?? null),
       },
     });

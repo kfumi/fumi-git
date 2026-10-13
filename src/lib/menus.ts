@@ -148,6 +148,8 @@ export interface CommitTarget {
   isHead: boolean;
   /** 当前分支名；分离 HEAD 为 null */
   currentBranch: string | null;
+  /** 分离 HEAD（无当前分支）：动态「合并 …」与「修改提交信息…」按 ui-spec §4 矩阵禁用 */
+  detached: boolean;
 }
 
 const SEPARATOR: MenuSeparator = { kind: "separator" };
@@ -331,6 +333,8 @@ export function commitMenu(t: CommitTarget, a: CommitMenuActions): MenuItem[] {
     if (!isCurrent) {
       refs.push({
         label: `合并 ${b} 到当前分支…`,
+        hint: t.detached ? DETACHED_HINT : undefined,
+        disabled: t.detached,
         onSelect: () => a.mergeBranch(b),
       });
     }
@@ -379,8 +383,8 @@ export function commitMenu(t: CommitTarget, a: CommitMenuActions): MenuItem[] {
   if (a.amendMessage) {
     rewrite.push({
       label: "修改提交信息…",
-      hint: t.isHead ? undefined : "仅 HEAD",
-      disabled: !t.isHead,
+      hint: t.detached ? DETACHED_HINT : t.isHead ? undefined : "仅 HEAD",
+      disabled: !t.isHead || t.detached,
       onSelect: () => a.amendMessage!(t.id),
     });
   }
