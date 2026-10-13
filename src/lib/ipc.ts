@@ -12,6 +12,7 @@ import type {
   LogFilter,
   LogPage,
   RefEntry,
+  RepoChange,
   RepoMeta,
   RepoStatus,
   StashEntry,
@@ -143,10 +144,10 @@ export const ipc = {
   amendMessage: (message: string) => cmd<void>("amend_message", { message }),
 };
 
-export function listenRepoChanged(cb: () => void): Promise<() => void> {
+export function listenRepoChanged(cb: (change: RepoChange) => void): Promise<() => void> {
   // 动态引入避免模块级依赖事件 API 的类型噪音
   return import("@tauri-apps/api/event").then(({ listen }) =>
-    listen("repo-changed", cb).then((un) => {
+    listen<RepoChange>("repo-changed", (e) => cb(e.payload)).then((un) => {
       return () => {
         un();
       };

@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_LOG_FILTER, filterCommits, useRepo } from "./repo";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EMPTY_LOG_FILTER, filterCommits, REPO_CHANGE_SUPPRESS_MS, useRepo } from "./repo";
 import { authorPattern } from "../lib/filterMenu";
 import type { CommitEntry, RepoStatus } from "../lib/types";
 
@@ -111,6 +111,12 @@ beforeEach(() => {
     toasts: [],
     dialog: null,
     conflictView: null,
+    // 刷新闸门与写后抑制窗口：上一个用例若留下在飞的刷新，这里必须复位
+    refreshBusy: false,
+    refreshDirty: false,
+    refreshHeavy: false,
+    refreshWaiters: [],
+    lastWriteAt: 0,
   });
 });
 
@@ -1987,5 +1993,138 @@ describe("图谱筛选：请求竞态与失败自愈", () => {
     expect(useRepo.getState().refs.map((r) => r.name)).toEqual(["other"]);
     // 日志失败时保留现有列表，而不是清空
     expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["a"]);
+  });
+});
+
+describe("刷新编排：单飞合并 / 档位 / 分流 / 写后抑制（工单 03）", () => {
+  const meta = { name: "demo", path: "D:/demo", branch: "main" };
+  type Seed = Partial<ReturnType<typeof useRepo.getState>>;
+  const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+  const clean = { staged: [], unstaged: [], unmerged: [], operation: null, branch: "main" };
+  /** 让在飞的刷新链（打桩 IPC 全是立即 resolve）落地 */
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  /** 手动 resolve 的 deferred：把某一轮的第一个请求挂住，模拟慢请求 */
+  const deferred = () => {
+    let fire: (v: unknown) => void = () => {};
+    const promise = new Promise((res) => {
+      fire = res;
+    });
+    return { promise, release: (v: unknown) => fire(v) };
+  };
+  /** 默认打桩：一轮全量刷新的 7 个请求都成功返回 */
+  const seed = (patch: Seed = {}) => {
+    useRepo.setState({ meta, commits: [c("a", "first")], logDone: true, ...patch });
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("a", "first")], done: true });
+    asMock(ipc.getStatus).mockResolvedValue(clean);
+    asMock(ipc.getBranchSummary).mockResolvedValue(null);
+    asMock(ipc.stashList).mockResolvedValue([]);
+    asMock(ipc.listRemotes).mockResolvedValue(["origin"]);
+    asMock(ipc.listRefs).mockResolvedValue([]);
+    asMock(ipc.getUserIdentity).mockResolvedValue({ name: null, email: null });
+  };
+
+  afterEach(() => {
+    vi.useRealTimers(); // 拆掉 setSystemTime 装的 Date 桩，别漏给后面的用例
+  });
+
+  it("单飞 + 合并：并发 3 次 refresh 只跑 2 轮，且都等到补跑那轮落地才 resolve", async () => {
+    seed();
+    const slow = deferred();
+    asMock(ipc.getLog).mockReturnValueOnce(slow.promise); // 第一轮挂住
+    asMock(ipc.getLog).mockResolvedValue({ commits: [c("fresh", "补跑结果")], done: true });
+
+    const calls = [
+      useRepo.getState().refresh(),
+      useRepo.getState().refresh(),
+      useRepo.getState().refresh(),
+    ];
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 后两次被闸门合并，没有各自发请求
+
+    const settled = [false, false, false];
+    const watched = calls.map((p, i) =>
+      p.then(() => {
+        settled[i] = true;
+      }),
+    );
+    await flush();
+    expect(settled).toEqual([false, false, false]); // 第一轮还没落地 → 谁都不许提前 resolve
+
+    slow.release({ commits: [c("stale", "旧一轮结果")], done: true });
+    await Promise.all(watched);
+
+    expect(settled).toEqual([true, true, true]);
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(2); // 1 轮 + 1 轮补跑，不多不少
+    expect(useRepo.getState().commits.map((x) => x.id)).toEqual(["fresh"]); // 补跑那轮是最终态
+    expect(useRepo.getState().refreshBusy).toBe(false);
+    expect(useRepo.getState().refreshWaiters).toEqual([]);
+  });
+
+  it("档位提升：轻档在飞时来全量请求 → 补跑那轮必须是全量（重拉 log）", async () => {
+    seed();
+    const slow = deferred();
+    asMock(ipc.getStatus).mockReturnValueOnce(slow.promise); // 轻档第一轮挂在 getStatus 上
+
+    const light = useRepo.getState().refreshLight();
+    await flush();
+    expect(asMock(ipc.getLog)).not.toHaveBeenCalled(); // 轻档本身不碰 log
+
+    const heavy = useRepo.getState().refresh(); // 在飞期间来全量请求
+    slow.release(clean);
+    await Promise.all([light, heavy]);
+
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 补跑那轮是全量，log 不会陈旧
+  });
+
+  it("分流：index / worktree 事件只重拉 status（零 log），refs 事件才重拉 log", async () => {
+    seed();
+
+    useRepo.getState().applyRepoChange({ index: true, refs: false, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).not.toHaveBeenCalled();
+    expect(asMock(ipc.getStatus)).toHaveBeenCalledTimes(1);
+    // 轻档不碰其余数据面
+    expect(asMock(ipc.getBranchSummary)).not.toHaveBeenCalled();
+    expect(asMock(ipc.listRefs)).not.toHaveBeenCalled();
+    expect(asMock(ipc.listRemotes)).not.toHaveBeenCalled();
+
+    useRepo.getState().applyRepoChange({ index: false, refs: false, head: false, worktree: true });
+    await flush();
+    expect(asMock(ipc.getLog)).not.toHaveBeenCalled(); // 工作区文件变同样不重拉 log
+    expect(asMock(ipc.getStatus)).toHaveBeenCalledTimes(2);
+
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // refs 变才重拉 log
+    expect(asMock(ipc.getStatus)).toHaveBeenCalledTimes(3); // 全量里也含 status
+  });
+
+  it("抑制窗口的起点是 git 操作落幕那一刻，不是刷新落地之后", async () => {
+    seed();
+    const slow = deferred();
+    asMock(ipc.getLog).mockReturnValueOnce(slow.promise); // 写操作自带的刷新挂住
+
+    const write = useRepo.getState().checkout("feat"); // 干净树 → 直接写 + 刷新
+    await flush();
+    expect(asMock(ipc.switchBranch)).toHaveBeenCalledWith("feat"); // git 操作已落幕
+    expect(useRepo.getState().refreshBusy).toBe(true); // 而刷新还在飞
+    expect(useRepo.getState().lastWriteAt).toBeGreaterThan(0); // 窗口已经开了
+
+    slow.release({ commits: [c("a", "first")], done: true });
+    await write;
+  });
+
+  it("写后抑制：写操作落幕后的 watcher 事件不触发额外一轮；窗口过期后才生效", async () => {
+    seed();
+    await useRepo.getState().checkout("feat"); // 写操作自带 1 轮全量刷新
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1);
+
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(1); // 抑制生效：没有第二轮
+
+    vi.setSystemTime(Date.now() + REPO_CHANGE_SUPPRESS_MS + 1); // 推过抑制窗口
+    useRepo.getState().applyRepoChange({ index: false, refs: true, head: false, worktree: false });
+    await flush();
+    expect(asMock(ipc.getLog)).toHaveBeenCalledTimes(2); // 窗口过后照常刷新
   });
 });

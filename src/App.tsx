@@ -32,7 +32,6 @@ function loadSidebarWidth(): number {
 export default function App() {
   const meta = useRepo((s) => s.meta);
   const hydrate = useRepo((s) => s.hydrate);
-  const refresh = useRepo((s) => s.refresh);
   const setThemeFromConfig = useTheme((s) => s.hydrate);
   // 右栏按需出现：改动 tab 选中了工作区文件，或历史 tab 选中了提交
   const mainTab = useRepo((s) => s.mainTab);
@@ -54,7 +53,7 @@ export default function App() {
       const cfg = useRepo.getState().config;
       if (cfg) setThemeFromConfig(cfg.theme);
     });
-    const un = listenRepoChanged(() => void refresh());
+    const un = listenRepoChanged((change) => void useRepo.getState().applyRepoChange(change));
     return () => {
       void un.then((f) => f());
     };

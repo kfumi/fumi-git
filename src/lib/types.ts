@@ -70,6 +70,14 @@ export interface RepoStatus {
   branch: string;
 }
 
+/** 后端 `repo-changed` 的载荷：变更分类（决定哪些数据面需要重拉） */
+export interface RepoChange {
+  index: boolean;
+  refs: boolean;
+  head: boolean;
+  worktree: boolean;
+}
+
 /** 冲突文件三方内容（index stages；文件不在某 stage 时为 null） */
 export interface ConflictVersions {
   base: string | null;

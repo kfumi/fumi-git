@@ -16,6 +16,7 @@ import type {
   LogFilter,
   LogPage,
   RefEntry,
+  RepoChange,
   RepoMeta,
   RepoStatus,
   StashEntry,
@@ -34,6 +35,9 @@ const PAGE = 200;
 
 /** 图谱筛选的默认值：所有分支 / 全部时间 / 全部提交者（须在 create 之前求值） */
 export const EMPTY_LOG_FILTER: LogFilter = { branch: null, since: null, author: null };
+
+/** 写操作后抑制 watcher 事件的窗口：必须 > watcher 的 500ms 防抖，否则抑制不住那一轮 */
+export const REPO_CHANGE_SUPPRESS_MS = 1200;
 
 export interface Toast {
   id: number;
@@ -118,6 +122,17 @@ interface RepoState {
   dialog: DialogDesc | null;
   /** 有写操作在飞：期间拒绝再发起其它写操作（US31 防重复触发） */
   writeBusy: boolean;
+  /**
+   * 刷新闸门状态（单飞 + 合并）：busy 期间来的请求只登记「补跑 + 档位」，
+   * 并等补跑那轮落地才 resolve（写操作后的等待语义不退化）。
+   */
+  refreshBusy: boolean;
+  refreshDirty: boolean;
+  /** 待补跑那轮的档位：全量请求会把它抬成 true，轻量请求绝不降级 */
+  refreshHeavy: boolean;
+  refreshWaiters: (() => void)[];
+  /** 最近一次写操作（git 调用）落幕的时间戳；窗口内忽略 watcher 事件 */
+  lastWriteAt: number;
   /** stash 条目列表（0 = 最新） */
   stashes: StashEntry[];
   /** 正在查看的 stash 条目及其 diff；null = 收起 */
@@ -143,6 +158,10 @@ interface RepoState {
   closeRepo: () => void;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
+  /** 轻量刷新：只重拉 status / stash（工作区或索引变的 watcher 事件走这条） */
+  refreshLight: () => Promise<void>;
+  /** watcher 事件入口：按变更分类分流，写操作刚结束时整轮抑制 */
+  applyRepoChange: (change: RepoChange) => void;
   select: (id: string | null) => Promise<void>;
   /** 打开（或激活）提交详情的一个文件 diff tab */
   openDetailFile: (path: string) => void;
@@ -420,10 +439,13 @@ async function runWrite(
   const id = get().pushToast("busy", busyText);
   try {
     const msg = await op();
+    // 抑制窗口的起点是 git 操作刚落幕这一刻（不能放 finally：那会把起点推后一个刷新时长）
+    set({ lastWriteAt: Date.now() });
     get().updateToast(id, { kind: "ok", text: typeof msg === "string" && msg ? msg : okText });
     await get().refresh();
     return true;
   } catch (e) {
+    set({ lastWriteAt: Date.now() }); // 失败也可能写了 .git（冲突留下的 MERGE_HEAD 等）
     get().updateToast(id, { kind: "err", text: await errText(e) });
     return false;
   } finally {
@@ -468,6 +490,117 @@ async function fetchLogFirstPage(
   }
 }
 
+/**
+ * 右栏视图修剪：刷新落地后，选中的工作区文件 / stash 条目 / 冲突文件若已消失则收起。
+ * 两档刷新共用（调用方都先 set 再调本函数，故这里一律读 state 里的最新一份）。
+ */
+function pruneViews(set: (partial: Partial<RepoState>) => void, get: () => RepoState): void {
+  const status = get().status;
+  const stashes = get().stashes;
+  // 工作区选中文件可能已被提交/外部变更移走：仍在对应列表则刷新 diff，否则收起
+  const wf = get().workFile;
+  if (wf) {
+    const inList = (list: { path: string }[]) => list.some((f) => f.path === wf);
+    const still = !!status && (get().workStaged ? inList(status.staged) : inList(status.unstaged));
+    if (still) void get().reloadWorkDiff(wf, get().workStaged);
+    else set({ workFile: null, workDiff: null, workDiffLoading: false });
+  }
+  // 查看中的 stash 条目已消失（被 pop/drop）→ 收起
+  const sv = get().stashView;
+  if (sv && !stashes.some((s) => s.index === sv.index)) set({ stashView: null });
+  // 查看中的冲突文件已被解决 → 收起
+  const cv = get().conflictView;
+  if (cv && !(status?.unmerged ?? []).some((f) => f.path === cv.path)) set({ conflictView: null });
+}
+
+/** 一轮全量刷新：日志首页 + status / summary / stash / remotes / refs / identity */
+async function doRefreshOnce(
+  set: (partial: Partial<RepoState>) => void,
+  get: () => RepoState,
+): Promise<void> {
+  const { meta } = get();
+  if (!meta) return;
+  try {
+    const token = ++logToken;
+    const [page, status, summary, stashes, remotes, refs, identity] = await Promise.all([
+      fetchLogFirstPage(set, get, Math.max(PAGE, get().commits.length || PAGE)),
+      ipc.getStatus().catch(() => null),
+      ipc.getBranchSummary().catch(() => null),
+      ipc.stashList().catch(() => []),
+      ipc.listRemotes().catch(() => [] as string[]),
+      ipc.listRefs().catch(() => [] as RefEntry[]),
+      ipc.getUserIdentity().catch(() => null),
+    ]);
+    set({
+      // 期间又有更新的日志请求 → 这份日志页作废，但其余数据面照常落地
+      ...(page && token === logToken ? logPagePatch(page, get().logFilter, get()) : {}),
+      status,
+      summary,
+      stashes,
+      remotes,
+      refs,
+      // 身份临时取不到时保留上一份：别把「只看我的」变成灰的
+      identity: identity ?? get().identity,
+      loadingMore: false,
+    });
+    pruneViews(set, get);
+  } catch (e) {
+    get().pushToast("err", await errText(e));
+  }
+}
+
+/** 一轮轻量刷新：只重拉 status / stash，不碰 log / refs / summary / remotes */
+async function doRefreshLightOnce(
+  set: (partial: Partial<RepoState>) => void,
+  get: () => RepoState,
+): Promise<void> {
+  if (!get().meta) return;
+  const [status, stashes] = await Promise.all([
+    ipc.getStatus().catch(() => null),
+    ipc.stashList().catch(() => null),
+  ]);
+  if (!get().meta) return; // 期间关仓库了
+  set({ status: status ?? get().status, stashes: stashes ?? get().stashes });
+  pruneViews(set, get);
+}
+
+/**
+ * 刷新闸门：单飞 + 合并。
+ * - 已有刷新在飞 → 只登记「待补跑」与请求档位，并等补跑那轮落地才 resolve（写操作后的等待语义不退化）
+ * - 补跑那轮跑**最重的那档请求**：期间来了全量请求，补跑就必须是全量，否则 log 会陈旧
+ */
+async function withRefreshGate(
+  set: (partial: Partial<RepoState>) => void,
+  get: () => RepoState,
+  heavy: boolean,
+  run: (heavy: boolean) => Promise<void>,
+): Promise<void> {
+  if (get().refreshBusy) {
+    await new Promise<void>((resolve) =>
+      set({
+        refreshDirty: true,
+        refreshHeavy: get().refreshHeavy || heavy,
+        refreshWaiters: [...get().refreshWaiters, resolve],
+      }),
+    );
+    return;
+  }
+  set({ refreshBusy: true, refreshDirty: false, refreshHeavy: false });
+  try {
+    do {
+      const useHeavy = get().refreshHeavy || heavy;
+      set({ refreshDirty: false, refreshHeavy: false });
+      await run(useHeavy);
+    } while (get().refreshDirty);
+  } finally {
+    set({ refreshBusy: false });
+    // 以下三行之间没有 await，新调用不可能插进来
+    const waiters = get().refreshWaiters;
+    set({ refreshWaiters: [] });
+    waiters.forEach((w) => w());
+  }
+}
+
 export const useRepo = create<RepoState>((set, get) => ({
   config: null,
   meta: null,
@@ -497,6 +630,12 @@ export const useRepo = create<RepoState>((set, get) => ({
   toasts: [],
   dialog: null,
   writeBusy: false,
+  /** 刷新闸门（单飞 + 合并）与写后抑制窗口 */
+  refreshBusy: false,
+  refreshDirty: false,
+  refreshHeavy: false,
+  refreshWaiters: [],
+  lastWriteAt: 0,
   stashes: [],
   stashView: null,
   conflictView: null,
@@ -1178,51 +1317,21 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  refresh: async () => {
-    const { meta } = get();
-    if (!meta) return;
-    try {
-      const token = ++logToken;
-      const [page, status, summary, stashes, remotes, refs, identity] = await Promise.all([
-        fetchLogFirstPage(set, get, Math.max(PAGE, get().commits.length || PAGE)),
-        ipc.getStatus().catch(() => null),
-        ipc.getBranchSummary().catch(() => null),
-        ipc.stashList().catch(() => []),
-        ipc.listRemotes().catch(() => [] as string[]),
-        ipc.listRefs().catch(() => [] as RefEntry[]),
-        ipc.getUserIdentity().catch(() => null),
-      ]);
-      set({
-        // 期间又有更新的日志请求 → 这份日志页作废，但其余数据面照常落地
-        ...(page && token === logToken ? logPagePatch(page, get().logFilter, get()) : {}),
-        status,
-        summary,
-        stashes,
-        remotes,
-        refs,
-        // 身份临时取不到时保留上一份：别把「只看我的」变成灰的
-        identity: identity ?? get().identity,
-        loadingMore: false,
-      });
-      // 工作区选中文件可能已被提交/外部变更移走：仍在对应列表则刷新 diff，否则收起
-      const wf = get().workFile;
-      if (wf) {
-        const inList = (list: { path: string }[]) => list.some((f) => f.path === wf);
-        const still =
-          !!status && (get().workStaged ? inList(status.staged) : inList(status.unstaged));
-        if (still) void get().reloadWorkDiff(wf, get().workStaged);
-        else set({ workFile: null, workDiff: null, workDiffLoading: false });
-      }
-      // 查看中的 stash 条目已消失（被 pop/drop）→ 收起
-      const sv = get().stashView;
-      if (sv && !stashes.some((s) => s.index === sv.index)) set({ stashView: null });
-      // 查看中的冲突文件已被解决 → 收起
-      const cv = get().conflictView;
-      if (cv && !(status?.unmerged ?? []).some((f) => f.path === cv.path))
-        set({ conflictView: null });
-    } catch (e) {
-      get().pushToast("err", await errText(e));
-    }
+  refresh: async () =>
+    withRefreshGate(set, get, true, (heavy) =>
+      heavy ? doRefreshOnce(set, get) : doRefreshLightOnce(set, get),
+    ),
+
+  refreshLight: async () =>
+    withRefreshGate(set, get, false, (heavy) =>
+      heavy ? doRefreshOnce(set, get) : doRefreshLightOnce(set, get),
+    ),
+
+  applyRepoChange: (change) => {
+    // 自己刚写完仓库：watcher 那一轮已被写操作自己的 refresh 覆盖
+    if (Date.now() - get().lastWriteAt < REPO_CHANGE_SUPPRESS_MS) return;
+    if (change.refs || change.head) void get().refresh();
+    else void get().refreshLight();
   },
 
   select: async (id) => {
