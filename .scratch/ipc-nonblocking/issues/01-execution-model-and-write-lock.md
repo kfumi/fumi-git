@@ -253,12 +253,13 @@ mod tests {
 - [ ] 端到端：10 万提交夹具下触发刷新 → 窗口可拖动、可切 tab、可滚动，**不出现 Windows「无响应」**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 - [ ] 端到端：刷新期间 `Get-Process git` 观测到 **≥3 个 git.exe 并发存在**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 - [ ] 端到端：切分支进行中再点提交 → **排队**，无 git lock 报错。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+- [ ] 读命令在慢写期间不被阻塞（行为覆盖：慢写进行中发一次读，应立即返回）。（控制器联合端到端验收时勾选 —— ledger 裁决 R2；条目由来与「inspection 级别保证」的定性见 Comments「评审 1 轮整改」）
 
 **Comments**
 
 **执行记录（PowerShell 7 + cargo 1.97.1 / node v22.20.0）**
 
-实现（`16c76f1`，只含 `src-tauri/src/commands.rs`（+265/−125）与 `src-tauri/src/lib.rs`（+1）两个文件；`git.rs` 一行未动，未引入 `gitdir`，无任何命令签名变更）：
+实现（`16c76f1`，只含 `src-tauri/src/commands.rs`（**+266/−126**）与 `src-tauri/src/lib.rs`（+1）两个文件；`git.rs` 一行未动，未引入 `gitdir`，无任何命令签名变更）：
 
 - `AppState` 增 `write_lock: Arc<std::sync::Mutex<()>>`，`lib.rs` 的 `.setup()` 里初始化 `std::sync::Arc::new(std::sync::Mutex::new(()))`。
 - 删除 `with_active`，换成 `active_repo` / `run_read` / `run_write` / `offload` / `offload_write` 五个助手：取激活仓库只在克隆 `GitRepo` 时持锁；读路径不抢写锁（读命令之间保持真并发）；写路径在**阻塞闭包内**抢写锁（守卫数据是 `()`，中毒用 `unwrap_or_else(|e| e.into_inner())` 恢复，不让写操作永久失败）；`spawn_blocking` 的 `JoinError` 映射为 `GitError::Io("git 任务执行失败：{e}")`。**没有任何锁跨越 `.await`**（`active_repo` 的守卫在 `?` 之前释放；`open_repo` 三处 `if let Ok(guard)` 都是块内无 await 的短临界区）。
@@ -275,7 +276,7 @@ mod tests {
 - `pnpm test`：`Test Files 7 passed (7)` / `Tests 164 passed (164)`，与基线 `5c5b669` 相同。
 - `pnpm build`：`$ tsc && vite build` → `✓ 1938 modules transformed` → `✓ built in 1.54s`，退出码 0（前端零改动仍过 tsc ⇒ IPC 契约未变）。
 - 签名等价（机械比对，作为上一条的正向证据）：从改造前后两个版本各抽取 57 个 `pub [async] fn` 的「函数名 + 参数表（空白与尾逗号归一）+ 返回类型」做 `Compare-Object` → **无差异**，即命令名 / 参数名 / 参数类型 / 返回类型逐条相同（唯一区别是 `async` 关键字）。
-- `git show --stat HEAD` = `2 files changed, 267 insertions(+), 126 deletions(-)`；`git diff --check HEAD~1 HEAD` 无输出（无空白/行尾问题）；工作区文件仍为 CRLF，与仓库其余文件一致，**无行尾重写**。
+- `git show --stat HEAD` = `2 files changed, 267 insertions(+), 126 deletions(-)`（= `commands.rs` 的 +266/−126 与 `lib.rs` 的 +1 之和）；`git diff --check HEAD~1 HEAD` 无输出（无空白/行尾问题）；工作区文件仍为 CRLF，与仓库其余文件一致，**无行尾重写**。
 
 **反向验证（裁决 R3；破坏态未提交）**
 
@@ -306,3 +307,37 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; fin
 既有事实（不在本票范围，无动作）：`cargo fmt --check` 显示仓库整体不是 rustfmt-clean（本文件相关 crate 内 `commands.rs` 4 处 Diff、`git.rs` 多处），仓库无 `rustfmt.toml`、无 fmt 门禁，故不做格式化波及以免越界改动。
 
 提交：`16c76f1`（`feat(ipc): git 命令改 async + spawn_blocking 并引入仓库写锁（工单 01）`），只含上述两个源文件；本工单文本随后以 `docs(tickets)` 提交收口。
+
+**评审 1 轮整改（1 Important + 1 记账 Minor）**
+
+评审结论：**Spec ✅ compliant / Task quality Approved**。评审独立确认了 57 个签名逐条 byte-identical、无 `MutexGuard` 跨 `.await`，并判定 `GitResult` 导入是正确取舍。以下是当时唯一未结项，已全部整改。
+
+1. **Important —— `commands.rs:581-593` 的 `read_is_not_blocked_by_write_lock` 不可能失败**（评审原话要点）：该用例在 :582 建了一个**局部** mutex、从未交给生产读路径，断言对象只是 `run_read(dummy_repo(), |_| Ok(42))`；于是「读路径不抢写锁」这条不变量若被破坏（例如把 `offload` 改成去抢 `state.write_lock`），整套测试仍会全绿 —— 唯一能变红的途径是签名变化（编译错误，不是行为断言）。我自己的 R3 破坏态里该用例确实仍绿，这正是征兆。**结论：finding 成立，不辩解、不归因于 plan-mandated。**
+
+   按控制器裁决的第一种补救（只动测试，生产路径一字未改）：
+
+   - 用例改名为 **`read_completes_while_write_lock_is_held`** —— 名字说它真正验证的东西；
+   - **让前提变成真的**：在 `rx.recv_timeout(...)` 返回之后、`drop(guard)` 之前加 `assert!(lock.try_lock().is_err(), "写锁在读命令返回前已被释放，本用例的前提不成立")`。原来的写法里没有任何东西校验守卫活过了那次读 —— 守卫若提前释放，`assert_eq!(got.unwrap(), 42)` 就是空转；
+   - 用例上方加 doc comment 写明**诚实范围**：这是文档级用例，**不能**否证「`offload` 去抢 `write_lock`」这类回归。
+   - **剩余保证的定性（明写）**：「`offload` 永不获取 `write_lock`」是 **inspection 级别**的保证 —— 全文件唯一的 `Arc::clone(&state.write_lock)` 出现在 `offload_write` 里；它的**行为覆盖**由控制器联合端到端验收负责，对应当前新增的那条验收条目「读命令在慢写期间不被阻塞（慢写进行中发一次读，应立即返回）」。不伪造 AppState 级测试，也不声称本用例证明了 `offload` 无锁。
+
+2. **Minor（记账笔误，已更正）**：本文 Comments 原写 `src-tauri/src/commands.rs（+265/−125）`，真实数字是 **+266/−126**（`16c76f1` 的 `2 files changed, 267 insertions(+), 126 deletions(-)` 含 `lib.rs` 的 +1）。上面「实现」那段与「`git show --stat HEAD`」那一条已按此更正。
+
+验证（本轮只改测试，按指示只跑覆盖用例与构建，未重跑全套）：
+
+```
+$ cargo test --lib commands:: -- --test-threads=1
+running 2 tests
+test commands::tests::read_completes_while_write_lock_is_held ... ok
+test commands::tests::write_lock_serializes_overlapping_writes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.30s
+$ cargo build
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.03s
+```
+
+（`cargo build` 0 warning；两条命令 `$LASTEXITCODE` 均为 0。）
+
+改动范围：`src-tauri/src/commands.rs` **仅测试模块**（`git diff 16c76f1 -- src-tauri/src/commands.rs` = `1 file changed, 13 insertions(+), 1 deletion(-)`，全部落在 `mod tests` 内）+ 本工单文件。**未动** `src-tauri/src/lib.rs`、`src-tauri/src/git.rs`，无任何生产代码路径改动。
+
+提交：本轮整改 = **`bbf417b`**（`test(ipc): 读锁用例改名 read_completes_while_write_lock_is_held 并断言真实前提（评审 1 轮）`，只含 `src-tauri/src/commands.rs`）；本工单文本随其后的 `docs(tickets)` 提交收口（工单要写下本轮的 commit hash，故拆成两个提交，两次都只 stage 了测试文件 / 工单文件，没有第三个文件入账）。
