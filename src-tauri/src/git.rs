@@ -3657,14 +3657,18 @@ mod tests {
             .collect()
     }
 
-    /// 七种形态同盘的夹具：普通修改 / 已暂存新增 / 已暂存删除 / 重命名 /
-    /// 未跟踪 / 冲突（unmerged）/ 忽略文件（未传 --ignored，两种格式都应看不到）。
+    /// 十种形态同盘的夹具：普通修改 / 已暂存新增 / 已暂存删除 / 重命名 /
+    /// 未跟踪 / 冲突（unmerged）/ 忽略文件（未传 --ignored，两种格式都应看不到）/
+    /// 含空格的路径 / 含空格的重命名 / 工作区未暂存重命名（`2 .R`）。
     fn status_shapes_fixture() -> TempDir {
         let t = repo();
         commit_file(t.path(), "a.txt", "base\n", "base"); // 冲突候选
         commit_file(t.path(), "mod.txt", "1\n", "mod base");
         commit_file(t.path(), "rm.txt", "gone\n", "rm base");
         commit_file(t.path(), "keep.txt", "k\n", "keep base");
+        commit_file(t.path(), "sp ace.txt", "sp\n", "space base");
+        commit_file(t.path(), "rn old name.txt", "rn\n", "rename base");
+        commit_file(t.path(), "uold.txt", "uo\n", "worktree rename base");
         commit_file(t.path(), ".gitignore", "ignored.txt\n", "ignore rules");
         // 冲突：两侧各改一处再 merge（真冲突，git merge 必然失败）
         git(t.path(), &["checkout", "-q", "-b", "feat"]);
@@ -3684,6 +3688,13 @@ mod tests {
         git(t.path(), &["add", "--", "added.txt"]);
         git(t.path(), &["rm", "-q", "--", "rm.txt"]);
         git(t.path(), &["mv", "keep.txt", "renamed.txt"]);
+        // 含空格的路径：暂存侧重命名（两侧路径都含空格）+ 工作区侧修改
+        git(t.path(), &["mv", "rn old name.txt", "rn new name.txt"]);
+        fs::write(t.path().join("sp ace.txt"), "sp2\n").unwrap();
+        // 工作区未暂存重命名（`2 .R`）：git 只在目标路径进入索引后才把工作区改名
+        // 识别成重命名（未 add 时是 ` D` + `??`，目标路径已跟踪时是 ` M` + ` D`）
+        fs::rename(t.path().join("uold.txt"), t.path().join("unew.txt")).unwrap();
+        git(t.path(), &["add", "-N", "unew.txt"]);
         // 普通修改 / 未跟踪 / 忽略
         fs::write(t.path().join("mod.txt"), "2\n").unwrap();
         fs::write(t.path().join("untracked.txt"), "u\n").unwrap();
@@ -3701,25 +3712,33 @@ mod tests {
         let (s1, u1, m1) = parse_status_v1_for_test(&raw_v1);
         let (s2, u2, m2, _heads) = parse_status_v2(&raw_v2);
 
-        // 七种形态真的都在夹具里，对照才不是空转
+        // 十种形态真的都在夹具里，对照才不是空转
         let has =
             |v: &[FileEntry], p: &str, st: char| v.iter().any(|e| e.path == p && e.status == st);
         assert!(has(&s1, "added.txt", 'A'), "{s1:?}");
         assert!(has(&s1, "rm.txt", 'D'), "{s1:?}");
         assert!(has(&s1, "renamed.txt", 'R'), "{s1:?}");
+        assert!(has(&s1, "rn new name.txt", 'R'), "含空格的重命名：{s1:?}");
         assert!(has(&u1, "mod.txt", 'M'), "{u1:?}");
         assert!(has(&u1, "untracked.txt", 'A'), "{u1:?}");
+        assert!(has(&u1, "sp ace.txt", 'M'), "含空格的路径：{u1:?}");
+        assert!(has(&u1, "unew.txt", 'R'), "工作区未暂存重命名（2 .R）：{u1:?}");
         assert!(has(&m1, "a.txt", 'U'), "{m1:?}");
         assert!(s1.iter().all(|e| e.path != "ignored.txt"), "{s1:?}");
         assert!(u1.iter().all(|e| e.path != "ignored.txt"), "{u1:?}");
-        assert_eq!(
-            s1.iter()
-                .find(|e| e.path == "renamed.txt")
-                .unwrap()
+        let old_of = |v: &[FileEntry], p: &str| {
+            v.iter()
+                .find(|e| e.path == p)
+                .unwrap_or_else(|| panic!("缺 {p}：{v:?}"))
                 .old_path
-                .as_deref(),
-            Some("keep.txt")
+                .clone()
+        };
+        assert_eq!(old_of(&s1, "renamed.txt").as_deref(), Some("keep.txt"));
+        assert_eq!(
+            old_of(&s1, "rn new name.txt").as_deref(),
+            Some("rn old name.txt")
         );
+        assert_eq!(old_of(&u1, "unew.txt").as_deref(), Some("uold.txt"));
 
         // v1 / v2 两套解析逐位相等（含组内顺序）
         assert_eq!(snapshot(&s1), snapshot(&s2), "staged 组不一致");
@@ -4083,21 +4102,27 @@ mod tests {
         );
     }
 
-    /// `--raw` 的 R/C 记录是 `R100\t<source>\t<destination>`（源在前、目标在后）。
+    /// `--raw` 的 R/C 记录是 `R100\t<source>\t<destination>`（源在前、目标在后），
+    /// 索引必须按**目标路径**建：同一 diff 多条 R 记录、以及链式（一条记录的源等于
+    /// 另一条记录的目标）都要挂对原路径 —— 源键索引在链式输入上会给出错的原路径。
     #[test]
     fn show_raw_rename_paths_are_source_then_destination() {
         let t = repo();
         commit_file(t.path(), "old.txt", "rename me\n", "base");
         commit_file(t.path(), "other.txt", "other\n", "base other");
+        commit_file(t.path(), "sp ace.txt", "space\n", "base space");
+        // 同一提交两条重命名（其中一条两侧路径都含空格）+ 一处修改
         git(t.path(), &["mv", "old.txt", "new.txt"]);
+        git(t.path(), &["mv", "sp ace.txt", "sp renamed.txt"]);
         fs::write(t.path().join("other.txt"), "changed\n").unwrap();
         git(t.path(), &["add", "--", "other.txt"]);
-        git(t.path(), &["commit", "-q", "-m", "rename + modify"]);
+        git(t.path(), &["commit", "-q", "-m", "two renames + modify"]);
         let head = git(t.path(), &["rev-parse", "HEAD"]).trim().to_string();
 
         // 先钉住 git 的输出方向：raw 段写 `<old>\t<new>`，patch 段写 rename from/to
         let raw = git(t.path(), &["show", "--format=", "--raw", "-M", &head]);
         assert!(raw.contains("R100\told.txt\tnew.txt"), "{raw}");
+        assert!(raw.contains("R100\tsp ace.txt\tsp renamed.txt"), "{raw}");
         let patch = git(t.path(), &["show", "--format=", "--patch", &head]);
         assert!(patch.contains("rename from old.txt"), "{patch}");
         assert!(patch.contains("rename to new.txt"), "{patch}");
@@ -4111,9 +4136,11 @@ mod tests {
                 .find(|f| f.path == p)
                 .unwrap_or_else(|| panic!("缺 {p}：{:?}", d.files))
         };
-        assert_eq!(d.files.len(), 2, "{:?}", d.files);
+        assert_eq!(d.files.len(), 3, "{:?}", d.files);
         assert_eq!(by("new.txt").status, 'R');
         assert_eq!(by("new.txt").old_path.as_deref(), Some("old.txt"));
+        assert_eq!(by("sp renamed.txt").status, 'R');
+        assert_eq!(by("sp renamed.txt").old_path.as_deref(), Some("sp ace.txt"));
         assert_eq!(by("other.txt").status, 'M');
         assert!(by("other.txt").old_path.is_none());
 
@@ -4136,6 +4163,34 @@ mod tests {
         assert_eq!(files[1].path, "other.txt");
         assert_eq!(files[1].status, 'M');
         assert!(patch.unwrap().starts_with("diff --git a/old.txt b/new.txt"));
+
+        // 链式 R 记录（一条记录的源 == 另一条记录的目标）：只有按目标路径建索引才对 ——
+        // `b.txt` 的原路径必须是 `a.txt`；若按源路径建索引，查 `b.txt` 会命中源为
+        // `b.txt` 的那条记录，把它的原路径写成 `c.txt`。
+        // 这种输入无法由单次真实 diff 产生（重命名的源必然不在目标树里，因而不可能
+        // 同时是另一条记录的目标），故按实测格式合成，专门钉死索引方向。
+        let chained = concat!(
+            ":100644 100644 6e91814 6e91814 R100\ta.txt\tb.txt\n",
+            ":100644 100644 6e91814 6e91814 R100\tb.txt\tc.txt\n",
+            "0\t0\ta.txt => b.txt\n",
+            "0\t0\tb.txt => c.txt\n",
+            "\n",
+            "diff --git a/a.txt b/b.txt\n",
+            "rename from a.txt\n",
+            "rename to b.txt\n",
+        );
+        let (chain_files, _) = parse_show_raw_numstat_patch(chained);
+        let chain_old = |p: &str| {
+            chain_files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap_or_else(|| panic!("缺 {p}：{chain_files:?}"))
+                .old_path
+                .clone()
+        };
+        assert_eq!(chain_files.len(), 2, "{chain_files:?}");
+        assert_eq!(chain_old("b.txt").as_deref(), Some("a.txt"));
+        assert_eq!(chain_old("c.txt").as_deref(), Some("b.txt"));
     }
 
 }
