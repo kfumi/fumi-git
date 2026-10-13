@@ -32,13 +32,27 @@
 
 **Status:** ready-for-agent
 
-- [ ] `bash scripts/gen-perf-repo.sh <临时目录> 1000` 退出码 0，且目标目录无 `fast_import_crash_*`
-- [ ] `git -C <临时目录> rev-list --count --all` = **1001**（800 主干 + 200 feat + 1 合并）
-- [ ] `git -C <临时目录> for-each-ref --format='%(refname)'` 含 `refs/heads/main` 与 `refs/heads/feat`
-- [ ] 默认参数（10 万提交）能生成完，耗时与仓库体积记入 Comments
-- [ ] 把脚本转成 CRLF 后重跑一次仍退出码 0（`unix2dos` 或将内容用 `[IO.File]::WriteAllText` 以 CRLF 写回）
-- [ ] `git diff --stat` 只有 1 行改动
+- [x] `bash scripts/gen-perf-repo.sh <临时目录> 1000` 退出码 0，且目标目录无 `fast_import_crash_*`
+- [x] `git -C <临时目录> rev-list --count --all` = **1001**（800 主干 + 200 feat + 1 合并）
+- [x] `git -C <临时目录> for-each-ref --format='%(refname)'` 含 `refs/heads/main` 与 `refs/heads/feat`
+- [x] 默认参数（10 万提交）能生成完，耗时与仓库体积记入 Comments
+- [x] 把脚本转成 CRLF 后重跑一次仍退出码 0（`unix2dos` 或将内容用 `[IO.File]::WriteAllText` 以 CRLF 写回）
+- [ ] `git diff --stat` 只有 1 行改动 —— **未达成：实际 2 行**（原因是第 2 处缺陷，见 Comments；两处均为一行改动，行尾与其余 74 行原样未动，无空白改动）
 
 **Comments**
 
-（执行时回填：生成耗时、体积、commit hash）
+**执行记录（PowerShell 7 + Git for Windows bash）**
+
+改动：`scripts/gen-perf-repo.sh` 两处各一行（未改 `emit_commit`，未引入 `printf` / `sed` / `awk`，未重写脚本，未动行尾）：
+
+1. 第 20 行 `echo "data 16"` → `echo "data 15"`：`content vN pad` 实际输出 15 字节（14 字符 + 换行），本票定位的那处。
+2. 第 47 行 `echo "from :$main_tip"` → `echo "from $main_tip"`：**第 2 处缺陷，被第 1 处掩盖**。`main_tip` 在 55 行赋值时就自带冒号（`main_tip=":$mark"`），此处再加一个 `:` 导致输出 `from ::341` → `fatal: No value after ':' in mark: from ::341`，`.git/fast_import_crash_*` 里该行被 `*` 标为出错行（`* from ::341`）。同块 66/67 行 `from $main_tip` / `merge $feat_tip` 才是既有约定，本次改法与之对齐，不改语义（feat 仍从 `:341` 起）。off-by-one 让流在第一个 blob（`fatal: Unsupported command: lob`）就断掉，根本走不到 `reset refs/heads/feat`，所以此前只看得见第 1 处。
+
+验证（`& "C:\Program Files\Git\bin\bash.exe" scripts/gen-perf-repo.sh <目标目录> [提交数]`）：
+
+- 工作区 CRLF 版本、1000 提交：退出码 **0**，目标目录无 `fast_import_crash_*`，`rev-list --count --all` = **1001**，`for-each-ref` = `refs/heads/feat` + `refs/heads/main`。
+- LF 版本、1000 提交：把提交版脚本落盘成 LF 临时文件（实测 0 个 CRLF、76 个 LF、2086 字节）后运行，退出码 **0**，同样 1001 / 两个 ref / 无 crash 文件。工作区文件本身已是 CRLF（76 个 CRLF 对），两种换行都实测通过，未做任何行尾转换。
+- 默认参数 10 万提交：退出码 **0**，`rev-list --count --all` = **100001**；墙钟 **25.8 s**；磁盘 **17.14 MiB**（25 个文件共 17,971,172 字节；`git count-objects -vH` → count 0 / in-pack 100007 / packs 1 / size-pack 17.11 MiB）。夹具保留在仓库外的 `C:\Users\kuangdi\.pi-desktop\scratch\3c411be3-c0cc-4488-95f2-1c7dbc9124f7\perf-repo-script`，供 01 / 03 的端到端验收复用，不入库。
+- `git diff --stat`：`1 file changed, 2 insertions(+), 2 deletions(-)`，即上面两行。
+
+提交：脚本修复 = `a231e55`（`fix(scripts): 修性能夹具脚本 fast-import data 长度 off-by-one（工单 00）`）；本工单文本随其后的 `docs(tickets)` 提交收口。
