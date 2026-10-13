@@ -301,16 +301,76 @@ async function doRefreshLightOnce(
 
 **Status:** ready-for-agent
 
-- [ ] `pnpm test` + `pnpm build`（含 tsc）全绿；既有用例语义不变
-- [ ] 上述四组新用例通过
-- [ ] 反向验证有效：删掉抑制判断 → 抑制用例变红；删掉档位提升 → 档位用例变红
-- [ ] `cargo test -- --test-threads=1` 全绿；新增 `classify` 纯函数用例（index / refs / packed-refs / HEAD / objects / 工作区路径各一条）
+- [x] `pnpm test` + `pnpm build`（含 tsc）全绿；既有用例语义不变
+      → `pnpm test`：**7 files / 169 passed**（基线 164 + 新增 5）；`pnpm build`：`tsc && vite build` 通过（exit 0，仅剩既有的 INEFFECTIVE_DYNAMIC_IMPORT 提示）。既有 164 条一行未改语义，`getBranchSummary` 的 stub 与 `summary` 断言**全部保留**（本票不删该调用）
+- [x] 上述四组新用例通过
+      → 新增 5 条，见 `src/stores/repo.test.ts` 末段 describe「刷新编排：单飞合并 / 档位 / 分流 / 写后抑制（工单 03）」：单飞+合并（并发 3 次 `refresh()` → `getLog` 恰好 2 次、3 个 promise 都在补跑落地后才 resolve）、档位提升（轻档在飞 + 全量请求 → 补跑那轮重拉 log）、分流（index / worktree 事件零 `getLog` + 1 次 `getStatus`；refs 事件 1 次 `getLog`）、写后抑制（窗口内零额外 `getLog`；`vi.setSystemTime` 推过窗口后生效）、抑制窗口起点（git 操作落幕即开窗：刷新还在飞时 `lastWriteAt > 0`）
+- [x] 反向验证有效：删掉抑制判断 → 抑制用例变红；删掉档位提升 → 档位用例变红
+      → 两组 RED 原文见 Comments；两次都只红对应用例（`1 failed | 168 passed`），恢复后文件 sha256 与破坏前一致，破坏态从未 `git add`
+- [x] `cargo test -- --test-threads=1` 全绿；新增 `classify` 纯函数用例（index / refs / packed-refs / HEAD / objects / 工作区路径各一条）
+      → `test result: ok. 74 passed; 0 failed; 1 ignored`（基线 66 + 新增 8）；`watcher::tests`：index / `refs/**` / packed-refs / HEAD / objects+logs+ORIG_HEAD+lock（另含 `.git` 目录自身与空输入）/ 工作区路径 / `merge` 并集
 - [ ] 端到端：在仓库根目录改一个文件（触发器）→ 只重拉 status，**不重拉 log**
       （观测：临时在 `doRefreshOnce` / `doRefreshLightOnce` 入口打一行 `console.debug`，走查完删除）
+      （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 - [ ] 端到端：做一次写操作（如暂存）→ 只发生 **1** 轮刷新（抑制生效）（观测方式同上）
+      （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 - [ ] 端到端：10 万提交夹具下 `Get-Process git` ≥3 并发且窗口不冻结（与 01 的验收合并走一次）
-- [ ] Comments 记下两个已知边界：linked worktree 无监听、工作区为 NonRecursive（只有根目录文件）
+      （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+- [x] Comments 记下两个已知边界：linked worktree 无监听、工作区为 NonRecursive（只有根目录文件）
 
 **Comments**
 
-（执行时回填：观测方式与观测值、commit hash）
+**执行记录**（PowerShell 7 / Node v22.20.0 / pnpm 12.3.4 / cargo 1.97.1 / git 2.35.1.windows.2）
+
+**代码提交**：`7b3ba8d`（`feat(refresh): repo-changed 携带变更分类 + 尾沿防抖 + 前端单飞合并与写后抑制（工单 03）`）——只含 `src-tauri/src/watcher.rs`、`src/lib/types.ts`、`src/lib/ipc.ts`、`src/stores/repo.ts`、`src/App.tsx`、`src/stores/repo.test.ts`；`commands.rs` / `git.rs` / `lib.rs` 与其它组件一行未动，命令签名、`GitError`、`get_branch_summary` 全部保留。本工单文本随后以 `docs(tickets)` 提交收口（工单要写下代码提交 hash，故拆两个提交）。完整报告（未入 git）：`.superpowers/sdd/ipc-nonblocking/task-03-report.md`。
+
+**实现要点**
+
+- `watcher.rs`：新增 `RepoChange { index, refs, head, worktree }`（`Serialize` + `merge` / `needs_log` / `is_empty`）与纯函数 `classify(root, paths)`；防抖从**前沿**改成**尾沿**（`Pending { change, deadline, armed }` + 单计时线程：窗口内每个新事件把 deadline 往后推，静默 500ms 后一次性 `emit("repo-changed", 累积分类)`）。累积变更 `is_empty()` 时**不发事件** —— 只动 objects / logs / lock 的变更不再触发任何刷新。
+- 前端接线：`listenRepoChanged(cb(change))` 带载荷（`listen<RepoChange>("repo-changed", e => cb(e.payload))`）；`App.tsx` 改为 `useRepo.getState().applyRepoChange(change)`（原来那个 `refresh` 选择器随之删除，否则 `noUnusedLocals` 编译不过）。
+- `repo.ts`：`refresh()` 原实现体原样搬进 `doRefreshOnce`；三段右栏修剪抽成 `pruneViews(set, get)`（两档共用，调用方先 `set` 再调，函数内读 state 里的最新一份）；新增 `doRefreshLightOnce`（只拉 status + stash）与统一闸门 `withRefreshGate`（单飞 + 合并 + 等补跑那轮落地才 resolve；补跑档位取「发起调用的档位 ∪ 在飞期间最重的请求」，**只升不降**）；新增 `refreshLight` / `applyRepoChange` 两个入口；`runWrite` 在 git 操作刚落幕时（`try` 里 `await op()` 之后、`catch` 首行）`set({ lastWriteAt: Date.now() })`，**不在 `finally`**（finally 在 refresh 之后，会把窗口起点推后一个刷新时长）。
+- `REPO_CHANGE_SUPPRESS_MS = 1200` 导出常量，注释写明必须 > watcher 的 500ms 防抖。
+
+**验证命令与结果**
+
+```
+$ pnpm test                                   # 7 files / 169 passed（基线 164 + 新增 5）
+$ pnpm build                                  # tsc && vite build 通过（exit 0）
+$ cd src-tauri && cargo test -- --test-threads=1
+test result: ok. 74 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 233.83s
+```
+
+**反向验证（RED → 恢复后 GREEN）**
+
+```
+# ① 删掉 applyRepoChange 里的抑制判断（`if (Date.now() - get().lastWriteAt < REPO_CHANGE_SUPPRESS_MS) return;`）
+$ pnpm test
+ ❯ src/stores/repo.test.ts (98 tests | 1 failed) 1348ms
+   × 写后抑制：写操作落幕后的 watcher 事件不触发额外一轮；窗口过期后才生效 8ms
+AssertionError: expected "vi.fn()" to be called 1 times, but got 2 times
+ Test Files  1 failed | 6 passed (7)      Tests  1 failed | 168 passed (169)
+
+# ② 删掉 withRefreshGate 的档位提升（`refreshHeavy: get().refreshHeavy || heavy` → `false`）
+$ pnpm test
+ ❯ src/stores/repo.test.ts (98 tests | 1 failed) 1367ms
+   × 档位提升：轻档在飞时来全量请求 → 补跑那轮必须是全量（重拉 log） 23ms
+AssertionError: expected "vi.fn()" to be called 1 times, but got 0 times
+ Test Files  1 failed | 6 passed (7)      Tests  1 failed | 168 passed (169)
+
+# 两次破坏态都用备份文件覆盖恢复（sha256 与破坏前逐字节一致），再跑：
+$ pnpm test
+ Test Files  7 passed (7)      Tests  169 passed (169)
+```
+
+**两个已知边界（本票不修，如实记录）**
+
+1. **linked worktree 下没有外部变更监听**：那里 `root/.git` 是**文件**（内容是 `gitdir: …`），`watcher.watch(root.join(".git"), Recursive)` 会失败，`commands.rs:130` 的 `.ok()` 把错误吞掉 → 该仓库的 `repo_watcher` 直接是 `None`（连工作区那条 watch 也拿不到，因为 `?` 之后的两行都没执行）。既有缺陷、非本票引入；本票的尾沿防抖 / 分类 / 抑制在 linked worktree 上等于「没有 watcher 事件可抑制」。
+2. **工作区监听是 `RecursiveMode::NonRecursive`**：只有仓库**根目录下的直接文件**变更会被看到，`src/**` 里的存盘不触发任何事件（git 自己的写操作仍由 `.git` 那条 Recursive 监听覆盖）。故「工作区变更不重拉 log」的收益目前只覆盖根目录文件；改成 Recursive 会显著放大事件量，属另一票的取舍。
+
+**改动范围**（`git show --numstat 7b3ba8d`）：`src-tauri/src/watcher.rs` +193/−16、`src/stores/repo.ts` +154/−45、`src/stores/repo.test.ts` +141/−2、`src/lib/types.ts` +8、`src/lib/ipc.ts` +3/−2、`src/App.tsx` +1/−2。**未动** `commands.rs` / `git.rs` / `lib.rs` / 其它组件。
+
+**如实披露的三处偏差**
+
+1. 工单代码段里 `watcher.rs` 的 `let root = root.to_path_buf();` 会被 `move` 闭包拿走，外层再 `watcher.watch(root, …)` 既借不到 `&Path`（`watch` 只收 `&Path`）也已是 moved value，**编译不过**。改成三份：`watch_root`（给闭包做 `classify`）、`git_dir`、`worktree`（两个 watch 各借一份），语义不变。
+2. `RepoChange::needs_log()` 在 Rust 侧没有调用点（emit 只判 `is_empty`，分流在前端做），为保住 `cargo build` 零 warning 加了 `#[allow(dead_code)]` 并注明「前端按同一语义分流」；Rust 用例仍直接断言它。
+3. `src/lib/types.ts` 全文用单引号，新接口按该文件风格写（`ipc.ts` / `repo.ts` / `App.tsx` 按工单片段用双引号）。
