@@ -17,7 +17,7 @@ git -C "$TARGET" config user.name "Fumi Perf"
   for i in 1 2 3; do
     echo "blob"
     echo "mark :$i"
-    echo "data 16"
+    echo "data 15"
     echo "content v$i pad"
   done
 
@@ -44,7 +44,7 @@ git -C "$TARGET" config user.name "Fumi Perf"
   for i in $(seq 1 "$COUNT"); do
     if [ "$i" -eq "$feat_start" ]; then
       echo "reset refs/heads/feat"
-      echo "from :$main_tip"
+      echo "from $main_tip"
       echo ""
     fi
     if [ "$i" -gt "$feat_start" ] && [ "$i" -le "$feat_end" ]; then
