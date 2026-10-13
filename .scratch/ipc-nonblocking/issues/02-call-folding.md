@@ -13,7 +13,7 @@
 | `get_branch_summary` | 3 | **1** |
 | `get_commit_detail` | 5 | **2** |
 | `get_compare` | 5 | **4** |
-| 一轮 `refresh()` 合计 | 14 | **6** |
+| 一轮 `refresh()` 合计 | 14 | **6**（分离 HEAD 时 **8**：`get_status` 与 `get_branch_summary` 是两次独立 IPC，各自的 `branch` 都要回退一次 `rev-parse --short HEAD` —— 短 sha 长度由 `core.abbrev` 决定，不能在本地截 oid，故各 +1） |
 
 ## 1) `GitRepo` 增 `gitdir`，`open()` 一次拿两个路径
 
@@ -371,8 +371,8 @@ pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> 
 
 - [x] `cargo test -- --test-threads=1` 全绿：既有用例语义不变 + 上述新增用例 —— `test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 437.34s`（57 既有 + 9 新增；既有用例一行未改；`cargo check --all-targets` 0 warning）
 - [x] v1/v2 对照用例通过；**反向验证有效**：把 v2 解析里 `y != '.'` 改成 `y != ' '` 即变红 —— 实测变红（RED 原文见 Comments），恢复后文件逐字节回到破坏前状态（tag hash 相同），破坏态从未 `git add`
-- [x] `get_status` ≤ 1 次 git 调用（分离 HEAD 时 2）、`get_branch_summary` ≤ 1、`get_commit_detail` = 2、`get_compare` = 4 —— 实测 **1 / 1 / 2 / 3 / 4**（`get_compare` 分别为「两端十六进制 id」= 3 与「base 为字面量 `HEAD`」= 4，后者才是右栏「与 HEAD 比较」的真实形态）；分离 HEAD 的 `get_status` = 2。逐条原始计数见 Comments
-- [x] 一轮 `refresh()` = **6** 个 git 进程（log / status-v2 / summary / stash / refs / remotes）—— 构成证明 + 实测：这 6 条命令各 1 次。**如实披露**：`refresh()` 还会调 `getUserIdentity()` → 2 次 `git config --get`，该 2 次在本票的 14 基线里同样未计入（既有行为、本次未改）；按「一次 refresh 的全部 git 进程」计是 **16 → 8**。详见 Comments
+- [x] `get_status` ≤ 1 次 git 调用（分离 HEAD 时 2）、`get_branch_summary` ≤ 1（分离 HEAD 时 2）、`get_commit_detail` = 2、`get_compare` = 4 —— 实测 **1 / 1 / 2 / 3 / 4**（`get_compare` 分别为「两端十六进制 id」= 3 与「base 为字面量 `HEAD`」= 4，后者才是右栏「与 HEAD 比较」的真实形态）；分离 HEAD 下 `get_status` 与 `get_branch_summary` 各 2 次（两条命令各自的 `branch` 都要回退一次 `rev-parse --short HEAD`，见 Comments）。逐条原始计数见 Comments
+- [x] 一轮 `refresh()` = **6** 个 git 进程（log / status-v2 / summary / stash / refs / remotes）—— 构成证明 + 实测：这 6 条命令各 1 次；**分离 HEAD 时 8**（`get_status` 与 `get_branch_summary` 各 +1，本表与 spec 已按控制器裁决更正）。**如实披露**：`refresh()` 还会调 `getUserIdentity()` → 2 次 `git config --get`，该 2 次在本票的 14 基线里同样未计入（既有行为、本次未改）；按「一次 refresh 的全部 git 进程」计是 **16 → 8**（分离 HEAD 时 18 → 10）。详见 Comments
 - [x] `parse_name_status` 与 statuses 覆盖逻辑已删除（`grep -c parse_name_status` = 0）—— `git show 48eb976:src-tauri/src/git.rs` 上计数 = 0（测试里的等价对照基线改名 `name_status_v1_for_test`，不含该串；`statuses` 覆盖逻辑随 `get_commit_detail` 重写消失）
 - [ ] 端到端：刷新墙钟与手动跑同样 6 条 git 命令同量级。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
 
@@ -418,11 +418,11 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 66 filtered out;
 
 （`y != ' '` 会把 `Y='.'` 的「未改动」条目灌进 unstaged；恢复 `y != '.'` 后同命令 `test result: ok. 1 passed`。之所以能测到：夹具里 `added.txt / renamed.txt / rm.txt` 都是「暂存侧有改动、工作区侧未改动」，正是这一位。）
 
-**新增用例 9 条**（全部真实 git 夹具，不 mock）：v1/v2 逐位对照（七形态同盘：普通修改 / 已暂存新增 / 已暂存删除 / `git mv` 重命名 / 未跟踪 / 真实合并冲突 unmerged / 忽略文件）；`branch` 三态（常规 / 分离 HEAD 与 `rev-parse --short HEAD` 对齐 / 空仓库）；上游与 `# branch.ab` 同 `rev-list --left-right --count` 双面对账（2/1 分叉）；`read_operation` 五态各自命中 + 都不存在为 `None` + 变基优先；gitdir 三入口（根 / 子目录 / `git worktree add` 的 linked worktree，`.git` 为文件）并断言五个名字上 `<gitdir>/<name>` 与 `rev-parse --git-path` 解析结果逐条相等；linked worktree 真实合并冲突（`MERGE_HEAD` 落在 per-worktree gitdir，主仓库 `.git` 看不到）；`parse_detail_head` 有/无/多行 body + 根提交仍给 patch；`--raw --numstat --patch` 解析（状态字母、增删计数、二进制 `-	-`、`R100` 重命名、patch 段切分，hunk 正文里以 `:` 开头的行不被吞）并与改造前 `name-status + numstat + show --patch` 三条命令的产出**逐字段 / 逐行等价**；`--raw` 重命名方向（源在前目标在后，并用同一 diff 的 patch 段 `rename from/to` 互证）。
+**新增用例 9 条**（全部真实 git 夹具，不 mock）：v1/v2 逐位对照（**十形态**同盘：普通修改 / 已暂存新增 / 已暂存删除 / `git mv` 重命名 / 未跟踪 / 真实合并冲突 unmerged / 忽略文件 / 含空格的路径 `sp ace.txt` / 两侧都含空格的重命名 `rn old name.txt` → `rn new name.txt` / 工作区未暂存重命名 `2 .R`）；`branch` 三态（常规 / 分离 HEAD 与 `rev-parse --short HEAD` 对齐 / 空仓库）；上游与 `# branch.ab` 同 `rev-list --left-right --count` 双面对账（2/1 分叉）；`read_operation` 五态各自命中 + 都不存在为 `None` + 变基优先；gitdir 三入口（根 / 子目录 / `git worktree add` 的 linked worktree，`.git` 为文件）并断言五个名字上 `<gitdir>/<name>` 与 `rev-parse --git-path` 解析结果逐条相等；linked worktree 真实合并冲突（`MERGE_HEAD` 落在 per-worktree gitdir，主仓库 `.git` 看不到）；`parse_detail_head` 有/无/多行 body + 根提交仍给 patch；`--raw --numstat --patch` 解析（状态字母、增删计数、二进制 `-\t-`、`R100` 重命名、patch 段切分，hunk 正文里以 `:` 开头的行不被吞）并与改造前 `name-status + numstat + show --patch` 三条命令的产出**逐字段 / 逐行等价**；`--raw` 重命名方向（真实同一提交两条重命名（含空格路径）+ patch 段 `rename from/to` 互证 + **链式合成输入**钉死索引方向）。
 
 **两处自觉偏差（如实披露）**
 
-1. `parse_show_raw_numstat_patch` 的 `--raw` 重命名段序：工单代码段把第一段当**新**路径（`new_path = seg.next()`），但工单自己的注释写的是 `R100\t<old>\t<new>`，实测 git 2.35.1 也是**源在前、目标在后**（同一 diff 的 patch 段写着 `rename from old.txt / rename to new.txt`，numstat 是 `0\t0\told.txt => new.txt`）。我按实测方向实现（第一段 = 原路径、第二段 = 新路径），让「`--raw` 是权威：status 字母 + 重命名的原路径」这个既定意图真正成立。**可观测性实验**：临时改回工单原样段序后 `show_raw*` / `status*` 用例全绿 —— 两者在真实 git 输出下行为等价（重命名的源路径不可能同时是同一 diff 里另一条记录的路径），故该偏差不影响任何验收条目，只是让代码与其注释、与 git 实际格式自洽。
+1. `parse_show_raw_numstat_patch` 的 `--raw` 重命名段序：工单代码段把第一段当**新**路径（`new_path = seg.next()`），但工单自己的注释写的是 `R100\t<old>\t<new>`，实测 git 2.35.1 也是**源在前、目标在后**（同一 diff 的 patch 段写着 `rename from old.txt / rename to new.txt`，numstat 是 `0\t0\told.txt => new.txt`）。我按实测方向实现（第一段 = 原路径、第二段 = 新路径），让「`--raw` 是权威：status 字母 + 重命名的原路径」这个既定意图真正成立。**评审 1 轮更正**：原先我写的「两种段序在真实 git 输出下行为等价」过强 —— 两种段序在**链式输入**（一条记录的源 == 另一条记录的目标，如 `R100 a.txt b.txt` + `R100 b.txt c.txt`）上结果不同：源键索引查 `b.txt` 会命中源为 `b.txt` 的那条记录，把它的原路径写成 `c.txt`（错的原路径会直接显示在提交详情里）。已加链式合成用例，改回源键段序即变红（RED 原文见「评审 1 轮整改」）。单次真实 diff 产生不了链式形态（重命名的源必然不在目标树里，因而不可能同时是另一条记录的目标；评审给的真实夹具 `git mv a tmp; git mv b c; git mv tmp b` 实测输出 `D a.txt / M b.txt / A c.txt`，无 R 记录），所以该偏差不影响任何验收条目 —— 但「等价」不再作为论据：代码按实测格式实现，并有能变红的用例守着。
 2. `get_commit_detail` 的 `patch` 形状保持：非合并提交即使无文件变更也与旧实现同形（`Some("")`），只有合并提交是 `None` —— 前端 `src/components/DiffView.tsx:93` 用 `patch === null` 渲染「合并提交 — 无直接文件变更」，若让空提交也返回 `None` 会显示错文案。这 3 行守卫超出工单代码段，为守住既有前端契约。
 
 **其余既有事实（不在本票范围、无动作）**：`parse_numstat` 对 `dir/{old => new}/f.txt` 这类**部分重命名**的 numstat 形态解析仍不精确（改造前同样如此，本票未引入也未修复）；v2 解析不再对路径做 `trim()`（v1 会 trim），即首尾含空格的路径现在按 git 原样返回，属修正而非回归。另：本机 `cargo check/test` 需要 `rc.exe` 在 PATH（tauri-winres 构建脚本），本次运行显式前置了 Windows SDK 的 x64 目录，与代码无关。
@@ -436,3 +436,39 @@ test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; fin
 $ pnpm test    # 7 files / 164 passed（前端零改动，与基线一致）
 $ pnpm build   # tsc + vite build 通过
 ```
+
+**评审 1 轮整改**（4 项：2 Important + 2 Minor；**只动测试与文档，生产代码一行未改**；测试提交 `e4f4091`）
+
+评审结论：**Task quality: Approved，无 Critical**；两条披露的偏差被独立确认为代码正确（`--raw` 源在前目标在后；`Some("")` 守卫与被删掉的 `if parents > 1 { None } else { Some(..) }` 完全一致）。以下是本轮整改。
+
+1. **Important —— 段序「行为等价」的说法过强、且原用例测不到该回归**：新增**链式**合成用例（`R100 a.txt b.txt` + `R100 b.txt c.txt`，见 `show_raw_rename_paths_are_source_then_destination` 末段），并把说法更正为「两种段序在链式输入上结果不同；单次真实 diff 产生不了链式形态（源必然不在目标树里）」。**反向验证（本轮新做）**：把索引临时改回源键段序，同用例变红 ——
+
+```
+$ cargo test --quiet -- --test-threads=1 show_raw_rename_paths_are_source_then_destination   # 索引临时改成源键
+running 1 test
+git::tests::show_raw_rename_paths_are_source_then_destination --- FAILED
+thread 'git::tests::show_raw_rename_paths_are_source_then_destination' (39968) panicked at src\git.rs:4191:9:
+assertion `left == right` failed
+  left: Some("c.txt")
+ right: Some("a.txt")
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 66 filtered out; finished in 7.71s
+```
+
+同一破坏态下，真实两重重命名、单条重命名、v1/v2 对照用例**仍全绿** —— 正是评审指出的「原用例测不到该回归」。恢复后文件逐字节回到破坏前状态（Edit tag 相同），破坏态从未 `git add`。
+
+2. **Important（plan-mandated）—— 分离 HEAD 的目标数字改为 8**：按控制器裁决代码不变，**文档目标更正**。`get_status` 与 `get_branch_summary` 是两次独立 IPC，各自的 `branch` 都要回退一次 `rev-parse --short HEAD`（短 sha 长度由 `core.abbrev` 决定，不能在本地截 oid），故分离 HEAD 下各 +1：**6 → 8**（`get_status(detached) = 2` 是实测；`get_branch_summary` 走 `branch_from_heads` 的同一条回退分支，同一函数同一路径，故为 2）。已同步更正本工单的调用次数对照表、`spec.md` 的 Solution 行（原文「分离 HEAD 时 7」）与报告表格。
+
+3. **Minor —— 夹具缺「路径含空格」「工作区未暂存重命名」覆盖**：`status_shapes_fixture` 扩到十形态，新增 `sp ace.txt`（工作区修改，路径含空格 —— 专测按字段宽度切 path 这条新机制）、`rn old name.txt` → `git mv` → `rn new name.txt`（两侧路径都含空格的暂存重命名）、`uold.txt` → 工作区改名 + `git add -N unew.txt` → `2 .R`（工作区未暂存重命名）。`2 .R` 的构造有讲究并已实测两种反例：只做工作区改名不 `add` 时 git 报 ` D` + `??`，目标路径已被跟踪时 git 报 ` M` + ` D` —— 只有目标路径进入索引（`git add -N`）后才被识别为 `2 .R`。
+
+4. **Minor —— `read_operation` 的判定谓词变更未披露，现补披露**：旧实现用 `rev-parse --verify --quiet <name>`（ref 查询），新实现用文件存在性，因此：(a) 名叫 `MERGE_HEAD` / `CHERRY_PICK_HEAD` / `REVERT_HEAD` 的分支或标签过去会被报成对应操作、现在报 `None`；(b) 空文件或垃圾内容的 `MERGE_HEAD` 过去报 `None`、现在报 `Merge`；(c) `rebase-merge` / `rebase-apply` 由 `exists()` 改为 `is_dir()`。三条都不可达于正常使用（git 自己不会造出这些形态），新行为更贴近「中间态由 git 写的那几个文件/目录决定」，故保留实现；此前只声明了路径解析等价，谓词层面的差异现予披露。
+
+本轮验证（只改测试与文档）：
+
+```
+$ cd src-tauri && cargo check --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.55s      # 0 warning
+$ cargo test -- --test-threads=1
+test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 297.33s
+```
+
+改动范围：`src-tauri/src/git.rs` **仅测试段**（`git diff` 的 hunk 全部落在 `mod tests`，生产代码零改动）+ 本工单 + `spec.md`。完整报告：`.superpowers/sdd/ipc-nonblocking/task-02-report.md`（本轮整改段）。

@@ -56,7 +56,8 @@ Status: ready-for-agent
 **P1 调用折叠**：`status --porcelain=v2 --branch -z` 一次拿全状态 + 分支 + 上游 + 领先/落后；
 `GitRepo` 缓存 gitdir 让 `read_operation` 归零；`show` / `diff` 的输出格式合一。
 一轮 `refresh()` 从 **14 个进程降到 6 个**（log / status-v2 / summary / stash / refs / remotes；
-分离 HEAD 时 7）。
+分离 HEAD 时 **8**：`get_status` 与 `get_branch_summary` 是两次独立 IPC，各自的 `branch` 都要回退一次
+`rev-parse --short HEAD`（短 sha 长度由 `core.abbrev` 决定，不能在本地截 oid），故各 +1）。
 **P2 刷新编排**：`repo-changed` 事件携带变更分类，前端按分类决定刷什么、单飞合并、
 写操作后抑制自己触发的那一轮。写操作刷新轮数 **2 → 1**，纯工作区变更不再重拉 log。
 
