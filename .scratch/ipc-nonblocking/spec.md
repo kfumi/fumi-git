@@ -217,7 +217,7 @@ git 命令同量级。
 
 - `refresh()` 单飞 + 合并：在飞期间连续触发 N 次只产生「1 轮 + 1 轮补跑」。
 - 分类分流：只带 `index`/`worktree` 的事件不触发 `get_log`；带 `refs`/`head` 的触发全量。
-- 写操作后 500ms 抑制窗口内到达的 `repo-changed` 被忽略。
+- 写操作后 **1200 ms** 抑制窗口内到达的 `repo-changed` 被忽略（本行原文写「500ms」，是早期前沿防抖口径的残留：机制段定为 **1200ms**，且必须大于 watcher 自身的 500ms 尾沿防抖，代码即 `REPO_CHANGE_SUPPRESS_MS = 1200`）。
 - 既有消费点（`currentBranch()` / `pushUpstreamFlow` 等）行为不变；`get_branch_summary` **保留**
   （Implementation Decisions 已撤回「删命令 + summary 派生」的方案，本行原文是它的残留）。
 
