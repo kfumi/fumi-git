@@ -365,7 +365,7 @@ $ cargo build
 已知边界 / 未覆盖项：
 
 - 原生窗口拖动、真实鼠标 / 键盘路径未实测（会话锁定；键盘路径只做了 DOM 侧可聚焦序确认）。
-- **22:27 那一轮的 `GIT_TRACE_PERFORMANCE` 输出不在证据集里**（`e2e\` 只有 `perf-01-open.log` / `perf-02-light.log` / `perf-04-pagination.log` 与 22:29 的 `git-perf.log`）⇒ 证据汇总里的「`git switch feat` perf **3.3376 s**（收于 22:27:35.200）」与「8 条读命令全部在 ~32.833 结束」这两处精确数字**无法用原始文件复核**；本工单的勾选依据是 trace 首行时间戳 + `sample.log` 进程计数（结论不变：读在写仍在飞时返回、提交晚于 switch 起点 3.66 s）。
+- **22:27 那一轮的 `GIT_TRACE_PERFORMANCE` 输出不在证据集里**（`e2e\\` 只有 `perf-01-open.log` / `perf-02-light.log` / `perf-04-pagination.log` 与 22:29 的 `git-perf.log`）⇒ 证据汇总里的「`git switch feat` perf **3.3376 s**（收于 22:27:35.200）」与「长杆 `log`（`--max-count=69327`，0.859 s）收于 **22:27:33.478**」这两处精确数字**无法用原始文件复核**（当时是实时输出、未另存文件）；本工单的勾选依据是 trace 首行时间戳 + `sample.log` 进程计数（结论不变：读在写仍在飞时返回、提交晚于 switch 起点 3.66 s）。
 - 夹具内 `post-checkout`（`sleep 3`）按计划在走查后删除，内容无法再复核；`trace-05` 第 5 行仍留 `run_command: .git/hooks/post-checkout 135eb78eaa4bb614df3570742887201d558d360b 15ff049dc6c8990877d819c5731a83e85a080555 1` 的调用记录。
 - CDP 交互脚本的**返回值**（tab 激活类名迁移、`scrollTop 3604282 → 3602282`、点击 → 收尾 985 ms）未落盘，只存在于证据汇总 `e2e-evidence.md`；本工单只为其中可复核的部分（进程计数 / 可交互性采样 / git trace）背书。
 - 证据汇总的「1752 条样本」是控制器当时的中途读数（局部计数）：采样器实际又跑了 10.7 小时才被控制器停止，最终全量 **629,497 行 / 跨度 39,318,023 ms** —— 应用存活段 624,303 行全部 `True`，其后 5,194 行 `gone` 因应用退出。「全部 `Responding=True`」按全量文件成立且更强。
