@@ -374,7 +374,8 @@ pub fn get_commit_detail(repo: &GitRepo, hash: &str) -> GitResult<CommitDetail> 
 - [x] `get_status` ≤ 1 次 git 调用（分离 HEAD 时 2）、`get_branch_summary` ≤ 1（分离 HEAD 时 2）、`get_commit_detail` = 2、`get_compare` = 4 —— 实测 **1 / 1 / 2 / 3 / 4**（`get_compare` 分别为「两端十六进制 id」= 3 与「base 为字面量 `HEAD`」= 4，后者才是右栏「与 HEAD 比较」的真实形态）；分离 HEAD 下 `get_status` 与 `get_branch_summary` 各 2 次（两条命令各自的 `branch` 都要回退一次 `rev-parse --short HEAD`，见 Comments）。逐条原始计数见 Comments
 - [x] 一轮 `refresh()` = **6** 个 git 进程（log / status-v2 / summary / stash / refs / remotes）—— 构成证明 + 实测：这 6 条命令各 1 次；**分离 HEAD 时 8**（`get_status` 与 `get_branch_summary` 各 +1，本表与 spec 已按控制器裁决更正）。**如实披露**：`refresh()` 还会调 `getUserIdentity()` → 2 次 `git config --get`，该 2 次在本票的 14 基线里同样未计入（既有行为、本次未改）；按「一次 refresh 的全部 git 进程」计是 **16 → 8**（分离 HEAD 时 18 → 10）。详见 Comments
 - [x] `parse_name_status` 与 statuses 覆盖逻辑已删除（`grep -c parse_name_status` = 0）—— `git show 48eb976:src-tauri/src/git.rs` 上计数 = 0（测试里的等价对照基线改名 `name_status_v1_for_test`，不含该串；`statuses` 覆盖逻辑随 `get_commit_detail` 重写消失）
-- [ ] 端到端：刷新墙钟与手动跑同样 6 条 git 命令同量级。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+- [x] 端到端：刷新墙钟与手动跑同样 6 条 git 命令同量级。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+      → 实测（控制器联合端到端验收，ledger 裁决 R2）：默认筛选下的干净轮（`log --max-count=200`）6 条仓库命令 —— `git log` perf **0.500947300 s**（起 `22:19:32.197323`）；**刷新墙钟 501 ms**（`22:19:32.197323` → `22:19:32.698270`，log 为长尾，其余 5 条均在其窗口内结束）vs **手动基线 1002 ms**（同 6 条顺序跑、3 轮取 min），判据线 = 1002 + 一次进程启动开销（约 300 ms）≈ **1302 ms** → **同量级且更低** ✓。identity 的 2 次 `git config --get` 另计。原始文件：`<PI_SCRATCH_DIR>\e2e\trace-01-open.log`、`<PI_SCRATCH_DIR>\e2e\perf-01-open.log`。
 
 **Comments**
 
@@ -472,3 +473,17 @@ test result: ok. 66 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; fin
 ```
 
 改动范围：`src-tauri/src/git.rs` **仅测试段**（`git diff` 的 hunk 全部落在 `mod tests`，生产代码零改动）+ 本工单 + `spec.md`。完整报告：`.superpowers/sdd/ipc-nonblocking/task-02-report.md`（本轮整改段）。
+
+**联合端到端验收（控制器，2026-10-13）**
+
+观测方法：启动应用前在**进程环境**里设 `GIT_TRACE=<file>` 与 `GIT_TRACE_PERFORMANCE=<file>` 指向文件（**零代码改动**；`spawn_git` 不改子进程环境，故这些行只可能来自应用派生的 git）—— 每个 git 子进程向该文件追加两行：`<ts> trace: built-in: git <args>`（启动）与 `<ts> performance: N s: git command: git.exe -c core.quotepath=off <args>`（结束 + 耗时）。命令序列与每命令耗时即取自这两类自写行，不以 DOM 自述为准。
+
+实测（10 万夹具；`open_repo` 的 `rev-parse --show-toplevel --absolute-git-dir` + `symbolic-ref --short HEAD` 之后）：该轮刷新由 **6 条仓库命令**构成 —— `log --topo-order --skip=0 --max-count=200 --all`（起 `22:19:32.197323`，perf **0.500947300 s**）、`status --porcelain=v2 --branch -z` ×2（`get_status` + `get_branch_summary`，0.0165 / 0.0114 s）、`stash list`（0.0046 s）、`for-each-ref`（0.0077 s）、`remote`（0.0037 s）；另加 identity 的 `config --get` ×2（0.0020 / 0.0022 s）—— 与本票此前披露的「6 + 2」构成一致。**刷新墙钟 = 501 ms**（`22:19:32.197323` → `22:19:32.698270`；`log` 是长尾，其余命令全部在它的窗口内结束）。
+
+对比：**手动基线 1002 ms**（10 万夹具上顺序跑同样 6 条命令，3 轮取 min），判据线 = 1002 + 一次进程启动开销（约 300 ms）= **1302 ms** → 实测 **501 ms**，**同量级且更低** ✓。
+
+口径说明：本轮是**默认筛选**（`--max-count=200`）下的**干净轮**（未触发按需窗口扩展）；`refresh()` 还会调 `getUserIdentity()` → 2 次 `git config --get`，故「一次 refresh 的全部 git 进程」口径应另计（6 + 2 = 8）—— 本条目只比较 6 条仓库命令。
+
+方法披露：走查期间当前会话处于锁定状态，真实鼠标 / 键盘输入无法投递；UI 交互经**应用自身 WebView2 的远程调试端口**（启动时设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`）以 `Runtime.evaluate(userGesture: true)` 驱动 —— 走的是**同一批 DOM 事件处理器与同一条 IPC 路径**（`ipc.*` → Tauri 命令 → `spawn_git`），且每条断言以 **git 级 trace** 为准。
+
+原始文件：`C:\Users\kuangdi\.pi-desktop\scratch\3c411be3-c0cc-4488-95f2-1c7dbc9124f7\e2e\trace-01-open.log`、`perf-01-open.log`（汇总：`e2e-evidence.md` 第 1 节）。
