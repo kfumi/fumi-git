@@ -250,10 +250,14 @@ mod tests {
 - [x] 新增 2 个用例通过，且**反向验证有效**：临时删掉 `run_write` 里的抢锁 → `write_lock_serializes_overlapping_writes` 变红 —— RED/GREEN 原文见 Comments（RED = `写操作没有被串行化：151.0271ms`）
 - [x] `#[tauri::command]` 数量仍为 57，其中 `async fn` = 53（4 个 config 命令保持同步），`with_active` 已消失 —— 实测 **57 / 53 / 0**
 - [x] 命令名 / 参数名 / 返回类型与改造前逐一相同（前端零改动 + `pnpm build` 的 tsc 通过即为证）—— 57 个 `pub [async] fn` 的「名字 + 参数表 + 返回类型」与改造前逐条比对无差异；`pnpm build`（`tsc && vite build`）通过、1938 modules
-- [ ] 端到端：10 万提交夹具下触发刷新 → 窗口可拖动、可切 tab、可滚动，**不出现 Windows「无响应」**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
-- [ ] 端到端：刷新期间 `Get-Process git` 观测到 **≥3 个 git.exe 并发存在**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
-- [ ] 端到端：切分支进行中再点提交 → **排队**，无 git lock 报错。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
-- [ ] 读命令在慢写期间不被阻塞（行为覆盖：慢写进行中发一次读，应立即返回）。（控制器联合端到端验收时勾选 —— ledger 裁决 R2；条目由来与「inspection 级别保证」的定性见 Comments「评审 1 轮整改」）
+- [x] 端到端：10 万提交夹具下触发刷新 → 窗口可拖动、可切 tab、可滚动，**不出现 Windows「无响应」**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+      → 控制器联合端到端验收（ledger 裁决 R2）：`sample.log` 最终全量 **624,303/624,303 条样本 `fumi_responding=True`**、0 条例外（采样器已由控制器停止；其后 5,194 行 `gone` 是应用退出后的记录，退出点在全部验收场景结束之后）。刷新窗口 22:19:31.8–33.2 = 23 条全 True；19 次连发 `log` 的持续负载窗口 22:25:23–37 = 225 条全 True；切分支 / 提交全程亦全 True；负载期间的 tab 切换与滚动经 WebView2 CDP `Runtime.evaluate(userGesture:true)` 驱动并真实生效（激活类名迁移、`scrollTop` 真实位移）。**诚实披露：`Responding=True` 是客观代理，原生窗口拖动未实测**（走查时会话处于锁定状态，真实鼠标 / 键盘不可达）。
+- [x] 端到端：刷新期间 `Get-Process git` 观测到 **≥3 个 git.exe 并发存在**。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+      → 控制器联合端到端验收（ledger 裁决 R2）：`trace-01-open.log` 一轮刷新 = **10 个应用自有 git 子进程**（`rev-parse` 22:19:31.839885 → `config user.email` 22:19:32.583492）；同期 `sample.log` 峰值 **11 个 git.exe = 应用自有 10**（已扣掉 1 个无关僵留基线）**≥ 3** ✓；全文件峰值 17（应用自有 16，22:27:35.184）。刷新墙钟 = `log` 起 22:19:32.197323 + perf `0.500947300 s` → 22:19:32.698270 = **501 ms**，其余 9 条命令的启动时间戳全部落在该窗口内。
+- [x] 端到端：切分支进行中再点提交 → **排队**，无 git lock 报错。（控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+      → 控制器联合端到端验收（ledger 裁决 R2）：`trace-05-switch-commit.log`：`git switch feat` 首行 **22:27:31.864546**（`run_command: .git/hooks/post-checkout` 22:27:31.884629，夹具钩子 `sleep 3`），`git commit --quiet -F -` 首行 **22:27:35.521275** = 晚于 switch 起点 **3657 ms**（提交点击在 32.4–32.9，点击后约 2.7 s 才真正 spawn ⇒ 排队）；`sample.log` 显示该段 git.exe 总数自 22:27:31.9 起连续 ≥2（含 1 个基线）直到 22:27:35.0，慢写进程全程未消失；5 个 trace 文件 **0 条 `lock` / `fatal` / `error` 行**，夹具 `.git\index.lock` 不存在。
+- [x] 读命令在慢写期间不被阻塞（行为覆盖：慢写进行中发一次读，应立即返回）。（控制器联合端到端验收时勾选 —— ledger 裁决 R2；条目由来与「inspection 级别保证」的定性见 Comments「评审 1 轮整改」）
+      → 控制器联合端到端验收（ledger 裁决 R2）：慢写 = `git switch feat`（22:27:31.864546 起，钩子 `sleep 3`）；慢写中发一次刷新 → 8 条读命令（status ×2 / log / stash / remote / config / for-each-ref / config）的 trace 首行为 **22:27:32.552220–32.830079**，全部落在慢写存活区间内；`sample.log` 显示读批次进程在 ~22:27:33.5 前排空，而应用自有 git 进程（2 个）继续存活到 **22:27:35.0** ⇒ 读命令在写操作仍在飞时已返回（约早 1.5 s）✓。
 
 **Comments**
 
@@ -341,3 +345,28 @@ $ cargo build
 改动范围：`src-tauri/src/commands.rs` **仅测试模块**（`git diff 16c76f1 -- src-tauri/src/commands.rs` = `1 file changed, 13 insertions(+), 1 deletion(-)`，全部落在 `mod tests` 内）+ 本工单文件。**未动** `src-tauri/src/lib.rs`、`src-tauri/src/git.rs`，无任何生产代码路径改动。
 
 提交：本轮整改 = **`bbf417b`**（`test(ipc): 读锁用例改名 read_completes_while_write_lock_is_held 并断言真实前提（评审 1 轮）`，只含 `src-tauri/src/commands.rs`）；本工单文本随其后的 `docs(tickets)` 提交收口（工单要写下本轮的 commit hash，故拆成两个提交，两次都只 stage 了测试文件 / 工单文件，没有第三个文件入账）。
+
+**联合端到端验收（控制器，2026-10-13）**
+
+观测方法（**零代码改动**，原始文件在 `<PI_SCRATCH_DIR>\e2e\`）：
+
+- 启动应用前在**进程环境**里设 `GIT_TRACE=<file>` / `GIT_TRACE_PERFORMANCE=<file>`：每个应用派生的 git 子进程向同一文件追加 `trace: built-in: git <args>`（启动）与 `performance: N s: git command: ...`（结束 + 耗时）两行 —— `spawn_git` 不改子进程环境，故这些行只可能来自应用派生的 git（`trace-0*.log` / `perf-0*.log`）。
+- 后台循环每 ~40–60 ms 采样 `(Get-Process git).Count` 与 `(Get-Process fumi-git).Responding`，写 `sample.log`（CSV `ts_ms,gits,fumi_pids,fumi_responding`）。**控制器最终读数（采样器已停）**：全文件 **629,497 行 / 跨度 39,318,023 ms**，其中应用存活段（`ts_ms` ≤ 38,980,655）**624,303 行、`fumi_responding` 全部为 `True`、0 条例外**；`ts_ms` = 38,980,734 起 5,194 行为 `gone`（应用 pid 41680 退出；退出点在全部验收场景结束之后 —— 证据窗口 `ts_ms` ≤ 542,406）。窗口对齐用 `ts_ms`（±0.3 s，绝对锚点取 22:19:32.2 的刷新峰值）。
+- **诚实披露（方法替代）**：走查期间**会话处于锁定状态**（`LockApp.exe` + `LogonUI.exe` 占前台，`WScript.Shell.AppActivate` 返回 True 但前台窗口不变）→ 真实鼠标 / 键盘输入不可投递。UI 交互改经**应用自身 WebView2 的远程调试端口**（`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`）用 `Runtime.evaluate(userGesture:true)` 驱动（`q*.js` + `cdp.mjs`）—— 走同一批 DOM 处理器与同一条 IPC 路径（`ipc.*` → Tauri 命令 → `spawn_git`），且每条断言以 **git 级 trace** 为准，不以 DOM 自述为准。
+- 口径：本机常驻 1 个与本应用无关的僵留 `git.exe`（pid 17260，09:25 创建、不写 trace），并发数一律按「总数 − 1 = 应用自有」折算。
+
+四条验收项的实测：
+
+- **01:253 不冻结**：`sample.log` 应用存活段 **624,303/624,303 `Responding=True`**（0 例外）；刷新窗口（22:19:31.8–33.2）23 条全 True；持续负载窗口（22:25:23–37）225 条全 True —— 该段 `trace-04-pagination.log` 在 12.9 s 内连发 23 次 `git log`（前 19 次 `--skip=200..22718` 集中在 9.91 s）；交互窗口（`ts_ms` 560000–582000）481 条全 True、`gits` ∈ {1,2,3} 峰值 3（`git-trace.log`：该窗口 2 条 `log` 在飞，perf 0.4642 / 0.4389 s）。
+- **01:254 ≥3 并发**：10 个应用自有 git 子进程（`trace-01`）/ `sample.log` 峰值 11（应用自有 10）≥ 3。
+- **01:255 写排队**：switch 22:27:31.864546 → commit 22:27:35.521275（+3657 ms）；无 lock 报错、无 `index.lock`。
+- **01:256 读不被写阻塞**：8 条读命令 trace 首行 22:27:32.552220–32.830079 全在慢写存活区间内；读批次 ~33.5 前排空，写进程存活到 ~35.0。
+
+已知边界 / 未覆盖项：
+
+- 原生窗口拖动、真实鼠标 / 键盘路径未实测（会话锁定；键盘路径只做了 DOM 侧可聚焦序确认）。
+- **22:27 那一轮的 `GIT_TRACE_PERFORMANCE` 输出不在证据集里**（`e2e\` 只有 `perf-01-open.log` / `perf-02-light.log` / `perf-04-pagination.log` 与 22:29 的 `git-perf.log`）⇒ 证据汇总里的「`git switch feat` perf **3.3376 s**（收于 22:27:35.200）」与「8 条读命令全部在 ~32.833 结束」这两处精确数字**无法用原始文件复核**；本工单的勾选依据是 trace 首行时间戳 + `sample.log` 进程计数（结论不变：读在写仍在飞时返回、提交晚于 switch 起点 3.66 s）。
+- 夹具内 `post-checkout`（`sleep 3`）按计划在走查后删除，内容无法再复核；`trace-05` 第 5 行仍留 `run_command: .git/hooks/post-checkout 135eb78eaa4bb614df3570742887201d558d360b 15ff049dc6c8990877d819c5731a83e85a080555 1` 的调用记录。
+- CDP 交互脚本的**返回值**（tab 激活类名迁移、`scrollTop 3604282 → 3602282`、点击 → 收尾 985 ms）未落盘，只存在于证据汇总 `e2e-evidence.md`；本工单只为其中可复核的部分（进程计数 / 可交互性采样 / git trace）背书。
+- 证据汇总的「1752 条样本」是控制器当时的中途读数（局部计数）：采样器实际又跑了 10.7 小时才被控制器停止，最终全量 **629,497 行 / 跨度 39,318,023 ms** —— 应用存活段 624,303 行全部 `True`，其后 5,194 行 `gone` 因应用退出。「全部 `Responding=True`」按全量文件成立且更强。
+- 夹具规模（`rev-list --count --all` = 100001）未独立复算：本工单禁止运行任何 git 命令（避免与并行子代理争 `index.lock`）；间接一致性：`trace-04` 的 `log` 窗口已推进到 `--skip=55462`，22:29 的窗口到 `--skip=86658 --max-count=21664`（86658 + 21664 = 108322 > 100001）。
