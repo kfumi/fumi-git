@@ -309,13 +309,21 @@ async function doRefreshLightOnce(
       → 两组 RED 原文见 Comments；两次都只红对应用例（`1 failed | 168 passed`），恢复后文件 sha256 与破坏前一致，破坏态从未 `git add`
 - [x] `cargo test -- --test-threads=1` 全绿；新增 `classify` 纯函数用例（index / refs / packed-refs / HEAD / objects / 工作区路径各一条）
       → `test result: ok. 74 passed; 0 failed; 1 ignored`（基线 66 + 新增 8）；`watcher::tests`：index / `refs/**` / packed-refs / HEAD / objects+logs+ORIG_HEAD+lock（另含 `.git` 目录自身与空输入）/ 工作区路径 / `merge` 并集
-- [ ] 端到端：在仓库根目录改一个文件（触发器）→ 只重拉 status，**不重拉 log**
+- [x] 端到端：在仓库根目录改一个文件（触发器）→ 只重拉 status，**不重拉 log**
       （观测：临时在 `doRefreshOnce` / `doRefreshLightOnce` 入口打一行 `console.debug`，走查完删除）
       （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
-- [ ] 端到端：做一次写操作（如暂存）→ 只发生 **1** 轮刷新（抑制生效）（观测方式同上）
+      → 控制器联合端到端验收（ledger 裁决 R2）：夹具根目录写入 `probe-e2e.txt`（文件 CreationTime **22:22:00.597**）→ **0.63 s** 后该 phase 的 trace 里只有 2 条命令：`stash list '--format=%gd%x1f%gs%x1f%ct'`（**22:22:01.229077**，perf 0.0025 s）与 `status --porcelain=v2 --branch -z`（**22:22:01.248655**，perf 0.0095 s）——**`git log` 计数 = 0**（该文件全文只有这 2 条命令，`for-each-ref` / `remote` / `config` 同样为 0）。两条相隔 19 ms = `doRefreshLightOnce`（`repo.ts:567` 的 `Promise.all([getStatus, stashList])`）的并行派发。原始文件：`<PI_SCRATCH_DIR>\e2e\trace-02-light.log`（4 行 / 2 条命令）、`perf-02-light.log`。
+      → 如实记录：轻档刷新 = **status + stash**（与本票实现节的 `doRefreshLightOnce` 一致，stash 是既有的一并重拉），判据的绑定意图是「**不重拉 log**」——这一条成立。
+- [x] 端到端：做一次写操作（如暂存）→ 只发生 **1** 轮刷新（抑制生效）（观测方式同上）
       （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
-- [ ] 端到端：10 万提交夹具下 `Get-Process git` ≥3 并发且窗口不冻结（与 01 的验收合并走一次）
+      → 控制器联合端到端验收（ledger 裁决 R2）：trace 里 `commit --quiet -F -` 确实执行（**22:22:44.793840**），随后 **`git log` 计数 = 1**（**22:22:45.221030**），同一轮 = status ×2（45.288 / 45.290）/ stash（45.344）/ remote（45.374）/ config ×2（45.413 / 45.560）/ for-each-ref（45.436）——**恰好 1 轮全量**；其后**无第二轮**：该 trace 的下一条记录在 **22:25:19.730**（间隔 154 s，远超判据的 6 s）。落地核对（独立于证据汇总文件）：夹具 `.git\logs\HEAD` reflog 记 `46c033519… → 135eb78eaa4bb614df3570742887201d558d360b`（unix 1791901364 = **2026-10-13 22:22:44 +08:00**，消息 `e2e: 验证写操作只触发一轮刷新`）。原始文件：`<PI_SCRATCH_DIR>\e2e\trace-03-commit.log`（33 行 / 16 条命令）。
+      → **与工单措辞的偏差（如实记录）**：工单原文举例「如暂存」，但按 ledger 的 Task 03 评审裁定，`stage` / `unstage` **自己从不 `refresh()`**（`repo.ts:1460-1467` 只有 `ipc.stage` + `ipc.getStatus()`），其唯一刷新来自 watcher，抑制生效与否都看起来是 1 轮、**无法用来观测抑制** → 故改用**提交**（`repo.ts:1480-1488`：`ipc.commit` → `markWrite` → `refresh`，自带一轮全量）。暂存路径「不打戳」由单测钉住（`repo.test.ts`「不许给 stage 打戳」用例）。
+      → 旁证（同一 trace 文件内）：22:25:19.730 的 `git add -- probe-e2e.txt` 之后，22:25:20.367 `status` + 20.403 `stash list`（**0 条 `log`**）即 watcher 的 index 事件驱动的轻档一轮（`stage` 自己在 19.886 的那条 `status` 来自 `repo.ts:1463`）——说明本会话 watcher 确实在发事件，「无第二轮」不是「watcher 哑掉」造成的假象。
+- [x] 端到端：10 万提交夹具下 `Get-Process git` ≥3 并发且窗口不冻结（与 01 的验收合并走一次）
       （控制器联合端到端验收时勾选 —— ledger 裁决 R2）
+      → 控制器联合端到端验收（ledger 裁决 R2，与 01 的验收合并走一次）：`sample.log` 里打开夹具那一轮的窗口（`ts_ms` 1713–2647 ≈ 22:19:31.8–32.7）**峰值 `gits` = 11 → 应用自有 10 ≥ 3** ✓，与 `trace-01-open.log` 的 10 条应用命令（`rev-parse` / `symbolic-ref` + 8 条刷新命令）+ 1 个无关基线进程吻合；该轮 8 条刷新命令起于 32.197–32.583、log 收于 32.695（perf 0.5009 s），即同时派发。**不冻结**：`fumi_responding` 列在整个应用存活段只有 `True` —— 控制器最终读数 **624,303/624,303 条**（采样器已由控制器停止；其后的 5,194 行是 `gone`，因应用在全部验收场景结束很久之后才退出，见 Comments 的「保留意见」）。原始文件：`<PI_SCRATCH_DIR>\e2e\sample.log`、`trace-01-open.log`、`perf-01-open.log`。
+      → 「应用自有 = 总数 − 1」口径的独立核对：本机常驻 1 个与本应用无关的僵留 `git.exe`（pid 17260，09:25:10 启动）；核对时 `Get-Process -Name git` = 1，且全部样本的最小值也是 1 ✓。
+      → 两点保留（如实记录）：① 持续负载段（`trace-04-pagination.log` 的 23 条 `log`，其中前 19 条落在 22:25:23.216→33.130 ≈ 10 s 内）该窗口 `gits` = **3（应用自有 2）**，低于 3 —— 即「≥3 并发」由**打开那一轮的扇出（应用自有 10）**满足，不是分页负载段；② **原生窗口拖动未实测**（走查期间会话锁定，真实鼠标输入无法投递），`Responding=True` 是该项的标准客观代理（负载期间 UI 输入被处理的 DOM 侧证据见证据汇总第 5 节，我未重新驱动 UI）。
 - [x] Comments 记下两个已知边界：linked worktree 无监听、工作区为 NonRecursive（只有根目录文件）
 
 **Comments**
@@ -470,3 +478,33 @@ $ pnpm test
 ```
 
 **评审 2 轮改动范围**（`git show --numstat 716a6be`）：`src/stores/repo.ts` +5/−0、`src/stores/repo.test.ts` +53/−0、`src-tauri/src/watcher.rs` +10/−2。**未动** `commands.rs` / `git.rs` / `lib.rs`；`refresh` 签名与既有用例语义不变。
+
+**联合端到端验收（控制器，2026-10-13）**
+
+本票三条端到端项按 ledger 裁决 R2 推迟到「联合端到端验收」（代码早已落地：`7b3ba8d` / `d506e9e` / `716a6be`，四票 00–03 全绿于 `b09a1de`）；控制器已完成观测，本节为回填。
+
+**观测方法（零代码改动）**
+
+- 启动应用**之前**在**进程环境**里设 `GIT_TRACE=<file>` 与 `GIT_TRACE_PERFORMANCE=<file>`：每个 git 子进程向同一文件追加 `trace: built-in: git <args>`（启动）与 `performance: N s: git command: git.exe …`（结束 + 耗时）。`spawn_git` 不改子进程环境，故这两行**只可能来自应用派生的 git** —— 工单原本建议的「临时在 `doRefreshOnce` / `doRefreshLightOnce` 入口打一行 `console.debug`、走查完删除」因此**不需要**（观测点更靠下，且一行代码未动）。
+- **进程 / 可交互性证据**：后台 PowerShell 循环每 ~40 ms 记录 `(Get-Process -Name git).Count` 与 `(Get-Process -Name fumi-git).Responding`，写 `sample.log`（CSV `ts_ms,gits,fumi_pids,fumi_responding`；`ts_ms` 以采样起点为 0，本会话起点 ≈ **22:19:30.1**，由「峰值时刻 ↔ trace 时间戳」互校，误差 < 0.2 s）。
+- 夹具 `<PI_SCRATCH_DIR>\perf-repo-script`：脚本生成、10 万提交、refs = main + feat。每条断言都以 **git 级 trace** 为准，**不以 DOM 自述为准**；原始文件在 `<PI_SCRATCH_DIR>\e2e\`（`trace-01-open` / `trace-02-light` / `trace-03-commit` / `trace-04-pagination`、`perf-01-open` / `perf-02-light` / `perf-04-pagination`、`sample.log`）。
+
+**方法披露（必须）：UI 交互经应用自身 WebView2 远程调试端口驱动**
+
+- 走查期间**当前会话处于锁定状态**（`LockApp.exe` + `LogonUI.exe` 占前台，`WScript.Shell.AppActivate` 返回 True 但前台窗口不变）→ 真实鼠标 / 键盘输入无法投递。
+- 故 UI 交互改为经**应用自身 WebView2 的远程调试端口**（启动时设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`）用 `Runtime.evaluate`（`userGesture: true`）驱动 —— 走的是**同一批 DOM 事件处理器与同一条 IPC 路径**（`ipc.*` → Tauri 命令 → `spawn_git`）。
+- **未覆盖**：原生窗口拖动（需要真实鼠标）未实测，`Responding=True` 是「不冻结」的标准客观代理。
+
+**三条实测数字（与勾选项一一对应）**
+
+1. `03:312` 外改文件 → 只重拉 status（`trace-02-light.log` / `perf-02-light.log`）：夹具根目录 `probe-e2e.txt` 写入（CreationTime 22:22:00.597）→ **0.63 s** 后仅 2 条命令 `stash list`（22:22:01.229077）+ `status --porcelain=v2 --branch -z`（22:22:01.248655），**`git log` = 0**；两条相隔 19 ms = `doRefreshLightOnce` 的并行派发。
+2. `03:315` 写操作 → 只 1 轮（`trace-03-commit.log`）：`commit --quiet -F -` 22:22:44.793840 → **`git log` = 1**（22:22:45.221030）+ 同一轮 status ×2 / stash / remote / config ×2 / for-each-ref（45.288 → 45.560）；其后 **154 s** 内无第二轮（判据 6 s）。落地：reflog `135eb78eaa4bb614df3570742887201d558d360b`（22:22:44 +08:00）。**偏差**：工单举例「暂存」，按评审裁定改用**提交** —— `stage` 自己从不 `refresh()`（`repo.ts:1460-1467`），其唯一刷新来自 watcher，看起来永远是 1 轮、观测不了抑制；暂存「不打戳」由单测钉住。
+3. `03:317` 并发与不冻结（`sample.log` + `trace-01-open.log`）：打开 10 万夹具那一轮（`ts_ms` 1713–2647）**峰值 gits = 11 → 应用自有 10 ≥ 3** ✓；`fumi_responding` 列去重值只有 `True`。持续负载段（`trace-04-pagination.log` 的 23 条 `log`）窗口 gits = 3（应用自有 2），低于 3 ——「≥3」由打开轮的扇出满足。
+
+**本节保留意见（未能从原始文件证实的部分，如实记录）**
+
+- `sample.log` 的最终状态（控制器已停止采样器）：全文件 **629,497 行 / 跨度 39,318,023 ms**；应用存活段（`ts_ms` ≤ 38,980,655）**624,303 行 `fumi_responding` 全部为 `True`**，`ts_ms` = 38,980,734 起 5,194 行为 `gone`（应用 pid 41680 退出 —— 退出点在全部验收场景结束之后：证据窗口只到 `ts_ms` ≈ 542,406）⇒「N/N 条样本全 `True`」的 N 从此确定，不随读取时刻变化。全文件最大 `gits` = 17，出现在 `ts_ms` 485127 ≈ 22:27:35 的切换 / 提交窗口（属 01 的场景），打开轮的峰值是 11（应用自有 10）。
+- 证据汇总文件记的外部写入时刻 **22:22:00.589** 在任何原始 trace 里都不存在；我用夹具文件 `CreationTime` 核到 **22:22:00.597**（差 8 ms，同一次写入）。
+- 「抑制生效」是**推断而非直接观测**（trace 只能证明「没有第二轮」）。旁证两条：① 同一 trace 文件里 `git add`（22:25:19.730）之后确实出现 watcher 驱动的轻档一轮（status 20.367 + stash 20.403，0 条 `log`）→ 本会话 watcher 确实在发事件；② `commit` 路径的 `markWrite`（`repo.ts:1482`）在 refs 事件（~500 ms 后到）之前开窗 1200 ms。
+- 提交那一轮没有对应的 `GIT_TRACE_PERFORMANCE` 文件（无 `perf-03`），故该轮只有时间戳、没有单命令耗时；轮数判据不受影响。
+- 证据汇总文件里「该负载窗口 180 条样本 maxGits=3」一条：**已按最终文件复算** —— 交互窗口（`ts_ms` 560000–582000）共 **481 条样本、`gits` ∈ {1,2,3}、全部 `True`**；原窗口内另见 `gits`=4/5 的样本（`ts_ms` 363347–363472 ≈ 22:25:33.4–33.5，属 22:25 的持续负载段、不是本次交互段）—— 与证据汇总的「180 条」不一致纯属**窗口边界定义不同**，结论（≥3 并发 + 全 `True`）不变。「UI 侧佐证：应用随即把该文件显示为『未暂存 A probe-e2e.txt』」一条仍属 DOM 侧观察，未重新驱动 UI 复核。
