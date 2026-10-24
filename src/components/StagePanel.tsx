@@ -44,7 +44,7 @@ export function CommitDetailPanel() {
     <div
       id="detail-panel"
       tabIndex={-1}
-      className="h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
+      className="select-text h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
     >
       <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
       {detail.body && (

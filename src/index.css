@@ -107,6 +107,7 @@ body {
   font-family: var(--font-ui);
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
+  /* 文本选中策略（ui-spec §4）：全局禁选（应用外壳与点选密集面），阅读性内容面按处加 select-text */
   user-select: none;
 }
 

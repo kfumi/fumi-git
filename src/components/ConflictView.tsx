@@ -12,7 +12,7 @@ function VersionPane({ title, content }: { title: string; content: string | null
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2">
         {content ? (
-          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-dim">
+          <pre className="select-text whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-dim">
             {content}
           </pre>
         ) : (
@@ -92,7 +92,7 @@ export function ConflictView() {
                 <summary className="cursor-pointer px-2.5 py-1.5 text-[10.5px] font-medium text-faint">
                   共同祖先（:1）参考
                 </summary>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-faint">
+                <pre className="max-h-40 select-text overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-faint">
                   {cv.versions.base}
                 </pre>
               </details>
@@ -147,10 +147,10 @@ function ConflictBlockRow({
         </button>
       </div>
       <div className="grid grid-cols-2 divide-x divide-brd-soft">
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-del">
+        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-del">
           {block.oursLines.join("\n")}
         </pre>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-add">
+        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-add">
           {block.theirsLines.join("\n")}
         </pre>
       </div>

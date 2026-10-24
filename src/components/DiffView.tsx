@@ -56,7 +56,7 @@ const KIND_CLASS: Record<DiffLine["kind"], string> = {
 export function DiffView({ patch }: { patch: string }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
   return (
-    <div className="overflow-x-auto rounded-lg font-mono text-[11.5px] leading-[1.65]">
+    <div className="select-text overflow-x-auto rounded-lg font-mono text-[11.5px] leading-[1.65]">
       <div className="w-fit min-w-full">
         {lines.map((l, i) => (
           <div key={i} className={'flex whitespace-pre ' + KIND_CLASS[l.kind]}>
