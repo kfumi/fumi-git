@@ -102,14 +102,16 @@ export function ContextMenu({
 
   // 任一行带 active 标记时，所有行保留 ✓ 槽位对齐；纯动作菜单不受影响
   const showCheck = items.some((it) => !isSeparator(it) && !isHeader(it) && it.active);
+  // 被视口下缘顶上去（向上翻转）→ 缩放锚点换到底边，进场动画从底部展开
+  const origin = pos.y < y ? "bottom left" : "top left";
 
   return (
     <div
       ref={ref}
       role="menu"
-      style={{ left: pos.x, top: pos.y, ...(width ? { width } : {}) }}
+      style={{ left: pos.x, top: pos.y, transformOrigin: origin, ...(width ? { width } : {}) }}
       onContextMenu={(e) => e.preventDefault()}
-      className="fixed z-50 max-h-[70vh] min-w-[150px] overflow-y-auto rounded-lg border border-brd bg-panel py-1 shadow-card"
+      className="menu-in fixed z-50 max-h-[70vh] min-w-[150px] overflow-y-auto rounded-lg border border-brd bg-panel py-1 shadow-card"
     >
       {items.map((item, i) =>
         isSeparator(item) ? (

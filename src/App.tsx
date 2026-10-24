@@ -3,7 +3,7 @@
 // Panel 的 id + order 必须成对给：面板是条件渲染的（动态增删），只给 id 会被库警告
 // （id 决定 autoSaveId 的持久化键，order 决定注册顺序，两者缺一都可能错位）
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { X, FileDiff } from "lucide-react";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { listenRepoChanged } from "./lib/ipc";
 import { useRepo } from "./stores/repo";
@@ -153,8 +153,9 @@ function RightPane() {
     content = workFile ? (
       <WorkDiffView />
     ) : (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        点击左侧文件查看改动 diff
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-panel text-faint">
+        <FileDiff size={22} strokeWidth={1.5} aria-hidden />
+        <span className="text-xs">点击左侧文件查看改动 diff</span>
       </div>
     );
   } else if (openFiles.length === 0) {

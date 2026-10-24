@@ -1,6 +1,6 @@
 // 右下（历史 tab）：提交详情文件 diff —— 点击右上文件列表打开/切换，多 tab 可关闭
 // 右栏（改动 tab）：工作区单文件 diff 面板，选中工作区文件时才出现
-import { X } from "lucide-react";
+import { X, FileDiff } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { DiffView, DetailDiff } from "./DiffView";
 
@@ -54,7 +54,10 @@ export function FileDiffTabs() {
         ) : active && detail.files.some((f) => f.path === active) ? (
           <DetailDiff detail={detail} selectedFile={active} />
         ) : (
-          <p className="text-xs text-faint">点击上方文件查看 diff</p>
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-faint">
+            <FileDiff size={22} strokeWidth={1.5} aria-hidden />
+            <span className="text-xs">点击上方文件查看 diff</span>
+          </div>
         )}
       </div>
     </div>

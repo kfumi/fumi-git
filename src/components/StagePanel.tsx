@@ -1,7 +1,7 @@
 // 右上：提交详情（元信息 + 文件列表，点击文件 → 右下 diff tab）
 // 中栏「改动」tab：工作区（暂存/提交）
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, CircleCheck, LoaderCircle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleCheck, GitCommitHorizontal, LoaderCircle } from "lucide-react";
 import { useRepo, OPERATION_LABEL } from "../stores/repo";
 import { ipc } from "../lib/ipc";
 import { absTime, avatarColor } from "../lib/format";
@@ -48,8 +48,13 @@ export function CommitDetailPanel() {
   const openDetailFile = useRepo((s) => s.openDetailFile);
   if (!detail)
     return (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        {detailLoading ? "加载详情…" : "选择一个提交查看详情"}
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-panel text-faint">
+        {detailLoading ? (
+          <LoaderCircle size={22} className="animate-spin" strokeWidth={1.5} aria-hidden />
+        ) : (
+          <GitCommitHorizontal size={22} strokeWidth={1.5} aria-hidden />
+        )}
+        <span className="text-xs">{detailLoading ? "加载详情…" : "选择一个提交查看详情"}</span>
       </div>
     );
   const meta = detail.meta;
@@ -336,8 +341,9 @@ export function ChangesPanel() {
 
   if (!status)
     return (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        加载工作区…
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-panel text-faint">
+        <LoaderCircle size={22} className="animate-spin" strokeWidth={1.5} aria-hidden />
+        <span className="text-xs">加载工作区…</span>
       </div>
     );
   // amend 允许零暂存（纯信息修正）；普通提交必须有已暂存改动

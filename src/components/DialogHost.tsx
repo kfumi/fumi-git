@@ -64,12 +64,12 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(0,0,0,0.45)]"
+      className="overlay-in fixed inset-0 z-40 flex items-center justify-center bg-[rgba(0,0,0,0.45)]"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="max-h-[70vh] w-[380px] overflow-y-auto rounded-[10px] border border-brd bg-panel p-4 shadow-card">
+      <div className="dialog-in max-h-[70vh] w-[380px] overflow-y-auto rounded-[10px] border border-brd bg-panel p-4 shadow-card">
         <h3 className="text-[0.8125rem] font-semibold text-ink">{desc.title}</h3>
         {desc.message && (
           <p className="mt-2 text-xs leading-relaxed text-dim">{desc.message}</p>

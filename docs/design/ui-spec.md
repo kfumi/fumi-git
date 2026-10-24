@@ -80,6 +80,7 @@
 - **字号 rem 化与字号设置**（2026-10-24 增补）：上表 px 值为设计基准，代码里**一律写 rem**（13px = `0.8125rem`，除数 16 = root 基准）。用户「字号」设置 = root `font-size = 16px × 比例`（85%–130%，步进 5%，默认 100%），只缩放文字、不缩放布局。**两个配套硬规约**：① `--spacing` 冻结为 `4px`（Tailwind 默认 0.25rem 会随 root 缩放，间距/尺寸必须与字号解耦；新增间距走 spacing 刻度或 px）；② 与字号配对的行高用无单位比例（如 `leading-[1.38]`），固定 px 行高放大后会裁切文字。**禁止新增 px 字号**。
 - **用户字体覆盖**（2026-10-24 增补）：界面 / 等宽字体可在设置对话框选预设覆盖（UI：system-ui / Segoe UI / 微软雅黑 / 苹方 / 思源黑体；等宽：Cascadia Code / Consolas / JetBrains Mono）。生效机制 = `html[data-ui-font=<键>]` / `[data-mono-font=<键>]` 钩子 + index.css 逐预设手写规则——`@theme inline` 的字体栈是编译期展开的，改 CSS 变量对已编译类无效。预设键与 CSS 规则一一对应，新增预设两处同步。
 - **界面缩放**（2026-10-24 增补）：`Ctrl+=` 放大 / `Ctrl+-` 缩小 / `Ctrl+0` 还原，步进 10%，范围 60%–180%，与「字号」相互独立（缩放动整页含图标间距，字号只动文字）。实现优先 webview `setZoom`（原生页面缩放，Canvas 图谱按新比例重栅格化），调用失败退 CSS `zoom`；capabilities 需 `core:webview:allow-set-webview-zoom`。缩放与字号均存 AppConfig（`set_appearance` 命令整体保存），启动 hydrate 恢复。
+- **字体本地内置**（2026-10-24 增补）：IBM Plex Sans（400/500/600）与 IBM Plex Mono（400/500）经 `@fontsource` 随应用打包（index.css 顶部 `@import`），index.html 不再引 Google Fonts——桌面应用不依赖网络与用户已装字体，离线/首屏不退回微软雅黑。中文继续走系统栈（PingFang/雅黑），字体栈本身不变；用户字体覆盖机制（`data-ui-font` 钩子）不受影响。
 
 ### diff 配色
 
@@ -102,6 +103,7 @@
 - **语义色软底令牌**（2026-10-07 增补）：`--warn-soft`（深 `rgba(224,166,75,.10)` / 浅 `.12`）、`--bad-soft`（深 `rgba(242,112,138,.12)` / 浅 `rgba(179,56,78,.08)`），用于合并横幅、对话框错误条等语义色大面积底色；组件派生令牌，定义在 index.css。
 - **文本选中策略**（2026-10-24 增补）：全局 `user-select: none`（应用外壳与点选密集面：工具栏、侧栏、历史列表、图谱、diff 行号列），阅读性内容面逐处 opt-in `select-text`——提交详情（主题/正文/作者行/hash/文件路径）、diff 内容列、冲突视图三方内容与冲突块。`::selection` 底色统一 `--accent-soft`。
 - **设置对话框**（2026-10-24 增补）：工具栏主题按钮旁齿轮入口。模态视觉复用确认对话框基元（遮罩 `rgba(0,0,0,.45)`、`--panel` 底、圆角 10px、宽 420px、上限 70vh），但**表单内容不走 DialogHost**（那是确认动作流），独立 `SettingsDialog` 组件。分区：外观（主题三选分段，与工具栏循环按钮同一状态源）/ 字体（界面 + 等宽两个预设下拉，附等宽 hash 预览行）/ 大小（字号、缩放两个 stepper，− % + 与「还原 100%」，缩放行附快捷键提示）。**改动即时生效即时持久化，无保存按钮**；Escape 或点遮罩关闭。
+- **浮层动效与高度层次**（2026-10-24 增补，系统样式打磨批次）：全部只动 `transform`/`opacity`（不触发回流），`prefers-reduced-motion` 由 index.css 全局规则统一关闭。① 右键菜单/下拉面板进场 = `menu-in`（130ms，上浮 4px + scale .98，ease-out）；**transform-origin 自适应翻转**——被视口下缘顶上去的菜单锚点换 `bottom left`。② 确认/设置对话框进场 = 遮罩 `overlay-in`（160ms 淡入）+ 面板 `dialog-in`（200ms，上浮 8px + scale .97，自定义贝塞尔）。③ 深色 `--card-shadow` 由单层 1px 改双层（近 1px + 远 10px/32px）——浮在内容上的面板（菜单/对话框/Toast）需要远投影表达高度，浅色本就是双层不变。④ 欢迎页逐项浮升进场（`rise-in` 420ms，logo → 按钮 → 最近列表以 70ms 步进 stagger）。⑤ 欢迎页背景加**图谱母题** SVG：与 Canvas 图谱同一套限幅贝塞尔 / 空心节点 / 6 色调色板（主干 HEAD 填充 + 柔光晕同画法），整体 50% 透明 + radial mask 融边，只留氛围。⑥ 工具栏仓库/分支下拉的 chevron 随开合旋转 180°（150ms）。⑦ 右栏占位空态（详情/diff「点击查看」、加载中）统一为 图标 22px/1.5 描边 + 文案 居中竖排，与图谱空态同构。⑧ **可点元素统一手型光标**：全局规则 `button/[role=button]/[role=menuitem]/select`（非禁用）`cursor: pointer`——原生 button 默认箭头是浏览器规范行为，只有 .btn-* 类显式给过 pointer，散落的裸按钮（侧栏行/菜单条目/tab/下拉触发器/关闭按钮）会退回箭头；禁用态保持箭头。禁止再给单个按钮手写 `cursor-pointer`（div 点击目标除外，仍显式声明）。
 
 ## 5. 落选方案备忘
 

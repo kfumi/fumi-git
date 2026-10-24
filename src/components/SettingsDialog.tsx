@@ -30,7 +30,7 @@ export function SettingsDialog() {
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(0,0,0,0.45)]"
+      className="overlay-in fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(0,0,0,0.45)]"
       role="dialog"
       aria-modal="true"
       aria-label="设置"
@@ -38,7 +38,7 @@ export function SettingsDialog() {
         if (e.target === e.currentTarget) close();
       }}
     >
-      <div className="w-[420px] max-h-[70vh] overflow-y-auto rounded-[10px] border border-brd bg-panel shadow-card">
+      <div className="dialog-in w-[420px] max-h-[70vh] overflow-y-auto rounded-[10px] border border-brd bg-panel shadow-card">
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-brd-soft bg-panel px-5 py-3">
           <h3 className="text-[0.8125rem] font-semibold">设置</h3>
           <button

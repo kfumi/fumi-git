@@ -208,7 +208,11 @@ export function Toolbar() {
       >
         <span className="h-[7px] w-[7px] rounded-full bg-ok" aria-hidden />
         {meta.name}
-        <ChevronDown size={11} className="shrink-0 text-faint" aria-hidden />
+        <ChevronDown
+          size={11}
+          aria-hidden
+          className={"shrink-0 text-faint transition-transform duration-150 " + (repoMenu ? "rotate-180" : "")}
+        />
       </button>
       {repoMenu && (
         <ContextMenu
@@ -245,7 +249,11 @@ export function Toolbar() {
             )}
           </span>
         )}
-        <ChevronDown size={11} className="shrink-0 text-faint" aria-hidden />
+        <ChevronDown
+          size={11}
+          aria-hidden
+          className={"shrink-0 text-faint transition-transform duration-150 " + (branchPanel ? "rotate-180" : "")}
+        />
       </button>
       {branchPanel && (
         <ContextMenu

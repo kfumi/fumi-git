@@ -1,4 +1,11 @@
 @import "tailwindcss";
+/* 字体本地内置（@fontsource，随应用打包）：桌面应用不依赖网络/用户已装字体，
+   离线与首屏都不退回微软雅黑。中文继续走系统字体栈（PingFang/雅黑）。 */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
 
 /*
  * 设计令牌 — 定稿值来自 docs/design/ui-spec.md（2026-10 变体 A 胜出）
@@ -64,7 +71,11 @@ html[data-mode="dark"] {
   --diff-del-text: #f79ca9;
   --diff-del-bg: rgba(242, 112, 138, 0.1);
   /* 组件层派生令牌 */
-  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  /* 深色浮层阴影双层化：浮在内容之上的面板（菜单/对话框/Toast）需要远投影表达高度，
+     单层 1px 阴影在深色下几乎不可见，浮层像「贴」在界面上 */
+  --card-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.25),
+    0 10px 32px rgba(0, 0, 0, 0.38);
   --thumb: rgba(155, 160, 176, 0.28);
   --thumb-hover: rgba(155, 160, 176, 0.45);
   color-scheme: dark;
@@ -163,6 +174,18 @@ html[data-mono-font="jetbrains"] .font-mono {
 input:focus-visible,
 textarea:focus-visible {
   outline: none;
+}
+
+/* 可点元素统一手型：原生 button / select 按浏览器规范默认是箭头光标，
+   只有 .btn-* 三个类显式给了 pointer，散落的裸按钮（侧栏行 / 菜单条目 / tab /
+   下拉触发器 / 关闭按钮等）会退回箭头——全局拨正。
+   禁用态保持箭头（与 .btn-ghost:disabled 的既有行为一致）；
+   cursor 可继承，包住复选框的 label 手型会传给 input */
+button:not(:disabled),
+[role="button"]:not(:disabled),
+[role="menuitem"]:not(:disabled),
+select:not(:disabled) {
+  cursor: pointer;
 }
 
 /* 细滚动条：贴边胶囊样式，两套主题共用派生令牌 */
@@ -333,6 +356,63 @@ textarea:focus-visible {
 }
 .toast-leave {
   animation: toast-out 140ms ease-in forwards;
+}
+
+/* 浮层进场基元（2026-10-24 系统样式打磨）：全部只动 transform/opacity，不触发回流；
+   prefers-reduced-motion 由文件末尾的全局规则统一关闭。
+   transform-origin 由 ContextMenu 按翻转方向自适应（向上翻转到顶边时缩放锚点换成 bottom）。 */
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.menu-in {
+  animation: menu-in 130ms ease-out;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.overlay-in {
+  animation: overlay-in 160ms ease-out;
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.dialog-in {
+  animation: dialog-in 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* 欢迎页逐项浮升进场：配 animation-delay 做 stagger；both 保证延迟期间保持初始隐藏 */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise-in {
+  animation: rise-in 420ms cubic-bezier(0.22, 0.9, 0.3, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
