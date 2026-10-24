@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { filterCommits, useRepo } from "./repo";
-import type { CommitEntry } from "../lib/types";
+import type { CommitEntry, RepoStatus } from "../lib/types";
 
 // 打桩 IPC（spec 测试决策：前端 store 以打桩 IPC 测状态流转）
 vi.mock("../lib/ipc", () => {
@@ -54,6 +54,14 @@ vi.mock("../lib/ipc", () => {
     cherryPick: vi.fn(async () => ""),
     cherryPickSkip: vi.fn(async () => {}),
     cherryPickKeep: vi.fn(async () => ""),
+    deleteRemoteBranch: vi.fn(async () => ""),
+    setUpstream: vi.fn(async () => {}),
+    unsetUpstream: vi.fn(async () => {}),
+    createTag: vi.fn(async () => {}),
+    checkoutCommit: vi.fn(async () => {}),
+    rebase: vi.fn(async () => ""),
+    getCompare: vi.fn(async () => ({ base: null, head: null, files: [], patch: "" })),
+    amendMessage: vi.fn(async () => ""),
   };
   return {
     ipc: ipcMock,
@@ -446,7 +454,7 @@ describe("checkout 安全模型（票 01）", () => {
     branch: "main",
   };
 
-  it("干净工作树：直接迁出并刷新", async () => {
+  it("干净工作树：直接检出并刷新", async () => {
     useRepo.setState({ meta: { name: "demo", path: "D:/demo", branch: "main" } });
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(clean);
     (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
@@ -455,10 +463,10 @@ describe("checkout 安全模型（票 01）", () => {
     await useRepo.getState().checkout("feat");
     expect(ipc.switchBranch).toHaveBeenCalledWith("feat");
     expect(useRepo.getState().dialog).toBeNull();
-    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok", text: "已迁出到 feat" });
+    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok", text: "已检出到 feat" });
   });
 
-  it("脏工作树：拦截弹三选，不直接迁出", async () => {
+  it("脏工作树：拦截弹三选，不直接检出", async () => {
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
 
     await useRepo.getState().checkout("feat");
@@ -466,13 +474,13 @@ describe("checkout 安全模型（票 01）", () => {
     const d = useRepo.getState().dialog;
     expect(d).not.toBeNull();
     expect(d?.files).toEqual(["s.ts", "u.ts"]);
-    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动迁出", "贮藏后迁出"]);
+    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动检出", "贮藏后检出"]);
 
     d!.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
   });
 
-  it("脏工作树选「贮藏后迁出」：先入贮藏再迁出", async () => {
+  it("脏工作树选「贮藏后检出」：先入贮藏再检出", async () => {
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
     (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
     (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -482,7 +490,7 @@ describe("checkout 安全模型（票 01）", () => {
     // 宿主契约：action.run 返回非 false 时由 DialogHost 关闭对话框
     if (d.actions[1].run("", false) !== false) useRepo.getState().closeDialog();
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
-    expect(ipc.stashPush).toHaveBeenCalledWith("迁出前自动贮藏");
+    expect(ipc.stashPush).toHaveBeenCalledWith("检出前自动贮藏");
     expect(useRepo.getState().dialog).toBeNull();
   });
 });
@@ -567,6 +575,64 @@ describe("图谱提交右键：建分支与 reset（票 03）", () => {
     logOk();
     await useRepo.getState().createBranch("feat", true, "abc123");
     expect(ipc.createBranch).toHaveBeenCalledWith("feat", true, "abc123");
+  });
+
+  it("createBranchFlow：起点 ref 透传到底（「从此处新建分支」= 该分支 tip，不是 HEAD）", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().createBranchFlow({ ref: "fix/typo", label: "分支 fix/typo" });
+    const d = useRepo.getState().dialog!;
+    expect(d.message).toContain("分支 fix/typo");
+    await d.actions[0].run("feat/new", true);
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat/new", true, "fix/typo");
+  });
+
+  it("createBranchFlow：不给起点时基于当前 HEAD（ref 为 undefined）", async () => {
+    withRepo();
+    logOk();
+    useRepo.getState().createBranchFlow();
+    const d = useRepo.getState().dialog!;
+    expect(d.message).toContain("当前 HEAD");
+    await d.actions[0].run("feat/x", false);
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat/x", false, undefined);
+  });
+
+  it("copyText：剪贴板可用时提示已复制", async () => {
+    useRepo.setState({ toasts: [] });
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    await useRepo.getState().copyText("feat/x", "分支名");
+    vi.unstubAllGlobals();
+    expect(writeText).toHaveBeenCalledWith("feat/x");
+    const toasts = useRepo.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({ kind: "ok", text: "已复制分支名" });
+  });
+
+  it("copyText：剪贴板不可用时给错误提示（不静默）", async () => {
+    useRepo.setState({ toasts: [] });
+    vi.stubGlobal("navigator", {});
+    await useRepo.getState().copyText("feat/x", "分支名");
+    vi.unstubAllGlobals();
+    const toasts = useRepo.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({
+      kind: "err",
+      text: "复制分支名失败：剪贴板不可用",
+    });
+  });
+
+  it("copyCommitMessage：按需拉详情后复制完整信息（body 优先，退回 subject）", async () => {
+    useRepo.setState({ toasts: [] });
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: { ...c("abc123def456", "subject 行"), short_id: "abc123d" },
+      body: "subject 行\n\n正文段落\n",
+      files: [],
+      patch: null,
+    });
+    await useRepo.getState().copyCommitMessage("abc123def456");
+    vi.unstubAllGlobals();
+    expect(writeText).toHaveBeenCalledWith("subject 行\n\n正文段落");
   });
 
   it("resetBranchTo：先弹模式选择；硬重置遇脏树再拦截", async () => {
@@ -1134,7 +1200,7 @@ describe("revert 与 cherry-pick（二阶段票 04/05）", () => {
     logOk();
     await useRepo.getState().revertFlow("merge1");
     const d = useRepo.getState().dialog!;
-    expect(d.title).toContain("无法还原合并提交");
+    expect(d.title).toContain("合并提交无法反转");
     expect(ipc.revertCommit).not.toHaveBeenCalled();
 
     await useRepo.getState().revertFlow("normal1");
@@ -1171,14 +1237,14 @@ describe("revert 与 cherry-pick（二阶段票 04/05）", () => {
       branch: "main",
     });
     await useRepo.getState().cherryPickFlow("normal1");
-    useRepo.getState().dialog!.actions[0].run("", false); // 摘取
+    useRepo.getState().dialog!.actions[0].run("", false); // 拣选
     await new Promise((r) => setTimeout(r, 50));
     await vi.waitFor(() => expect(useRepo.getState().dialog?.title).toBe("空提交"));
     const empty = useRepo.getState().dialog!;
     expect(empty.actions.map((a) => a.label)).toEqual([
       "跳过并继续",
       "仍然提交（空提交）",
-      "放弃本次摘取",
+      "放弃本次拣选",
     ]);
     empty.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.cherryPickSkip).toHaveBeenCalled());
@@ -1228,5 +1294,494 @@ describe("侧栏引用跳转与右栏关闭", () => {
     expect(s.detail).toBeNull();
     expect(s.openFiles).toEqual([]);
     expect(s.detailFile).toBeNull();
+  });
+});
+
+describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
+  const withRepo = (over: { branch?: string; upstream?: string | null } = {}) => {
+    const branch = over.branch ?? "main";
+    const upstream = over.upstream === undefined ? "origin/main" : over.upstream;
+    useRepo.setState({
+      meta: { name: "demo", path: "D:/demo", branch },
+      summary: { branch, upstream, ahead: 0, behind: 0 },
+      refs: [
+        { name: branch, kind: "branch", tip: "abc1234", time: 0, upstream },
+        { name: "origin/main", kind: "remote", tip: "abc1234", time: 0, upstream: null },
+      ],
+    });
+  };
+  const status = (over: Partial<RepoStatus> = {}) =>
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [],
+      operation: null,
+      branch: "main",
+      ...over,
+    });
+  const logOk = () => {
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+  };
+  const lastToast = () => {
+    const t = useRepo.getState().toasts;
+    return t[t.length - 1];
+  };
+  const dirty = { unstaged: [{ path: "src/a.ts", old_path: null, status: "M" as const }] };
+
+  it("03 checkoutRemote：干净树直接建同名跟踪分支并检出", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().checkoutRemote("origin/feat/login", "feat/login");
+    expect(ipc.createBranch).toHaveBeenCalledWith("feat/login", true, "origin/feat/login");
+    expect(useRepo.getState().dialog).toBeNull();
+  });
+
+  it("03 checkoutRemote：脏树先三选拦截，选「带着改动检出」才建分支", async () => {
+    withRepo();
+    logOk();
+    status(dirty);
+    await useRepo.getState().checkoutRemote("origin/feat/login", "feat/login");
+    expect(ipc.createBranch).not.toHaveBeenCalled();
+    const d = useRepo.getState().dialog!;
+    expect(d.files).toEqual(["src/a.ts"]);
+    expect(d.actions.map((a) => a.label)).toEqual(["带着改动检出", "贮藏后检出"]);
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.createBranch).toHaveBeenCalled());
+  });
+
+  it("03 pushToRemote / fetchRemoteFlow：远程名透传；无参抓取 = 全量", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().pushToRemote("origin", "feat/login");
+    expect(ipc.pushTo).toHaveBeenCalledWith("origin", "feat/login");
+
+    await useRepo.getState().fetchRemoteFlow("origin");
+    expect(ipc.fetch).toHaveBeenCalledWith("origin");
+    expect(lastToast().text).toBe("已抓取 origin");
+
+    await useRepo.getState().fetchRemoteFlow();
+    expect(ipc.fetch).toHaveBeenLastCalledWith(undefined);
+    expect(lastToast().text).toBe("抓取完成");
+  });
+
+  it("03 deleteRemoteBranchFlow：二次确认后才删；失败给可读错误", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().deleteRemoteBranchFlow("origin", "feat/login");
+    expect(ipc.deleteRemoteBranch).not.toHaveBeenCalled();
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("origin/feat/login");
+    expect(d.actions[0].kind).toBe("danger");
+    d.actions[0].run("", false);
+    await vi.waitFor(() =>
+      expect(ipc.deleteRemoteBranch).toHaveBeenCalledWith("origin", "feat/login"),
+    );
+    // 等第一次 runWrite 收尾（writeBusy 释放）再走失败路径
+    await vi.waitFor(() => expect(useRepo.getState().writeBusy).toBe(false));
+    (ipc.deleteRemoteBranch as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "remote ref does not exist",
+    });
+    await useRepo.getState().deleteRemoteBranchFlow("origin", "gone");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(lastToast().kind).toBe("err"));
+    expect(lastToast().text).toContain("remote ref does not exist");
+  });
+
+  it("04 setUpstreamFlow：非法远程分支即时拦截；合法值调 setUpstream", async () => {
+    withRepo({ upstream: null });
+    logOk();
+    status();
+    useRepo.setState({
+      refs: [{ name: "origin/main", kind: "remote", tip: "abc1234", time: 0, upstream: null }],
+    });
+    useRepo.getState().setUpstreamFlow("feat");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("feat");
+    expect(d.input!.validate!("origin/nope")).toContain("远程分支");
+    expect(d.input!.validate!("origin/main")).toBeNull();
+
+    expect(await d.actions[0].run("origin/main", false)).toBeUndefined();
+    expect(ipc.setUpstream).toHaveBeenCalledWith("feat", "origin/main");
+    expect(useRepo.getState().toasts.some((t) => t.text.includes("origin/main"))).toBe(true);
+  });
+
+  it("04 unsetUpstream：直接取消并提示", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().unsetUpstream("feat");
+    expect(ipc.unsetUpstream).toHaveBeenCalledWith("feat");
+    expect(useRepo.getState().toasts.some((t) => t.text.includes("已取消"))).toBe(true);
+  });
+
+  it("04 pushBranchFlow：有上游推到上游远程同名分支；无上游走「建立上游关联并推送」", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().pushBranchFlow("main");
+    expect(ipc.pushTo).toHaveBeenCalledWith("origin", "main");
+
+    withRepo({ upstream: null });
+    logOk();
+    await useRepo.getState().pushBranchFlow("main");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("建立上游关联");
+    d.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.pushUpstream).toHaveBeenCalledWith("origin", "main"));
+  });
+
+  it("04 fetchForBranch：有上游只抓该远程；无上游全量抓取", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().fetchForBranch("main");
+    expect(ipc.fetch).toHaveBeenCalledWith("origin");
+
+    withRepo({ upstream: null });
+    logOk();
+    await useRepo.getState().fetchForBranch("main");
+    expect(ipc.fetch).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("05 createTagFlow：非法名 / 重名即时拦截，轻量标签一次到位", async () => {
+    withRepo();
+    logOk();
+    status();
+    useRepo.setState({
+      refs: [{ name: "v1.0.0", kind: "tag", tip: "abc1234", time: 0, upstream: null }],
+    });
+    useRepo.getState().createTagFlow("abc1234def");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toBe("新建标签");
+    expect(d.input!.validate!("")).toContain("不能为空");
+    expect(d.input!.validate!("v1.0.0")).toContain("已存在同名标签");
+    expect(d.input!.validate!("v 1")).toContain("非法标签名");
+    expect(d.input!.validate!("v2/")).toContain("非法标签名");
+    expect(d.input!.validate!("v2//x")).toContain("非法标签名");
+    expect(d.input!.validate!("v2.")).toContain("非法标签名");
+    expect(d.input!.validate!("v2.0.0")).toBeNull();
+
+    d.actions[0].run("v2.0.0", false);
+    await vi.waitFor(() =>
+      expect(ipc.createTag).toHaveBeenCalledWith("v2.0.0", "abc1234def", undefined),
+    );
+  });
+
+  it("05 createTagFlow：勾选备注走两步，备注框不被宿主关掉（run 返回 false）", async () => {
+    withRepo();
+    logOk();
+    status();
+    useRepo.getState().createTagFlow("abc1234def");
+    const first = useRepo.getState().dialog!;
+    expect(first.actions[0].run("v1.0.0", true)).toBe(false);
+    const second = useRepo.getState().dialog!;
+    expect(second.title).toContain("备注");
+    second.actions[0].run("首个可用版本", false);
+    await vi.waitFor(() =>
+      expect(ipc.createTag).toHaveBeenCalledWith("v1.0.0", "abc1234def", "首个可用版本"),
+    );
+  });
+
+  it("06 checkoutCommitFlow：干净树检出并提示分离状态；脏树先拦截", async () => {
+    withRepo();
+    logOk();
+    status();
+    await useRepo.getState().checkoutCommitFlow("abc1234def");
+    expect(ipc.checkoutCommit).toHaveBeenCalledWith("abc1234def");
+    expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).toContain("从此处新建分支");
+
+    withRepo();
+    logOk();
+    status(dirty);
+    await useRepo.getState().checkoutCommitFlow("abc1234def");
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("分离 HEAD");
+    expect(ipc.checkoutCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("06 分离态提交：成功 toast 追加「把提交挂回分支」提示", async () => {
+    withRepo({ branch: "(HEAD detached at abc1234)" });
+    logOk();
+    status({ branch: "(HEAD detached at abc1234)" });
+    (ipc.commit as ReturnType<typeof vi.fn>).mockResolvedValue("abc1234");
+    await useRepo.getState().commit("fix: 分离态提交");
+    const texts = useRepo.getState().toasts.map((t) => t.text).join(" ");
+    expect(texts).toContain("提交完成");
+    expect(texts).toContain("提交未挂在任何分支上");
+  });
+
+  it("07 rebaseOntoFlow：确认后变基，历史被改写且已有上游时附 force push 说明", async () => {
+    withRepo();
+    status();
+    // 变基前 HEAD = oldhead；refresh 重取日志后 HEAD 变成 newhead（历史被改写）
+    useRepo.setState({ commits: [{ ...c("oldhead", "变基前 HEAD"), refs: ["HEAD", "main"] }] });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({
+      commits: [{ ...c("newhead", "变基后 HEAD"), refs: ["HEAD", "main"] }],
+      done: true,
+    });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    const confirm = useRepo.getState().dialog!;
+    expect(confirm.title).toContain("origin/main");
+    confirm.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.rebase).toHaveBeenCalledWith("origin/main"));
+    await vi.waitFor(() =>
+      expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).toContain("force push"),
+    );
+  });
+
+  it("07 rebaseOntoFlow：目标已是祖先（HEAD 未变）时不误报 force push", async () => {
+    withRepo();
+    status();
+    useRepo.setState({ commits: [{ ...c("samehead", "HEAD"), refs: ["HEAD", "main"] }] });
+    (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({
+      commits: [{ ...c("samehead", "HEAD"), refs: ["HEAD", "main"] }],
+      done: true,
+    });
+    (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (ipc.listRefs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (ipc.listRemotes as ReturnType<typeof vi.fn>).mockResolvedValue(["origin"]);
+
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(lastToast().text).toContain("已把 main 变基到"));
+    // 流程尾部不追加新提示：最后一条仍是这次变基的 ok 结果
+    await new Promise((r) => setTimeout(r, 25));
+    expect(lastToast().text).toContain("已把 main 变基到");
+    expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).not.toContain("force push");
+  });
+
+  it("06 checkoutCommitFlow：检出失败时不补「不在任何分支上」的成功提示", async () => {
+    withRepo();
+    logOk();
+    status();
+    (ipc.checkoutCommit as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "工作区改动会与目标冲突",
+    });
+    await useRepo.getState().checkoutCommitFlow("abc1234def");
+    const texts = useRepo.getState().toasts.map((t) => t.text).join(" ");
+    expect(texts).toContain("工作区改动会与目标冲突");
+    expect(texts).not.toContain("当前不在任何分支上");
+  });
+
+  it("07 rebaseOntoFlow：冲突时按 operation=rebase 给「跳过本次提交」出口提示", async () => {
+    withRepo();
+    logOk();
+    (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      staged: [],
+      unstaged: [],
+      unmerged: [{ path: "src/a.ts", old_path: null, status: "U" as const }],
+      operation: "rebase",
+      branch: "main",
+    });
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(ipc.rebase).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(useRepo.getState().toasts.map((t) => t.text).join(" ")).toContain("跳过本次提交"),
+    );
+  });
+
+  it("07 rebaseOntoFlow：分离 HEAD 与写忙时拒绝，不弹确认框", async () => {
+    withRepo({ branch: "(HEAD detached at abc1234)" });
+    logOk();
+    status();
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    expect(useRepo.getState().dialog).toBeNull();
+    expect(lastToast().text).toContain("先「从此处新建分支」");
+
+    withRepo();
+    useRepo.setState({ writeBusy: true });
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    expect(useRepo.getState().dialog).toBeNull();
+    expect(lastToast().text).toContain("正在进行");
+    useRepo.setState({ writeBusy: false });
+  });
+
+  it("07 skipOperationFlow：仅在 rebase 进行中可用", async () => {
+    withRepo();
+    logOk();
+    useRepo.setState({
+      status: {
+        staged: [],
+        unstaged: [],
+        unmerged: [],
+        operation: "merge",
+        branch: "main",
+      },
+    });
+    await useRepo.getState().skipOperationFlow();
+    expect(ipc.continueOperation).not.toHaveBeenCalled();
+
+    useRepo.setState({
+      status: {
+        staged: [],
+        unstaged: [],
+        unmerged: [{ path: "a.ts", old_path: null, status: "U" }],
+        operation: "rebase",
+        branch: "main",
+      },
+    });
+    await useRepo.getState().skipOperationFlow();
+    expect(ipc.continueOperation).toHaveBeenCalledWith("rebase", "skip");
+  });
+
+  it("07 rebaseOntoFlow：脏工作树先拦截，选项是「继续变基 / 贮藏后变基」", async () => {
+    withRepo();
+    logOk();
+    status(dirty);
+    await useRepo.getState().rebaseOntoFlow("origin/main");
+    // 第一步是变基说明确认框，确认后才进脏树拦截
+    useRepo.getState().dialog!.actions[0].run("", false);
+    await vi.waitFor(() => expect(useRepo.getState().dialog?.files).toEqual(["src/a.ts"]));
+    const guard = useRepo.getState().dialog!;
+    expect(guard.actions.map((a) => a.label)).toEqual(["继续变基", "贮藏后变基"]);
+    expect(ipc.rebase).not.toHaveBeenCalled();
+
+    // 「贮藏后变基」= stash push → rebase（不自动 pop）
+    guard.actions[1].run("", false);
+    await vi.waitFor(() => expect(ipc.rebase).toHaveBeenCalledWith("origin/main"));
+    expect(ipc.stashPush).toHaveBeenCalledWith("变基前自动贮藏");
+  });
+  it("08 compareWithHead：成功进比较模式（base=HEAD）；失败清空并报错", async () => {
+    withRepo();
+    const data = {
+      base: { ...c("h1", "HEAD 提交"), refs: ["HEAD", "main"] },
+      head: c("c2", "被比较的提交"),
+      files: [],
+      patch: "",
+    };
+    (ipc.getCompare as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+    await useRepo.getState().compareWithHead("c2");
+    const cmp = useRepo.getState().compare!;
+    expect(cmp.base).toBe("HEAD");
+    expect(cmp.head).toBe("c2");
+    expect(cmp.loading).toBe(false);
+    expect(cmp.data?.patch).toBe("");
+    expect(ipc.getCompare).toHaveBeenCalledWith("HEAD", "c2");
+
+    (ipc.getCompare as ReturnType<typeof vi.fn>).mockRejectedValue({
+      kind: "CommandFailed",
+      message: "unknown revision",
+    });
+    await useRepo.getState().compareWithHead("bad");
+    expect(useRepo.getState().compare).toBeNull();
+    expect(lastToast().text).toContain("unknown revision");
+  });
+
+
+  it("08 进入比较模式会收起 stash 查看（右栏优先级里 stash 高于比较，留着会挡住比较面板）", async () => {
+    withRepo();
+    useRepo.setState({ stashView: { index: 0, patch: "diff", loading: false } });
+    (ipc.getCompare as ReturnType<typeof vi.fn>).mockResolvedValue({
+      base: c("h1", "HEAD 提交"),
+      head: c("c2", "被比较的提交"),
+      files: [],
+      patch: null,
+    });
+    await useRepo.getState().compareWithHead("c2");
+    expect(useRepo.getState().stashView).toBeNull();
+    expect(useRepo.getState().mainTab).toBe("history");
+    expect(useRepo.getState().compare?.loading).toBe(false);
+  });
+  it("08 比较模式退出：切换 tab / 选中提交 / 关闭右栏都退出", async () => {
+    withRepo();
+    const seed = { base: "HEAD", head: "c2", data: null, loading: false };
+
+    useRepo.setState({ compare: seed });
+    useRepo.getState().setMainTab("changes");
+    expect(useRepo.getState().compare).toBeNull();
+
+    useRepo.setState({ compare: seed });
+    useRepo.getState().closeRightPane();
+    expect(useRepo.getState().compare).toBeNull();
+
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: c("c9", "另一个提交"),
+      body: "",
+      files: [],
+      patch: null,
+    });
+    useRepo.setState({ compare: seed });
+    await useRepo.getState().select("c9");
+    expect(useRepo.getState().compare).toBeNull();
+  });
+
+  it("09 amendMessageFlow：非 HEAD（含未加载的行）拒绝；HEAD 预填完整信息并改写", async () => {
+    withRepo();
+    useRepo.setState({
+      commits: [
+        { ...c("h1", "HEAD 提交"), refs: ["HEAD", "main"] },
+        { ...c("old1", "更早的提交"), refs: [] },
+      ],
+    });
+    useRepo.getState().amendMessageFlow("old1");
+    expect(ipc.getCommitDetail).not.toHaveBeenCalled();
+    expect(lastToast().text).toContain("只能修改 HEAD");
+
+    useRepo.getState().amendMessageFlow("未加载的提交");
+    expect(ipc.getCommitDetail).not.toHaveBeenCalled();
+    expect(useRepo.getState().dialog).toBeNull();
+
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: c("h1", "HEAD 提交"),
+      body: "详细说明",
+      files: [],
+      patch: null,
+    });
+    logOk();
+    status();
+    useRepo.getState().amendMessageFlow("h1");
+    await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
+    const d = useRepo.getState().dialog!;
+    expect(d.title).toContain("h1");
+    expect(d.input!.initial).toBe("HEAD 提交\n\n详细说明");
+    expect(d.input!.multiline).toBe(true);
+    expect(d.input!.validate!("   ")).toBe("提交信息不能为空");
+    expect(d.message).toBe("只改写提交信息，不改动文件内容。");
+    d.actions[0].run("新的提交信息", false);
+    await vi.waitFor(() => expect(ipc.amendMessage).toHaveBeenCalledWith("新的提交信息"));
+
+    // 暂存区非空：必须明确警告改动会一并并入（commit --amend 的固有行为）
+    useRepo.setState({
+      status: {
+        staged: [{ path: "s.ts", old_path: null, status: "M" }],
+        unstaged: [],
+        unmerged: [],
+        operation: null,
+        branch: "main",
+      },
+    });
+    useRepo.setState({ dialog: null });
+    useRepo.getState().amendMessageFlow("h1");
+    await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
+    expect(useRepo.getState().dialog!.message).toContain("1 个已暂存文件");
+    // 只有 subject（无 body）时预填不残留空行
+    (ipc.getCommitDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      meta: c("h1", "HEAD 提交"),
+      body: "",
+      files: [],
+      patch: null,
+    });
+    // 上一段 runWrite 的 refresh 已把 commits 刷空，这里补回 HEAD 行（amendMessageFlow 只认已加载的行）
+    useRepo.setState({
+      commits: [{ ...c("h1", "HEAD 提交"), refs: ["HEAD", "main"] }],
+      status: null,
+      dialog: null,
+    });
+    useRepo.getState().amendMessageFlow("h1");
+    await vi.waitFor(() => expect(useRepo.getState().dialog).not.toBeNull());
+    expect(useRepo.getState().dialog!.input!.initial).toBe("HEAD 提交");
   });
 });

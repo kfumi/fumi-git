@@ -5,6 +5,7 @@ import type {
   AppConfig,
   BranchSummary,
   CommitDetail,
+  CompareResult,
   ConflictVersions,
   GitError,
   GitOperation,
@@ -86,7 +87,8 @@ export const ipc = {
   /** HEAD 的完整提交信息（amend 勾选时预填） */
   getLastCommitMessage: () => cmd<string>("get_last_commit_message"),
 
-  fetch: () => cmd<string>("fetch_remote"),
+  /** 抓取指定远程；省略 remote 时抓取全部远程 */
+  fetch: (remote?: string) => cmd<string>("fetch_remote", { remote: remote ?? null }),
   pull: () => cmd<string>("pull_remote"),
   push: () => cmd<string>("push_remote"),
   pushUpstream: (remote: string, branch: string) =>
@@ -109,17 +111,37 @@ export const ipc = {
   /** 选边解决：整文件采用我方/对方并标记已解决 */
   resolveTake: (path: string, ours: boolean) => cmd<void>("resolve_take", { path, ours }),
   /** 完成进行中的操作（--continue，沿用默认提交信息） */
-  continueOperation: (op: GitOperation) => cmd<string>("continue_operation", { op }),
+  continueOperation: (op: GitOperation, action?: "continue" | "skip") =>
+    cmd<string>("continue_operation", { op, action: action ?? null }),
   /** 用系统默认应用打开文件（手动编辑冲突） */
   openInEditor: (path: string) => cmd<void>("open_file_in_editor", { path }),
-  /** 还原普通提交（合并提交被后端拦截） */
+  /** 反转提交（revert）普通提交；合并提交被后端拦截 */
   revertCommit: (hash: string) => cmd<string>("revert_commit", { hash }),
-  /** 摘取单提交（空提交返回 NothingToCommit） */
+  /** 拣选单个提交（cherry-pick；空提交返回 NothingToCommit） */
   cherryPick: (hash: string) => cmd<string>("cherry_pick", { hash }),
   /** 跳过卡住的空 cherry-pick */
   cherryPickSkip: () => cmd<void>("cherry_pick_skip"),
   /** 空提交场景下仍然提交（--allow-empty） */
   cherryPickKeep: () => cmd<string>("cherry_pick_keep"),
+  /** 删除远程分支（push <remote> --delete） */
+  deleteRemoteBranch: (remote: string, branch: string) =>
+    cmd<string>("delete_remote_branch", { remote, branch }),
+  /** 建立上游关联；upstream 形如 `origin/main` */
+  setUpstream: (branch: string, upstream: string) =>
+    cmd<void>("set_upstream", { branch, upstream }),
+  /** 取消上游关联 */
+  unsetUpstream: (branch: string) => cmd<void>("unset_upstream", { branch }),
+  /** 新建标签；带 message 即附注标签 */
+  createTag: (name: string, hash: string, message?: string) =>
+    cmd<void>("create_tag", { name, hash, message: message ?? null }),
+  /** 检出提交（分离 HEAD） */
+  checkoutCommit: (hash: string) => cmd<void>("checkout_commit", { hash }),
+  /** 把当前分支变基到 refName */
+  rebase: (refName: string) => cmd<string>("rebase", { refName }),
+  /** 两提交比较：base..head 的文件统计 + 统一 diff */
+  getCompare: (base: string, head: string) => cmd<CompareResult>("get_compare", { base, head }),
+  /** 改写 HEAD 提交信息（git commit --amend；已暂存的改动会一并并入） */
+  amendMessage: (message: string) => cmd<void>("amend_message", { message }),
 };
 
 export function listenRepoChanged(cb: () => void): Promise<() => void> {

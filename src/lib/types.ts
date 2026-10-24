@@ -42,7 +42,7 @@ export interface FileEntry {
 }
 
 /** 进行中的多提交操作（决定横幅文案与中止路由） */
-export type GitOperation = 'merge' | 'cherry-pick' | 'revert';
+export type GitOperation = 'merge' | 'cherry-pick' | 'revert' | 'rebase';
 
 export interface RepoStatus {
   staged: FileEntry[];
@@ -95,6 +95,8 @@ export interface RefEntry {
   kind: 'branch' | 'remote' | 'tag';
   /** tip 提交 id；附注标签已剥离到所标注的提交 */
   tip: string;
+  /** 上游短名（`origin/main`）；无上游或非分支为 null */
+  upstream: string | null;
   /** 创建时间（unix 秒；标签按此倒序） */
   time: number;
 }
@@ -121,4 +123,15 @@ export type ThemeMode = 'dark' | 'light' | 'system';
 export interface GitError {
   kind: 'NotARepo' | 'BareRepo' | 'NoUpstream' | 'NonFastForward' | 'NothingToCommit' | 'CommandFailed' | 'Io';
   message: string;
+}
+
+/** 两提交比较结果（get_compare）：base..head 的文件统计与统一 diff */
+export interface CompareResult {
+  /** 比较基准（前端传 "HEAD" 时为其所指提交） */
+  base: CommitEntry;
+  /** 被比较的提交 */
+  head: CommitEntry;
+  files: FileStat[];
+  /** 统一 diff 全文；两端内容一致（无差异）为 null */
+  patch: string | null;
 }

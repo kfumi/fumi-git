@@ -15,6 +15,7 @@ import { MainArea } from "./components/MainArea";
 import { CommitDetailPanel } from "./components/StagePanel";
 import { FileDiffTabs, StashDiffView, WorkDiffView } from "./components/FileDiffTabs";
 import { ConflictView } from "./components/ConflictView";
+import { ComparePanel } from "./components/ComparePanel";
 import { HDivider, SidebarHandle, VDivider } from "./components/ResizeHandle";
 import { Welcome } from "./components/Welcome";
 import { ToastHost } from "./components/ToastHost";
@@ -41,10 +42,12 @@ export default function App() {
   const selectedId = useRepo((s) => s.selectedId);
   const stashView = useRepo((s) => s.stashView);
   const conflictView = useRepo((s) => s.conflictView);
+  const compare = useRepo((s) => s.compare);
   // 右栏按需出现：冲突解决视图、stash 条目查看、改动 tab 选中了工作区文件、或历史 tab 选中了提交
   const showRight =
     conflictView !== null ||
     stashView !== null ||
+    compare !== null ||
     (mainTab === "changes" ? workFile !== null : selectedId !== null);
   const [sidebarW, setSidebarW] = useState(loadSidebarWidth);
 
@@ -141,14 +144,17 @@ function RightPane() {
   const workFile = useRepo((s) => s.workFile);
   const stashView = useRepo((s) => s.stashView);
   const conflictView = useRepo((s) => s.conflictView);
+  const compare = useRepo((s) => s.compare);
   const closeRightPane = useRepo((s) => s.closeRightPane);
 
   let content: React.ReactNode;
-  // 冲突解决视图优先，其次 stash 查看
+  // 冲突解决视图优先，其次 stash 查看、比较模式
   if (conflictView) {
     content = <ConflictView />;
   } else if (stashView) {
     content = <StashDiffView />;
+  } else if (compare) {
+    content = <ComparePanel />;
   } else if (mainTab === "changes") {
     content = workFile ? (
       <WorkDiffView />

@@ -17,6 +17,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
   const primary = desc.actions.find((a) => a.kind === "primary");
 
   // 输入即时校验（表单场景）；submit 错误单独展示，二者取先
@@ -26,7 +27,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
   const error = inputError ?? submitError;
 
   useEffect(() => {
-    if (desc.input) inputRef.current?.select();
+    if (desc.input) (desc.input.multiline ? areaRef.current : inputRef.current)?.select();
   }, [desc.input]);
 
   const run = async (action: DialogDesc["actions"][number]) => {
@@ -83,7 +84,7 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
             ))}
           </div>
         )}
-        {desc.input && (
+        {desc.input && !desc.input.multiline && (
           <input
             ref={inputRef}
             value={input}
@@ -94,6 +95,20 @@ function DialogPanel({ desc, onClose }: { desc: DialogDesc; onClose: () => void 
             }}
             placeholder={desc.input.placeholder}
             className="mt-2.5 h-8 w-full rounded-lg border border-brd bg-panel2 px-2.5 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
+          />
+        )}
+        {desc.input?.multiline && (
+          <textarea
+            ref={areaRef}
+            value={input}
+            rows={5}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setSubmitError(null);
+              setInputError(desc.input?.validate?.(e.target.value) ?? null);
+            }}
+            placeholder={desc.input.placeholder}
+            className="mt-2.5 w-full resize-y rounded-lg border border-brd bg-panel2 p-2.5 font-mono text-xs leading-relaxed text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
           />
         )}
         {desc.checkbox && (

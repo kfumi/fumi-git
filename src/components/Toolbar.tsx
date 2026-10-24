@@ -19,15 +19,18 @@ import {
 } from "lucide-react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import {
-  localBranchMenu,
-  remoteBranchMenu,
-  remoteCheckout,
-  type BranchMenuActions,
-} from "./branchMenu";
+  DETACHED_HINT,
+  detachedHead,
+  branchMenu as branchRowMenu,
+  remoteMenu as remoteRowMenu,
+} from "../lib/menus";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
 import { useAppearance } from "../appearance";
 import type { ThemeMode } from "../lib/types";
+
+/** origin/feat/x → feat/x（远端名之后的剩余段） */
+const stripRemote = (fullName: string) => fullName.split("/").slice(1).join("/");
 
 const MODES: ThemeMode[] = ["dark", "light", "system"];
 
@@ -54,6 +57,16 @@ export function Toolbar() {
   const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
   const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
   const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
+  const copyText = useRepo((s) => s.copyText);
+  const checkoutRemote = useRepo((s) => s.checkoutRemote);
+  const pushToRemote = useRepo((s) => s.pushToRemote);
+  const fetchRemoteFlow = useRepo((s) => s.fetchRemoteFlow);
+  const deleteRemoteBranchFlow = useRepo((s) => s.deleteRemoteBranchFlow);
+  const rebaseOntoFlow = useRepo((s) => s.rebaseOntoFlow);
+  const setUpstreamFlow = useRepo((s) => s.setUpstreamFlow);
+  const unsetUpstream = useRepo((s) => s.unsetUpstream);
+  const pushBranchFlow = useRepo((s) => s.pushBranchFlow);
+  const fetchForBranch = useRepo((s) => s.fetchForBranch);
   const pushToFlow = useRepo((s) => s.pushToFlow);
   const pushAllRemotesFlow = useRepo((s) => s.pushAllRemotesFlow);
   const refresh = useRepo((s) => s.refresh);
@@ -124,13 +137,30 @@ export function Toolbar() {
     return items;
   };
 
-  // 分支操作动作集（菜单构建函数与侧栏右键共用，见 components/branchMenu.ts）
-  const branchActions: BranchMenuActions = {
-    checkout: (b) => void checkout(b),
-    createBranchFlow,
-    mergeBranchFlow: (b) => void mergeBranchFlow(b),
-    renameBranchFlow,
-    deleteBranchFlow: (b) => void deleteBranchFlow(b),
+  // 分支右键动作集：与侧栏共用同一构建（lib/menus 单点定义），全量接线
+  const localActions = {
+    checkout: (b: string) => void checkout(b),
+    mergeBranch: (r: string) => void mergeBranchFlow(r),
+    createBranchFrom: (ref: string, label: string) => createBranchFlow({ ref, label }),
+    copy: (text: string, label: string) => void copyText(text, label),
+    renameBranch: (b: string) => renameBranchFlow(b),
+    deleteBranch: (b: string) => void deleteBranchFlow(b),
+    rebaseOnto: (r: string) => void rebaseOntoFlow(r),
+    setUpstream: (b: string) => setUpstreamFlow(b),
+    unsetUpstream: (b: string) => void unsetUpstream(b),
+    pushBranch: (b: string) => void pushBranchFlow(b),
+    fetchForBranch: (b: string) => void fetchForBranch(b),
+  };
+  const remoteActions = {
+    checkout: localActions.checkout,
+    mergeBranch: localActions.mergeBranch,
+    createBranchFrom: localActions.createBranchFrom,
+    copy: localActions.copy,
+    rebaseOnto: localActions.rebaseOnto,
+    checkoutRemote: (full: string, branch: string) => void checkoutRemote(full, branch),
+    pushToRemote: (remote: string, branch: string) => void pushToRemote(remote, branch),
+    fetch: (remote?: string) => void fetchRemoteFlow(remote),
+    deleteRemoteBranch: (remote: string, branch: string) => void deleteRemoteBranchFlow(remote, branch),
   };
 
   // 分支下拉面板：本地 / 远程两组，左键行 = 切换，右键行 = 该分支操作菜单
@@ -166,7 +196,12 @@ export function Toolbar() {
         items.push({
           label: e.name,
           title: `${e.name} → ${e.tip.slice(0, 7)}`,
-          onSelect: () => remoteCheckout(e.name, e.tip, localNames, branchActions).run(),
+          // 左键 = git switch 的 DWIM 显式化：同名本地分支直接切，否则弹「新建分支」预填短名、以其 tip 为起点
+          onSelect: () => {
+            const local = stripRemote(e.name);
+            if (local && localNames.has(local)) void checkout(local);
+            else createBranchFlow({ ref: e.tip, label: `远程分支 ${e.name}` }, local);
+          },
           onContextMenu: (x, y) => setRowMenu({ x, y, branch: e.name, tip: e.tip, remote: true }),
         });
       }
@@ -178,11 +213,31 @@ export function Toolbar() {
 
   const rowMenuItems = (): MenuItem[] => {
     if (!rowMenu) return [];
+    const detachedNow = detachedHead(summary) !== null;
+    const localNames = new Set(refs.filter((e) => e.kind === "branch").map((e) => e.name));
     if (rowMenu.remote) {
-      const localNames = new Set(refs.filter((e) => e.kind === "branch").map((e) => e.name));
-      return remoteBranchMenu(rowMenu.branch, rowMenu.tip, localNames, branchActions);
+      const branch = stripRemote(rowMenu.branch);
+      return remoteRowMenu(
+        {
+          remote: rowMenu.branch.split("/")[0],
+          branch,
+          full: rowMenu.branch,
+          hasLocal: localNames.has(branch),
+          detached: detachedNow,
+        },
+        remoteActions,
+      );
     }
-    return localBranchMenu(rowMenu.branch, summary?.branch === rowMenu.branch, branchActions);
+    const entry = refs.find((e) => e.kind === "branch" && e.name === rowMenu.branch);
+    return branchRowMenu(
+      {
+        name: rowMenu.branch,
+        current: summary?.branch === rowMenu.branch,
+        upstream: entry?.upstream ?? null,
+        detached: detachedNow,
+      },
+      localActions,
+    );
   };
 
   const doRefresh = async () => {
@@ -194,6 +249,8 @@ export function Toolbar() {
   const ThemeIcon = THEME_ICON[mode];
   // 推送目标 = 上游远程（无上游时留空，由点击后的弹框引导）
   const pushTarget = summary?.upstream?.split("/")[0] ?? "";
+  // 分离 HEAD：工具栏的同步类按钮全部禁用并给统一引导（ui-spec §4 矩阵）
+  const detached = detachedHead(summary);
 
   return (
     <div className="flex h-[42px] shrink-0 items-center gap-1.5 border-b border-brd bg-panel px-3">
@@ -234,7 +291,7 @@ export function Toolbar() {
         className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium transition-colors hover:border-accent"
       >
         <GitBranch size={11} className="shrink-0 text-accent-ink" aria-hidden />
-        {summary?.branch ?? meta.branch}
+        {detached ? "HEAD（分离）" : (summary?.branch ?? meta.branch)}
         {summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
           <span className="tnum flex items-center gap-1 text-[0.65625rem] font-normal">
             {summary.ahead > 0 && (
@@ -273,8 +330,9 @@ export function Toolbar() {
         />
       )}
       <button
-        disabled={busy !== null}
+        disabled={busy !== null || detached !== null}
         onClick={() => void run("pull")}
+        title={detached ? DETACHED_HINT : undefined}
         className="btn-ghost disabled:opacity-50"
       >
         {busy === "pull" ? (
@@ -287,9 +345,9 @@ export function Toolbar() {
       {/* 推送 = 分裂按钮：主体推上游，caret 选远程（多远程仓库需要） */}
       <div className="relative flex items-center">
         <button
-          disabled={busy !== null}
+          disabled={busy !== null || detached !== null}
           onClick={() => void run("push")}
-          title={pushTarget ? `推送到 ${pushTarget}` : "推送（尚未建立上游关联）"}
+          title={detached ? DETACHED_HINT : pushTarget ? `推送到 ${pushTarget}` : "推送（尚未建立上游关联）"}
           className="btn-ghost rounded-r-none border-r border-brd-soft disabled:opacity-50"
         >
           {busy === "push" ? (
@@ -300,12 +358,12 @@ export function Toolbar() {
           推送
         </button>
         <button
-          disabled={busy !== null || remotes.length === 0}
+          disabled={busy !== null || remotes.length === 0 || detached !== null}
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             setPushMenu({ x: r.left, y: r.bottom + 4 });
           }}
-          title="选择推送目标远程"
+          title={detached ? DETACHED_HINT : "选择推送目标远程"}
           aria-label="选择推送目标远程"
           className="btn-ghost icon-btn rounded-l-none pl-0 disabled:opacity-50"
         >
@@ -321,8 +379,9 @@ export function Toolbar() {
         )}
       </div>
       <button
-        disabled={busy !== null}
+        disabled={busy !== null || detached !== null}
         onClick={() => void run("fetch")}
+        title={detached ? DETACHED_HINT : undefined}
         className="btn-ghost disabled:opacity-50"
       >
         {busy === "fetch" ? (

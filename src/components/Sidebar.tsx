@@ -18,8 +18,16 @@ import { useRepo } from "../stores/repo";
 import { groupBranches, groupRemotes } from "../lib/refs";
 import { relTime } from "../lib/format";
 import type { BranchSummary, StashEntry } from "../lib/types";
+import {
+  branchMenu as buildBranchMenu,
+  remoteMenu as buildRemoteMenu,
+  detachedHead,
+  type BranchMenuActions,
+  type BranchTarget,
+  type RemoteMenuActions,
+  type RemoteTarget,
+} from "../lib/menus";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { localBranchMenu } from "./branchMenu";
 
 const GROUPS_KEY = "fumigit.expanded-branch-groups";
 const REMOTE_GROUPS_KEY = "fumigit.expanded-remote-groups";
@@ -57,6 +65,9 @@ export function Sidebar() {
   const refs = useRepo((s) => s.refs);
   const selectRefTip = useRepo((s) => s.selectRefTip);
   const summary = useRepo((s) => s.summary);
+  // 分离 HEAD（无当前分支）：状态行 + 写操作禁用矩阵（ui-spec §4）
+  const det = detachedHead(summary);
+  const detached = det !== null;
   const remoteNames = useRepo((s) => s.remotes);
   const checkout = useRepo((s) => s.checkout);
   const createBranchFlow = useRepo((s) => s.createBranchFlow);
@@ -69,10 +80,29 @@ export function Sidebar() {
   const stashFlow = useRepo((s) => s.stashFlow);
   const stashRestore = useRepo((s) => s.stashRestore);
   const stashDropFlow = useRepo((s) => s.stashDropFlow);
-  // 分支右键菜单：{ 位置, 分支全名 }
-  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; branch: string } | null>(
-    null,
-  );
+  const copyText = useRepo((s) => s.copyText);
+  const commits = useRepo((s) => s.commits);
+  const checkoutRemote = useRepo((s) => s.checkoutRemote);
+  const pushToRemote = useRepo((s) => s.pushToRemote);
+  const fetchRemoteFlow = useRepo((s) => s.fetchRemoteFlow);
+  const deleteRemoteBranchFlow = useRepo((s) => s.deleteRemoteBranchFlow);
+  const setUpstreamFlow = useRepo((s) => s.setUpstreamFlow);
+  const unsetUpstream = useRepo((s) => s.unsetUpstream);
+  const pushBranchFlow = useRepo((s) => s.pushBranchFlow);
+  const fetchForBranch = useRepo((s) => s.fetchForBranch);
+  const rebaseOntoFlow = useRepo((s) => s.rebaseOntoFlow);
+  // 分支右键菜单：{ 位置, 目标 }；菜单项由 lib/menus.ts 单点构造（ui-spec §4）
+  const [branchMenu, setBranchMenu] = useState<{
+    x: number;
+    y: number;
+    target: BranchTarget;
+  } | null>(null);
+  // 远程分支右键菜单：{ 位置, 目标 }
+  const [remoteMenu, setRemoteMenu] = useState<{
+    x: number;
+    y: number;
+    target: RemoteTarget;
+  } | null>(null);
   // stash 条目右键菜单：{ 位置, 条目 }
   const [stashMenu, setStashMenu] = useState<{ x: number; y: number; entry: StashEntry } | null>(
     null,
@@ -85,26 +115,60 @@ export function Sidebar() {
     { label: "删除…", danger: true, onSelect: () => stashDropFlow(entry.index) },
   ];
 
-  // 分支操作菜单与工具栏分支下拉共用同一构建（components/branchMenu.ts）：
-  // 三组动作 = 把当前分支指到该分支 / 该分支自身的增删改名 / 破坏性
-  const branchMenuFor = (branch: string): MenuItem[] =>
-    localBranchMenu(branch, summary?.branch === branch, {
-      checkout: (b) => void checkout(b),
-      createBranchFlow,
-      mergeBranchFlow: (b) => void mergeBranchFlow(b),
-      renameBranchFlow,
-      deleteBranchFlow: (b) => void deleteBranchFlow(b),
+  // 动作包：菜单项由 lib/menus.ts 单点构造（ui-spec §4）；本地分支与远程分支共用一份
+  const menuActions: BranchMenuActions & RemoteMenuActions = {
+    checkout: (b) => void checkout(b),
+    mergeBranch: (ref) => void mergeBranchFlow(ref),
+    createBranchFrom: (ref, label) => createBranchFlow({ ref, label }),
+    copy: (text, label) => void copyText(text, label),
+    renameBranch: (b) => renameBranchFlow(b),
+    deleteBranch: (b) => void deleteBranchFlow(b),
+    rebaseOnto: (ref) => void rebaseOntoFlow(ref),
+    setUpstream: (b) => setUpstreamFlow(b),
+    unsetUpstream: (b) => void unsetUpstream(b),
+    pushBranch: (b) => void pushBranchFlow(b),
+    fetchForBranch: (b) => void fetchForBranch(b),
+    checkoutRemote: (full, branch) => void checkoutRemote(full, branch),
+    pushToRemote: (remote, branch) => void pushToRemote(remote, branch),
+    fetch: (remote) => void fetchRemoteFlow(remote),
+    deleteRemoteBranch: (remote, branch) => void deleteRemoteBranchFlow(remote, branch),
+  };
+
+  const openBranchMenu = (e: React.MouseEvent, name: string) => {
+    e.preventDefault();
+    setBranchMenu({
+      x: e.clientX,
+      y: e.clientY,
+      target: {
+        name,
+        current: summary?.branch === name,
+        upstream: upstreams.get(name) ?? null,
+        detached,
+      },
     });
+  };
+
+  const openRemoteMenu = (e: React.MouseEvent, remote: string, branch: string, full: string) => {
+    e.preventDefault();
+    setRemoteMenu({
+      x: e.clientX,
+      y: e.clientY,
+      target: { remote, branch, full, hasLocal: branches.has(branch), detached },
+    });
+  };
 
   // 按后端给的 kind 直接分流；同名 ref（origin/main 与 main）各归各类，互不覆盖
-  const { branches, remoteRefs } = useMemo(() => {
+  const { branches, remoteRefs, upstreams } = useMemo(() => {
     const b = new Map<string, string>(); // name -> tip commit id
     const r = new Map<string, string>();
+    const u = new Map<string, string | null>(); // name -> 上游短名（04）
     for (const e of refs) {
-      if (e.kind === "branch") b.set(e.name, e.tip);
-      else if (e.kind === "remote") r.set(e.name, e.tip);
+      if (e.kind === "branch") {
+        b.set(e.name, e.tip);
+        u.set(e.name, e.upstream ?? null);
+      } else if (e.kind === "remote") r.set(e.name, e.tip);
     }
-    return { branches: b, remoteRefs: r };
+    return { branches: b, remoteRefs: r, upstreams: u };
   }, [refs]);
 
   // 标签按创建时间倒序（新→旧）；同名不可能，但同刻创建的按名称兜底稳定排序
@@ -194,6 +258,20 @@ export function Sidebar() {
       />
       {sectionOpen("branches") && (
         <>
+          {/* 分离 HEAD 状态行：点击定位该提交；写操作需先从此处新建分支 */}
+          {det && (
+            <button
+              onClick={() => {
+                const head = commits.find((c) => c.refs.includes("HEAD"));
+                if (head) void selectRefTip(head.id);
+              }}
+              title="分离 HEAD：点击定位该提交；写操作需先从此处新建分支"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-[7px] text-left text-xs font-medium text-warn transition-colors hover:bg-hover"
+            >
+              <GitBranch size={11} aria-hidden className="shrink-0" />
+              <span className="truncate">HEAD（分离）→ {det.short}</span>
+            </button>
+          )}
           {tree.roots.map(([name, id]) => (
             <BranchRow
               key={name}
@@ -203,10 +281,7 @@ export function Sidebar() {
               current={summary?.branch === name}
               summary={summary}
               onSelect={() => void selectRefTip(id)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setBranchMenu({ x: e.clientX, y: e.clientY, branch: name });
-              }}
+              onContextMenu={(e) => openBranchMenu(e, name)}
             />
           ))}
           {tree.groups.map(([prefix, members]) => {
@@ -242,14 +317,7 @@ export function Sidebar() {
                       current={summary?.branch === prefix + "/" + rest}
                       summary={summary}
                       onSelect={() => void selectRefTip(id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setBranchMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          branch: prefix + "/" + rest,
-                        });
-                      }}
+                      onContextMenu={(e) => openBranchMenu(e, prefix + "/" + rest)}
                     />
                   ))}
               </div>
@@ -262,8 +330,17 @@ export function Sidebar() {
         <ContextMenu
           x={branchMenu.x}
           y={branchMenu.y}
-          items={branchMenuFor(branchMenu.branch)}
+          items={buildBranchMenu(branchMenu.target, menuActions)}
           onClose={() => setBranchMenu(null)}
+        />
+      )}
+
+      {remoteMenu && (
+        <ContextMenu
+          x={remoteMenu.x}
+          y={remoteMenu.y}
+          items={buildRemoteMenu(remoteMenu.target, menuActions)}
+          onClose={() => setRemoteMenu(null)}
         />
       )}
 
@@ -381,6 +458,7 @@ export function Sidebar() {
                         <button
                           key={full}
                           onClick={() => void selectRefTip(id)}
+                          onContextMenu={(e) => openRemoteMenu(e, remote, name, full)}
                           title={full + " → " + id.slice(0, 7)}
                           className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-7 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
                         >
@@ -423,6 +501,9 @@ export function Sidebar() {
                                 <button
                                   key={full}
                                   onClick={() => void selectRefTip(id)}
+                                  onContextMenu={(e) =>
+                                    openRemoteMenu(e, remote, prefix + "/" + rest, full)
+                                  }
                                   title={full + " → " + id.slice(0, 7)}
                                   className="flex w-full items-center gap-1.5 rounded-md py-[7px] pl-10 pr-2 text-left text-xs text-dim transition-colors hover:bg-hover hover:text-ink"
                                 >
