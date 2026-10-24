@@ -1,4 +1,4 @@
-// 顶部动作栏：仓库、分支（↑↓ 计数）、远程动作、搜索、刷新、主题
+// 顶部动作栏：仓库切换下拉、分支下拉（左键切换 / 右键操作，↑↓ 计数）、远程动作、搜索、刷新、主题
 import { useState } from "react";
 import {
   ArrowDown,
@@ -17,6 +17,12 @@ import {
   X,
 } from "lucide-react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import {
+  localBranchMenu,
+  remoteBranchMenu,
+  remoteCheckout,
+  type BranchMenuActions,
+} from "./branchMenu";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
 import type { ThemeMode } from "../lib/types";
@@ -31,11 +37,21 @@ const THEME_ICON: Record<ThemeMode, typeof Moon> = {
 
 export function Toolbar() {
   const meta = useRepo((s) => s.meta);
+  const config = useRepo((s) => s.config);
   const summary = useRepo((s) => s.summary);
+  const openRepo = useRepo((s) => s.openRepo);
+  const pickAndOpenRepo = useRepo((s) => s.pickAndOpenRepo);
+  const closeRepo = useRepo((s) => s.closeRepo);
   const filter = useRepo((s) => s.filter);
   const setFilter = useRepo((s) => s.setFilter);
   const remote = useRepo((s) => s.remote);
   const remotes = useRepo((s) => s.remotes);
+  const refs = useRepo((s) => s.refs);
+  const checkout = useRepo((s) => s.checkout);
+  const createBranchFlow = useRepo((s) => s.createBranchFlow);
+  const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
+  const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
+  const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
   const pushToFlow = useRepo((s) => s.pushToFlow);
   const pushAllRemotesFlow = useRepo((s) => s.pushAllRemotesFlow);
   const refresh = useRepo((s) => s.refresh);
@@ -44,6 +60,14 @@ export function Toolbar() {
   const [refreshing, setRefreshing] = useState(false);
   // 推送下拉：{ 锚点 }，菜单挂在 caret 按钮下方
   const [pushMenu, setPushMenu] = useState<{ x: number; y: number } | null>(null);
+  // 仓库切换下拉：同样挂在仓库名按钮下方
+  const [repoMenu, setRepoMenu] = useState<{ x: number; y: number } | null>(null);
+  // 分支下拉面板：挂在分支 chip 下方
+  const [branchPanel, setBranchPanel] = useState<{ x: number; y: number } | null>(null);
+  // 分支行右键操作菜单：{ 位置, 分支全名, 是否远程, tip }
+  const [rowMenu, setRowMenu] = useState<
+    { x: number; y: number; branch: string; tip: string; remote: boolean } | null
+  >(null);
 
   if (!meta) return null;
 
@@ -51,6 +75,20 @@ export function Toolbar() {
     setBusy(op);
     await remote(op);
     setBusy(null);
+  };
+
+  // 仓库切换菜单：最近仓库（当前项不列）→ 打开新目录 → 关闭回欢迎页
+  const repoMenuItems = (): MenuItem[] => {
+    const items: MenuItem[] = [];
+    for (const e of config?.recent_repos ?? []) {
+      if (e.path === meta.path) continue;
+      items.push({ label: e.name, hint: e.path, onSelect: () => void openRepo(e.path) });
+    }
+    if (items.length > 0) items.push({ kind: "separator" });
+    items.push({ label: "打开仓库目录…", onSelect: () => void pickAndOpenRepo() });
+    items.push({ kind: "separator" });
+    items.push({ label: "关闭仓库", hint: "回到欢迎页", onSelect: closeRepo });
+    return items;
   };
 
   // 推送去向菜单：当前上游置顶 + 其余远程 + 全部远程
@@ -83,6 +121,67 @@ export function Toolbar() {
     return items;
   };
 
+  // 分支操作动作集（菜单构建函数与侧栏右键共用，见 components/branchMenu.ts）
+  const branchActions: BranchMenuActions = {
+    checkout: (b) => void checkout(b),
+    createBranchFlow,
+    mergeBranchFlow: (b) => void mergeBranchFlow(b),
+    renameBranchFlow,
+    deleteBranchFlow: (b) => void deleteBranchFlow(b),
+  };
+
+  // 分支下拉面板：本地 / 远程两组，左键行 = 切换，右键行 = 该分支操作菜单
+  const branchPanelItems = (): MenuItem[] => {
+    const locals = refs
+      .filter((e) => e.kind === "branch")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const remoteRefs = refs
+      .filter((e) => e.kind === "remote")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const localNames = new Set(locals.map((e) => e.name));
+    const ab =
+      summary && summary.ahead + summary.behind > 0
+        ? ` ↑${summary.ahead} ↓${summary.behind}`
+        : "";
+    const items: MenuItem[] = [{ kind: "header", label: "本地分支" }];
+    if (locals.length === 0) items.push({ label: "暂无本地分支", disabled: true });
+    for (const e of locals) {
+      const current = summary?.branch === e.name;
+      items.push({
+        label: e.name,
+        active: current,
+        disabled: current,
+        hint: current ? `当前分支${ab}` : undefined,
+        title: `${e.name} → ${e.tip.slice(0, 7)}`,
+        onSelect: () => void checkout(e.name),
+        onContextMenu: (x, y) => setRowMenu({ x, y, branch: e.name, tip: e.tip, remote: false }),
+      });
+    }
+    if (remoteRefs.length > 0) {
+      items.push({ kind: "separator" }, { kind: "header", label: "远程分支" });
+      for (const e of remoteRefs) {
+        items.push({
+          label: e.name,
+          title: `${e.name} → ${e.tip.slice(0, 7)}`,
+          onSelect: () => remoteCheckout(e.name, e.tip, localNames, branchActions).run(),
+          onContextMenu: (x, y) => setRowMenu({ x, y, branch: e.name, tip: e.tip, remote: true }),
+        });
+      }
+    }
+    items.push({ kind: "separator" });
+    items.push({ label: "新建分支…", hint: "基于当前 HEAD", onSelect: () => createBranchFlow() });
+    return items;
+  };
+
+  const rowMenuItems = (): MenuItem[] => {
+    if (!rowMenu) return [];
+    if (rowMenu.remote) {
+      const localNames = new Set(refs.filter((e) => e.kind === "branch").map((e) => e.name));
+      return remoteBranchMenu(rowMenu.branch, rowMenu.tip, localNames, branchActions);
+    }
+    return localBranchMenu(rowMenu.branch, summary?.branch === rowMenu.branch, branchActions);
+  };
+
   const doRefresh = async () => {
     setRefreshing(true);
     await refresh();
@@ -95,11 +194,38 @@ export function Toolbar() {
 
   return (
     <div className="flex h-[42px] shrink-0 items-center gap-1.5 border-b border-brd bg-panel px-3">
-      <span className="flex items-center gap-2 pr-1.5 text-[13px] font-semibold">
-        <span className="h-[7px] w-[7px] rounded-full bg-ok" />
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setRepoMenu({ x: r.left, y: r.bottom + 4 });
+        }}
+        title={meta.path}
+        aria-label="切换仓库"
+        className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[13px] font-semibold transition-colors hover:bg-hover"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-ok" aria-hidden />
         {meta.name}
-      </span>
-      <span className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium">
+        <ChevronDown size={11} className="shrink-0 text-faint" aria-hidden />
+      </button>
+      {repoMenu && (
+        <ContextMenu
+          x={repoMenu.x}
+          y={repoMenu.y}
+          items={repoMenuItems()}
+          onClose={() => setRepoMenu(null)}
+        />
+      )}
+      {/* 分支 chip：点击展开下拉面板（本地/远程分支切换 + 操作），↑↓ 为与上游的差数 */}
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setBranchPanel({ x: r.left, y: r.bottom + 4 });
+        }}
+        title="切换分支"
+        aria-label="切换分支"
+        aria-haspopup="menu"
+        className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium transition-colors hover:border-accent"
+      >
         <GitBranch size={11} className="shrink-0 text-accent-ink" aria-hidden />
         {summary?.branch ?? meta.branch}
         {summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
@@ -116,7 +242,25 @@ export function Toolbar() {
             )}
           </span>
         )}
-      </span>
+        <ChevronDown size={11} className="shrink-0 text-faint" aria-hidden />
+      </button>
+      {branchPanel && (
+        <ContextMenu
+          x={branchPanel.x}
+          y={branchPanel.y}
+          width={260}
+          items={branchPanelItems()}
+          onClose={() => setBranchPanel(null)}
+        />
+      )}
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          items={rowMenuItems()}
+          onClose={() => setRowMenu(null)}
+        />
+      )}
       <button
         disabled={busy !== null}
         onClick={() => void run("pull")}

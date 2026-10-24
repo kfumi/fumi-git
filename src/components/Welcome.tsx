@@ -1,18 +1,13 @@
 // 欢迎页：首启引导 + 最近仓库（票 01）
 import { FolderOpen, X } from "lucide-react";
 import { useRepo } from "../stores/repo";
-import { ipc } from "../lib/ipc";
 import logo from "../assets/logo.png";
 
 export function Welcome() {
   const config = useRepo((s) => s.config);
   const openRepo = useRepo((s) => s.openRepo);
   const removeRecent = useRepo((s) => s.removeRecent);
-
-  const pickAndOpen = async () => {
-    const dir = await ipc.pickDirectory();
-    if (dir) await openRepo(dir);
-  };
+  const pickAndOpen = useRepo((s) => s.pickAndOpenRepo);
 
   return (
     <main
@@ -36,18 +31,18 @@ export function Welcome() {
       </button>
 
       {config && config.recent_repos.length > 0 && (
-        <div className="w-[420px]">
+        <div className="w-[520px]">
           <h4 className="section-label mb-1.5 px-1">最近打开</h4>
           <div className="overflow-hidden rounded-xl border border-brd bg-panel shadow-card">
             {config.recent_repos.map((e) => (
               <div key={e.path} className="group flex items-center border-b border-brd-soft last:border-b-0">
                 <button
                   onClick={() => void openRepo(e.path)}
-                  className="flex-1 px-4 py-2.5 text-left text-xs transition-colors hover:bg-hover"
+                  className="flex min-w-0 flex-1 items-center gap-2 px-4 py-2.5 text-left text-xs transition-colors hover:bg-hover"
                   title={e.path}
                 >
-                  <span className="font-medium">{e.name}</span>
-                  <span className="ml-2 text-faint">{e.path}</span>
+                  <span className="shrink-0 font-medium">{e.name}</span>
+                  <span className="truncate text-faint">{e.path}</span>
                 </button>
                 <button
                   onClick={() => void removeRecent(e.path)}

@@ -115,6 +115,8 @@ interface RepoState {
 
   hydrate: () => Promise<void>;
   openRepo: (path: string) => Promise<boolean>;
+  /** 弹系统目录选择器，选定即打开（欢迎页与工具栏仓库切换器共用）；取消返回 false */
+  pickAndOpenRepo: () => Promise<boolean>;
   removeRecent: (path: string) => Promise<void>;
   closeRepo: () => void;
   loadMore: () => Promise<void>;
@@ -152,7 +154,7 @@ interface RepoState {
   /** 新建分支（对话框表单：名称 + 建完即迁出勾选）；返回校验错误给对话框显示 */
   createBranch: (name: string, checkoutAfter: boolean, at?: string) => Promise<string | void>;
   /** 新建分支对话框入口；at 缺省基于当前 HEAD，传入提交 id 则基于该提交 */
-  createBranchFlow: (atCommit?: string) => void;
+  createBranchFlow: (atCommit?: string, suggestName?: string) => void;
   /** 删除分支入口：先取未合入计数，按结果弹一次确认或强制删除确认 */
   deleteBranchFlow: (branch: string) => Promise<void>;
   /** 分支改名（对话框表单，预填原名） */
@@ -171,7 +173,7 @@ interface RepoState {
   mergeUpstreamFlow: (refName: string) => Promise<void>;
   /** 中止进行中的合并，恢复到合并前状态 */
   abortOperation: () => Promise<void>;
-  /** stash 入口：对话框附可选描述，暂存全部改动（含未跟踪） */
+  /** stash 入口：对话框附可选描述，贮藏全部改动（含未跟踪） */
   stashFlow: () => void;
   /** 选中/收起 stash 条目，右栏查看其只读 diff */
   selectStash: (index: number) => Promise<void>;
@@ -214,7 +216,7 @@ const errText = async (e: unknown): Promise<string> => {
   const err = await asGitError(e);
   // git 自身拦截（如迁出/合并时改动会被覆盖）的常见场景给可读中文（US32）
   if (/would be overwritten|local changes/i.test(err.message)) {
-    return "操作失败：工作区改动会与目标冲突，请先提交或 stash 后重试";
+    return "操作失败：工作区改动会与目标冲突，请先提交或贮藏后重试";
   }
   return `操作失败：${err.message}`;
 };
@@ -226,7 +228,7 @@ const BAD_BRANCH_CHARS = new Set([" ", "~", "^", ":", "?", "*", "[", "]", "\\", 
 async function ensureCleanTree(get: () => RepoState): Promise<boolean> {
   const st = await ipc.getStatus().catch(() => null);
   if (st && (st.staged.length > 0 || st.unstaged.length > 0 || st.unmerged.length > 0)) {
-    get().pushToast("err", "工作区不干净：请先提交改动或 stash 后再操作");
+      get().pushToast("err", "工作区不干净：请先提交改动或贮藏后再操作");
     return false;
   }
   return true;
@@ -323,13 +325,13 @@ export const useRepo = create<RepoState>((set, get) => ({
         actions: [
           { label: "带着改动迁出", kind: "primary", run: () => void doSwitch() },
           {
-            label: "stash 后迁出",
+            label: "贮藏后迁出",
             kind: "ghost",
             run: () => {
               void (async () => {
                 try {
-                  await ipc.stashPush("迁出前自动暂存");
-                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
+                  await ipc.stashPush("迁出前自动贮藏");
+                  get().pushToast("ok", "改动已存入贮藏，可随时恢复");
                   await doSwitch();
                 } catch (e) {
                   get().pushToast("err", await errText(e));
@@ -359,12 +361,16 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  createBranchFlow: (atCommit) => {
+  createBranchFlow: (atCommit, suggestName) => {
     const short = atCommit ? atCommit.slice(0, 7) : "";
     get().openDialog({
       title: "新建分支",
       message: atCommit ? `基于提交 ${short} 创建新分支。` : "基于当前 HEAD 创建新分支。",
-      input: { placeholder: "分支名，如 feat/login", validate: validateBranchName },
+      input: {
+        initial: suggestName,
+        placeholder: "分支名，如 feat/login",
+        validate: validateBranchName,
+      },
       checkbox: { label: "创建后立即迁出", initial: true },
       actions: [
         {
@@ -483,12 +489,12 @@ export const useRepo = create<RepoState>((set, get) => ({
         actions: [
           { label: "硬重置（丢弃改动）", kind: "danger", run: () => doReset("hard") },
           {
-            label: "stash 后硬重置",
+            label: "贮藏后硬重置",
             run: () => {
               void (async () => {
                 try {
-                  await ipc.stashPush("硬重置前自动暂存");
-                  get().pushToast("ok", "改动已存入 stash，可随时恢复");
+                  await ipc.stashPush("硬重置前自动贮藏");
+                  get().pushToast("ok", "改动已存入贮藏，可随时恢复");
                   doReset("hard");
                 } catch (e) {
                   get().pushToast("err", await errText(e));
@@ -556,6 +562,12 @@ export const useRepo = create<RepoState>((set, get) => ({
       get().pushToast("err", await errText(e));
       return false;
     }
+  },
+
+  pickAndOpenRepo: async () => {
+    const dir = await ipc.pickDirectory();
+    if (!dir) return false;
+    return get().openRepo(dir);
   },
 
   removeRecent: async (path) => {
@@ -956,15 +968,15 @@ export const useRepo = create<RepoState>((set, get) => ({
 
   stashFlow: () => {
     get().openDialog({
-      title: "暂存到 stash",
-      message: "把工作区全部改动（含未跟踪文件）存入 stash。",
+      title: "贮藏改动",
+      message: "把工作区全部改动（含未跟踪文件）存入贮藏。",
       input: { placeholder: "描述（可选）" },
       actions: [
         {
-          label: "暂存",
+          label: "贮藏",
           kind: "primary",
           run: (message) => {
-            void runWrite(set, get, "暂存中…", "已暂存到 stash", async () => {
+            void runWrite(set, get, "贮藏中…", "已存入贮藏", async () => {
               await ipc.stashPush(message.trim() || undefined);
             });
           },

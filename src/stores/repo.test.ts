@@ -459,13 +459,13 @@ describe("checkout 安全模型（票 01）", () => {
     const d = useRepo.getState().dialog;
     expect(d).not.toBeNull();
     expect(d?.files).toEqual(["s.ts", "u.ts"]);
-    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动迁出", "stash 后迁出"]);
+    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动迁出", "贮藏后迁出"]);
 
     d!.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
   });
 
-  it("脏工作树选「stash 后迁出」：先入 stash 再迁出", async () => {
+  it("脏工作树选「贮藏后迁出」：先入贮藏再迁出", async () => {
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
     (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
     (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -475,7 +475,7 @@ describe("checkout 安全模型（票 01）", () => {
     // 宿主契约：action.run 返回非 false 时由 DialogHost 关闭对话框
     if (d.actions[1].run("", false) !== false) useRepo.getState().closeDialog();
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
-    expect(ipc.stashPush).toHaveBeenCalledWith("迁出前自动暂存");
+    expect(ipc.stashPush).toHaveBeenCalledWith("迁出前自动贮藏");
     expect(useRepo.getState().dialog).toBeNull();
   });
 });
