@@ -140,7 +140,8 @@ interface RepoState {
   closeRightPane: () => void;
   stage: (paths: string[]) => Promise<void>;
   unstage: (paths: string[]) => Promise<void>;
-  commit: (message: string) => Promise<boolean>;
+  /** amend=true 时修正上一次提交（--amend，允许零暂存的纯信息修正） */
+  commit: (message: string, amend?: boolean) => Promise<boolean>;
   remote: (op: "fetch" | "pull" | "push") => Promise<void>;
   setFilter: (f: string) => void;
   pushToast: (kind: Toast["kind"], text: string) => number;
@@ -779,10 +780,10 @@ export const useRepo = create<RepoState>((set, get) => ({
     }
   },
 
-  commit: async (message) => {
+  commit: async (message, amend) => {
     try {
-      await ipc.commit(message);
-      get().pushToast("ok", "提交完成");
+      await ipc.commit(message, amend);
+      get().pushToast("ok", amend ? "已修正上一次提交" : "提交完成");
       await get().refresh();
       return true;
     } catch (e) {

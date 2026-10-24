@@ -7,16 +7,16 @@ import { parseConflictBlocks } from "../lib/conflict";
 function VersionPane({ title, content }: { title: string; content: string | null }) {
   return (
     <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-brd-soft bg-panel2">
-      <div className="shrink-0 border-b border-brd-soft px-2.5 py-1.5 text-[10.5px] font-medium text-faint">
+      <div className="shrink-0 border-b border-brd-soft px-2.5 py-1.5 text-[0.65625rem] font-medium text-faint">
         {title}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2">
         {content ? (
-          <pre className="select-text whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-dim">
+          <pre className="select-text whitespace-pre-wrap break-all font-mono text-[0.6875rem] leading-relaxed text-dim">
             {content}
           </pre>
         ) : (
-          <p className="text-[11px] text-faint">（该侧不存在此文件）</p>
+          <p className="text-[0.6875rem] text-faint">（该侧不存在此文件）</p>
         )}
       </div>
     </div>
@@ -37,15 +37,15 @@ export function ConflictView() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-brd px-3">
-        <span className="rounded bg-bad/15 px-1.5 py-0.5 text-[10px] font-medium text-bad">
+        <span className="rounded bg-bad/15 px-1.5 py-0.5 text-[0.625rem] font-medium text-bad">
           冲突
         </span>
-        <span className="truncate font-mono text-[11px]" title={cv.path}>
+        <span className="truncate font-mono text-[0.6875rem]" title={cv.path}>
           {cv.path}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <button
-            className="btn-ghost !h-6 !px-2 text-[10.5px]"
+            className="btn-ghost !h-6 !px-2 text-[0.65625rem]"
             title="整个文件采用我方版本并标记已解决"
             onClick={() => void resolveTakeFlow(cv.path, true)}
           >
@@ -53,7 +53,7 @@ export function ConflictView() {
             采用我方
           </button>
           <button
-            className="btn-ghost !h-6 !px-2 text-[10.5px]"
+            className="btn-ghost !h-6 !px-2 text-[0.65625rem]"
             title="整个文件采用对方版本并标记已解决"
             onClick={() => void resolveTakeFlow(cv.path, false)}
           >
@@ -61,7 +61,7 @@ export function ConflictView() {
             采用对方
           </button>
           <button
-            className="btn-ghost !h-6 !px-2 text-[10.5px]"
+            className="btn-ghost !h-6 !px-2 text-[0.65625rem]"
             title="在系统默认应用中打开，手动编辑后回来标记已解决"
             onClick={() => void openConflictInEditor(cv.path)}
           >
@@ -69,7 +69,7 @@ export function ConflictView() {
             编辑器打开
           </button>
           <button
-            className="btn-primary !h-6 !px-2 text-[10.5px]"
+            className="btn-primary !h-6 !px-2 text-[0.65625rem]"
             title="把该文件加入暂存区，标记冲突已解决"
             onClick={() => void markResolvedFlow(cv.path)}
           >
@@ -89,20 +89,20 @@ export function ConflictView() {
             </div>
             {cv.versions?.base != null && (
               <details className="shrink-0 rounded-lg border border-brd-soft bg-panel2">
-                <summary className="cursor-pointer px-2.5 py-1.5 text-[10.5px] font-medium text-faint">
+                <summary className="cursor-pointer px-2.5 py-1.5 text-[0.65625rem] font-medium text-faint">
                   共同祖先（:1）参考
                 </summary>
-                <pre className="max-h-40 select-text overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-faint">
+                <pre className="max-h-40 select-text overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[0.6875rem] leading-relaxed text-faint">
                   {cv.versions.base}
                 </pre>
               </details>
             )}
-            <div className="shrink-0 text-[10.5px] text-faint">
+            <div className="shrink-0 text-[0.65625rem] text-faint">
               工作区结果中的冲突块（{blocks.length} 个）——逐块取舍或到编辑器手动修改：
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {blocks.length === 0 ? (
-                <p className="text-[11px] text-faint">
+                <p className="text-[0.6875rem] text-faint">
                   {cv.result ? "没有冲突标记，可直接标记已解决。" : "无法读取工作区内容。"}
                 </p>
               ) : (
@@ -130,16 +130,16 @@ function ConflictBlockRow({
   return (
     <div className="overflow-hidden rounded-lg border border-brd-soft">
       <div className="flex items-center gap-1.5 border-b border-brd-soft bg-panel2 px-2.5 py-1.5">
-        <span className="text-[10.5px] font-medium text-faint">冲突块 {index + 1}</span>
+        <span className="text-[0.65625rem] font-medium text-faint">冲突块 {index + 1}</span>
         <button
-          className="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-accent-ink transition-colors hover:bg-hover"
+          className="ml-auto rounded px-1.5 py-0.5 text-[0.65625rem] text-accent-ink transition-colors hover:bg-hover"
           title="这一块采用我方内容"
           onClick={() => path && applyBlock(path, index, "ours")}
         >
           采用我方
         </button>
         <button
-          className="rounded px-1.5 py-0.5 text-[10.5px] text-accent-ink transition-colors hover:bg-hover"
+          className="rounded px-1.5 py-0.5 text-[0.65625rem] text-accent-ink transition-colors hover:bg-hover"
           title="这一块采用对方内容"
           onClick={() => path && applyBlock(path, index, "theirs")}
         >
@@ -147,10 +147,10 @@ function ConflictBlockRow({
         </button>
       </div>
       <div className="grid grid-cols-2 divide-x divide-brd-soft">
-        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-del">
+        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[0.6875rem] leading-relaxed text-del">
           {block.oursLines.join("\n")}
         </pre>
-        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed text-add">
+        <pre className="select-text overflow-x-auto whitespace-pre-wrap break-all p-2 font-mono text-[0.6875rem] leading-relaxed text-add">
           {block.theirsLines.join("\n")}
         </pre>
       </div>

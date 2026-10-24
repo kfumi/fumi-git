@@ -22,10 +22,10 @@ export function Welcome() {
         <h1 className="text-3xl font-semibold tracking-tight">
           Fumi<span className="text-accent-ink">Git</span>
         </h1>
-        <p className="mt-2 text-[13px] text-dim">提交图谱是主角 —— 打开一个仓库开始</p>
+        <p className="mt-2 text-[0.8125rem] text-dim">提交图谱是主角 —— 打开一个仓库开始</p>
       </div>
 
-      <button onClick={() => void pickAndOpen()} className="btn-primary h-9 rounded-lg px-5 text-[13px]">
+      <button onClick={() => void pickAndOpen()} className="btn-primary h-9 rounded-lg px-5 text-[0.8125rem]">
         <FolderOpen size={15} aria-hidden />
         打开仓库目录…
       </button>

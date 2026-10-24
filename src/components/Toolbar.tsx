@@ -13,6 +13,7 @@ import {
   Moon,
   RotateCw,
   Search,
+  Settings,
   Sun,
   X,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import {
 } from "./branchMenu";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
+import { useAppearance } from "../appearance";
 import type { ThemeMode } from "../lib/types";
 
 const MODES: ThemeMode[] = ["dark", "light", "system"];
@@ -55,6 +57,7 @@ export function Toolbar() {
   const pushToFlow = useRepo((s) => s.pushToFlow);
   const pushAllRemotesFlow = useRepo((s) => s.pushAllRemotesFlow);
   const refresh = useRepo((s) => s.refresh);
+  const openSettings = useAppearance((s) => s.openSettings);
   const { mode, setMode } = useTheme();
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -201,7 +204,7 @@ export function Toolbar() {
         }}
         title={meta.path}
         aria-label="切换仓库"
-        className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[13px] font-semibold transition-colors hover:bg-hover"
+        className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[0.8125rem] font-semibold transition-colors hover:bg-hover"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-ok" aria-hidden />
         {meta.name}
@@ -229,7 +232,7 @@ export function Toolbar() {
         <GitBranch size={11} className="shrink-0 text-accent-ink" aria-hidden />
         {summary?.branch ?? meta.branch}
         {summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
-          <span className="tnum flex items-center gap-1 text-[10.5px] font-normal">
+          <span className="tnum flex items-center gap-1 text-[0.65625rem] font-normal">
             {summary.ahead > 0 && (
               <span className="flex items-center text-ok">
                 <ArrowUp size={9} aria-hidden /> {summary.ahead}
@@ -360,6 +363,14 @@ export function Toolbar() {
         onClick={() => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])}
       >
         <ThemeIcon size={13} aria-hidden />
+      </button>
+      <button
+        className="btn-ghost icon-btn"
+        title="设置（字体 / 字号 / 缩放）"
+        aria-label="设置"
+        onClick={openSettings}
+      >
+        <Settings size={13} aria-hidden />
       </button>
     </div>
   );

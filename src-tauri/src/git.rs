@@ -609,16 +609,27 @@ pub fn unstage(repo: &GitRepo, paths: &[String]) -> GitResult<()> {
     Ok(())
 }
 
-pub fn commit(repo: &GitRepo, message: &str) -> GitResult<String> {
+pub fn commit(repo: &GitRepo, message: &str, amend: bool) -> GitResult<String> {
     if message.trim().is_empty() {
         return Err(GitError::NothingToCommit("提交信息不能为空".into()));
     }
     let st = get_status(repo)?;
-    if st.staged.is_empty() {
+    // amend 允许零暂存（仅改信息的修正）；普通提交必须有已暂存改动
+    if !amend && st.staged.is_empty() {
         return Err(GitError::NothingToCommit("没有已暂存的改动".into()));
     }
-    repo.run_with_stdin(&["commit", "--quiet", "-F", "-"], message)?;
+    let mut args = vec!["commit", "--quiet"];
+    if amend {
+        args.push("--amend");
+    }
+    args.extend(["-F", "-"]);
+    repo.run_with_stdin(&args, message)?;
     Ok(repo.run(&["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+/// HEAD 的完整提交信息（%B 原文，含空行与 body）；「修正上一次提交」预填用。
+pub fn last_commit_message(repo: &GitRepo) -> GitResult<String> {
+    Ok(repo.run(&["log", "-1", "--pretty=%B"])?.trim_end().to_string())
 }
 
 // ── 分支 / 工作树 / stash ───────────────────────────────────────────────────
@@ -1563,10 +1574,10 @@ mod tests {
 
         // 提交：空信息 / 无暂存 被 阻止
         assert!(matches!(
-            commit(&r, "  "),
+            commit(&r, "  ", false),
             Err(GitError::NothingToCommit(_))
         ));
-        let hash = commit(&r, "feat: 暂存 a 修改").unwrap();
+        let hash = commit(&r, "feat: 暂存 a 修改", false).unwrap();
         assert_eq!(hash.len(), 40);
 
         let st4 = get_status(&r).unwrap();
@@ -1636,8 +1647,35 @@ mod tests {
         fs::write(t.path().join("a.txt"), "2").unwrap();
         git(t.path(), &["add", "."]);
         let r = GitRepo::open(t.path()).unwrap();
-        let err = commit(&r, "should fail").unwrap_err();
+        let err = commit(&r, "should fail", false).unwrap_err();
         assert!(err.to_string().contains("hook-says-no"), "{err}");
+    }
+
+    #[test]
+    fn commit_amend_folds_into_previous() {
+        let t = repo();
+        commit_file(t.path(), "a.txt", "1", "init");
+        // 有新暂存内容 + 换信息 → 合并进上一次提交（不新增提交）
+        fs::write(t.path().join("b.txt"), "new").unwrap();
+        git(t.path(), &["add", "."]);
+        let r = GitRepo::open(t.path()).unwrap();
+        assert_eq!(last_commit_message(&r).unwrap(), "init");
+        commit(&r, "amended\n\nbody kept", true).unwrap();
+        assert_eq!(git(t.path(), &["rev-list", "--count", "HEAD"]).trim(), "1");
+        assert_eq!(git(t.path(), &["log", "-1", "--pretty=%s"]).trim(), "amended");
+        assert_eq!(
+            git(t.path(), &["log", "-1", "--pretty=%b"]).trim(),
+            "body kept"
+        );
+        assert!(
+            git(t.path(), &["show", "--name-only", "--pretty=format:"])
+                .contains("b.txt")
+        );
+        // 零暂存的纯信息修正也允许；普通 commit 无暂存仍拒绝
+        commit(&r, "msg only", true).unwrap();
+        assert_eq!(git(t.path(), &["log", "-1", "--pretty=%s"]).trim(), "msg only");
+        assert_eq!(git(t.path(), &["rev-list", "--count", "HEAD"]).trim(), "1");
+        assert!(commit(&r, "x", false).is_err());
     }
 
     // ── 远程同步 ──

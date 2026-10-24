@@ -71,6 +71,32 @@ pub fn set_theme(state: State<'_, AppState>, mode: String) -> Result<(), String>
     Ok(())
 }
 
+/// 外观设置（字体/字号/缩放）整体持久化；越界值直接拒绝。
+/// 空白字符串的字体键归一为 None（= 默认栈）。
+#[tauri::command]
+pub fn set_appearance(
+    state: State<'_, AppState>,
+    ui_font: Option<String>,
+    mono_font: Option<String>,
+    font_scale: f32,
+    zoom: f32,
+) -> Result<(), String> {
+    if !(0.8..=1.4).contains(&font_scale) {
+        return Err(format!("字号比例越界：{font_scale}"));
+    }
+    if !(0.5..=2.0).contains(&zoom) {
+        return Err(format!("缩放比例越界：{zoom}"));
+    }
+    if let Ok(mut cfg) = state.config.lock() {
+        cfg.ui_font = ui_font.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        cfg.mono_font = mono_font.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        cfg.font_scale = font_scale;
+        cfg.zoom = zoom;
+    }
+    save_config(&state);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn open_repo(
     app: AppHandle,
@@ -141,8 +167,18 @@ pub fn unstage_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<(
 }
 
 #[tauri::command]
-pub fn commit_staged(state: State<'_, AppState>, message: String) -> Result<String, GitError> {
-    with_active(&state, |repo| git::commit(repo, &message))
+pub fn commit_staged(
+    state: State<'_, AppState>,
+    message: String,
+    amend: Option<bool>,
+) -> Result<String, GitError> {
+    with_active(&state, |repo| git::commit(repo, &message, amend.unwrap_or(false)))
+}
+
+/// HEAD 的完整提交信息（%B 原文）；「修正上一次提交」勾选时预填
+#[tauri::command]
+pub fn get_last_commit_message(state: State<'_, AppState>) -> Result<String, GitError> {
+    with_active(&state, git::last_commit_message)
 }
 
 #[tauri::command]

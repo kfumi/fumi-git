@@ -229,7 +229,7 @@ export function Sidebar() {
                     <Folder size={11} aria-hidden className="shrink-0 text-faint" />
                   )}
                   <span className="truncate">{prefix}</span>
-                  <span className="tnum ml-auto text-[10px] text-faint">{members.length}</span>
+                  <span className="tnum ml-auto text-[0.625rem] text-faint">{members.length}</span>
                 </button>
                 {open &&
                   members.map(([rest, id]) => (
@@ -285,7 +285,7 @@ export function Sidebar() {
       {sectionOpen("stashes") && (
         <>
           {stashes.length === 0 && (
-            <p className="px-2 pb-1 text-[11px] text-faint">暂无贮藏</p>
+            <p className="px-2 pb-1 text-[0.6875rem] text-faint">暂无贮藏</p>
           )}
           {stashes.map((e) => (
             <button
@@ -305,7 +305,7 @@ export function Sidebar() {
             >
               <Archive size={11} aria-hidden className="shrink-0 text-faint" />
               <span className="truncate">{e.message}</span>
-              <span className="tnum ml-auto shrink-0 text-[10px] text-faint">
+              <span className="tnum ml-auto shrink-0 text-[0.625rem] text-faint">
                 {relTime(e.time)}
               </span>
             </button>
@@ -371,7 +371,7 @@ export function Sidebar() {
                     )}
                     <Cloud size={11} aria-hidden className="shrink-0 text-faint" />
                     <span className="truncate">{remote}</span>
-                    <span className="tnum ml-auto text-[10px] text-faint">{total}</span>
+                    <span className="tnum ml-auto text-[0.625rem] text-faint">{total}</span>
                   </button>
                   {open &&
                     grouping.roots.map(([name, id]) => {
@@ -412,7 +412,7 @@ export function Sidebar() {
                               <Folder size={11} aria-hidden className="shrink-0 text-faint" />
                             )}
                             <span className="truncate">{prefix}</span>
-                            <span className="tnum ml-auto text-[10px] text-faint">
+                            <span className="tnum ml-auto text-[0.625rem] text-faint">
                               {members.length}
                             </span>
                           </button>
@@ -509,7 +509,7 @@ function BranchRow({
       <span className="truncate">
         {name}
         {current && summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
-          <span className="tnum ml-1 text-[10px]">
+          <span className="tnum ml-1 text-[0.625rem]">
             {summary.ahead > 0 && <span className="text-ok">↑{summary.ahead}</span>}
             {summary.behind > 0 && <span className="text-warn">↓{summary.behind}</span>}
           </span>

@@ -139,7 +139,7 @@ export function ContextMenu({
             <span className={item.active ? "truncate font-medium text-ink" : "truncate"}>
               {item.label}
             </span>
-            {item.hint && <span className="ml-auto pl-3 text-[10.5px]">{item.hint}</span>}
+            {item.hint && <span className="ml-auto pl-3 text-[0.65625rem]">{item.hint}</span>}
           </button>
         ) : (
           <button
@@ -168,7 +168,7 @@ export function ContextMenu({
               {item.label}
             </span>
             {item.hint && (
-              <span className="ml-auto shrink-0 pl-3 text-[10.5px] text-faint">{item.hint}</span>
+              <span className="ml-auto shrink-0 pl-3 text-[0.65625rem] text-faint">{item.hint}</span>
             )}
           </button>
         ),

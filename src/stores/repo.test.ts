@@ -81,7 +81,14 @@ const c = (id: string, subject: string, author = "林一帆"): CommitEntry => ({
 beforeEach(() => {
   vi.clearAllMocks();
   useRepo.setState({
-    config: { recent_repos: [], theme: "system" },
+    config: {
+      recent_repos: [],
+      theme: "system",
+      ui_font: null,
+      mono_font: null,
+      font_scale: 1,
+      zoom: 1,
+    },
     meta: null,
     commits: [],
     logDone: false,

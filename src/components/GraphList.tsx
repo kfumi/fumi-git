@@ -338,7 +338,8 @@ function CommitRow({
     >
       {/* IDEA 式两行：主题独占一行；ref 徽章固定第二行（无引用时不占位，不再与标题互相挤压） */}
       <div className="min-w-0">
-        <div className="truncate text-[13px] font-medium leading-[18px]" title={commit.subject}>
+        {/* 行高用无单位比例（≈18px@13px 基准）：字号缩放时随字体等比，固定 px 会裁切 */}
+        <div className="truncate text-[0.8125rem] font-medium leading-[1.38]" title={commit.subject}>
           {commit.subject}
         </div>
         {commit.refs.length > 0 && (
@@ -352,7 +353,7 @@ function CommitRow({
         title={commit.author_name}
       >
         <span
-          className="avatar flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+          className="avatar flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[0.625rem] font-semibold text-white"
           style={{ background: avatarColor(commit.author_name) }}
           aria-hidden
         >
@@ -360,10 +361,10 @@ function CommitRow({
         </span>
         <span className="truncate">{commit.author_name}</span>
       </div>
-      <div className="tnum truncate text-right text-[11.5px] text-faint" title={absTime(commit.time)}>
+      <div className="tnum truncate text-right text-[0.71875rem] text-faint" title={absTime(commit.time)}>
         {relTime(commit.time)}
       </div>
-      <div className="tnum truncate text-right font-mono text-[11.5px] text-faint" title={commit.id}>
+      <div className="tnum truncate text-right font-mono text-[0.71875rem] text-faint" title={commit.id}>
         {commit.short_id}
       </div>
     </div>

@@ -6,6 +6,9 @@
  * 组件层补充令牌（阴影/滚动条）不在定稿表内，仅派生自既有值。
  */
 @theme inline {
+  /* 间距基准冻结为 4px（默认 0.25rem）：字号缩放改的是 root font-size，
+     若间距仍是 rem 会跟着缩，布局就散了。新增间距/尺寸一律走 spacing 刻度或 px。 */
+  --spacing: 4px;
   --color-bg: var(--bg);
   --color-panel: var(--panel);
   --color-panel2: var(--panel2);
@@ -105,7 +108,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 13px;
+  /* 字号 rem 化（1rem = root 16px × 字号比例，见 appearance.ts） */
+  font-size: 0.8125rem;
   -webkit-font-smoothing: antialiased;
   /* 文本选中策略（ui-spec §4）：全局禁选（应用外壳与点选密集面），阅读性内容面按处加 select-text */
   user-select: none;
@@ -114,6 +118,34 @@ body {
 input,
 textarea {
   user-select: text;
+}
+
+/* 用户字体覆盖（设置对话框预设，键见 appearance.ts）：dataset 钩子 + 逐预设手写规则。
+   不能改 CSS 变量生效——@theme inline 把字体栈编译期展开进 font-mono 类，
+   运行时覆盖变量无效，只能用更高特异性直接覆盖（html[x] .font-mono 0,1,1 > .font-mono 0,1,0）。 */
+html[data-ui-font="system-ui"] body {
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+html[data-ui-font="segoe"] body {
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+html[data-ui-font="yahei"] body {
+  font-family: "Microsoft YaHei", sans-serif;
+}
+html[data-ui-font="pingfang"] body {
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+html[data-ui-font="sourcehan"] body {
+  font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+}
+html[data-mono-font="cascadia"] .font-mono {
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+html[data-mono-font="consolas"] .font-mono {
+  font-family: Consolas, "Cascadia Code", monospace;
+}
+html[data-mono-font="jetbrains"] .font-mono {
+  font-family: "JetBrains Mono", Consolas, monospace;
 }
 
 ::selection {
@@ -166,7 +198,7 @@ textarea:focus-visible {
     height: 28px;
     padding: 0 10px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     color: var(--dim);
     cursor: pointer;
@@ -204,7 +236,7 @@ textarea:focus-visible {
     height: 28px;
     padding: 0 12px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     background: var(--accent);
     color: #fff;
@@ -232,7 +264,7 @@ textarea:focus-visible {
     height: 28px;
     padding: 0 12px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     background: var(--bad);
     color: #fff;
@@ -254,7 +286,7 @@ textarea:focus-visible {
   /* 侧栏分区标题 */
   .section-label {
     padding: 0 8px;
-    font-size: 10.5px;
+    font-size: 0.65625rem;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;

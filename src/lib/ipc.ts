@@ -29,6 +29,13 @@ export async function asGitError(e: unknown): Promise<GitError> {
 export const ipc = {
   getConfig: () => cmd<AppConfig>("get_app_config"),
   setTheme: (mode: string) => cmd<void>("set_theme", { mode }),
+  /** 外观（字体/字号/缩放）整体保存；后端校验范围 */
+  setAppearance: (p: {
+    uiFont: string | null;
+    monoFont: string | null;
+    fontScale: number;
+    zoom: number;
+  }) => cmd<void>("set_appearance", p),
   removeRecent: (path: string) => cmd<void>("remove_recent", { path }),
 
   /** 弹出系统目录选择器；取消返回 null */
@@ -74,7 +81,10 @@ export const ipc = {
 
   stage: (paths: string[]) => cmd<void>("stage_paths", { paths }),
   unstage: (paths: string[]) => cmd<void>("unstage_paths", { paths }),
-  commit: (message: string) => cmd<string>("commit_staged", { message }),
+  commit: (message: string, amend?: boolean) =>
+    cmd<string>("commit_staged", { message, amend: amend ?? false }),
+  /** HEAD 的完整提交信息（amend 勾选时预填） */
+  getLastCommitMessage: () => cmd<string>("get_last_commit_message"),
 
   fetch: () => cmd<string>("fetch_remote"),
   pull: () => cmd<string>("pull_remote"),
