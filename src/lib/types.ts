@@ -100,6 +100,13 @@ export interface RepoEntry {
 export interface AppConfig {
   recent_repos: RepoEntry[];
   theme: ThemeMode;
+  /** 外观覆盖（预设键，见 appearance.ts 预设表）；null = 默认 */
+  ui_font: string | null;
+  mono_font: string | null;
+  /** 字号比例（1 = 100%，root 字号 = 16px × 比例，只缩放文字） */
+  font_scale: number;
+  /** 界面缩放（Ctrl+= / Ctrl+- / Ctrl+0；1 = 100%） */
+  zoom: number;
 }
 
 /**

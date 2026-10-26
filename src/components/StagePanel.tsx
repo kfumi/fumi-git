@@ -1,8 +1,9 @@
 // 右上：提交详情（元信息 + 文件列表，点击文件 → 右下 diff tab）
 // 中栏「改动」tab：工作区（暂存/提交）
 import { useEffect, useState } from "react";
-import { Check, CircleCheck, LoaderCircle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleCheck, GitCommitHorizontal, LoaderCircle } from "lucide-react";
 import { useRepo, OPERATION_LABEL } from "../stores/repo";
+import { ipc } from "../lib/ipc";
 import { absTime, avatarColor } from "../lib/format";
 import type { FileEntry, FileStat } from "../lib/types";
 import { RefChips } from "./RefChips";
@@ -16,10 +17,22 @@ const ST_CLASS: Record<string, string> = {
   U: "bg-bad/20 text-bad",
 };
 
+/** 已暂存/未暂存整块折叠的持久化键（折叠的组名集合） */
+const COLLAPSED_GROUPS_KEY = "fumigit.collapsed-work-groups";
+
+function loadCollapsedGroups(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]");
+    return Array.isArray(raw) ? new Set(raw.filter((x) => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
 function StatusBadge({ s }: { s: string }) {
   return (
     <span
-      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9.5px] font-semibold leading-none ${ST_CLASS[s] ?? ""}`}
+      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[0.59375rem] font-semibold leading-none ${ST_CLASS[s] ?? ""}`}
       title={{ M: "修改", A: "新增", D: "删除", R: "重命名", U: "冲突" }[s]}
       aria-label={`状态 ${s}`}
     >
@@ -35,8 +48,13 @@ export function CommitDetailPanel() {
   const openDetailFile = useRepo((s) => s.openDetailFile);
   if (!detail)
     return (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        {detailLoading ? "加载详情…" : "选择一个提交查看详情"}
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-panel text-faint">
+        {detailLoading ? (
+          <LoaderCircle size={22} className="animate-spin" strokeWidth={1.5} aria-hidden />
+        ) : (
+          <GitCommitHorizontal size={22} strokeWidth={1.5} aria-hidden />
+        )}
+        <span className="text-xs">{detailLoading ? "加载详情…" : "选择一个提交查看详情"}</span>
       </div>
     );
   const meta = detail.meta;
@@ -44,7 +62,7 @@ export function CommitDetailPanel() {
     <div
       id="detail-panel"
       tabIndex={-1}
-      className="h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
+      className="select-text h-full min-h-0 overflow-y-auto bg-panel p-4 outline-none"
     >
       <h3 className="mb-2 text-sm font-semibold leading-relaxed">{meta.subject}</h3>
       {detail.body && (
@@ -52,7 +70,7 @@ export function CommitDetailPanel() {
       )}
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-dim">
         <span
-          className="avatar flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+          className="avatar flex h-5 w-5 items-center justify-center rounded-full text-[0.625rem] font-semibold text-white"
           style={{ background: avatarColor(meta.author_name) }}
           aria-hidden
         >
@@ -64,13 +82,13 @@ export function CommitDetailPanel() {
           {absTime(meta.time)}
         </span>
         <span className="text-faint">·</span>
-        <span className="tnum font-mono text-[11px] text-faint">{meta.short_id}</span>
+        <span className="tnum font-mono text-[0.6875rem] text-faint">{meta.short_id}</span>
       </div>
       <div className="mb-3 flex flex-wrap gap-1.5">
         <RefChips refs={meta.refs} />
       </div>
       {meta.parents.length > 1 && (
-        <p className="tnum mb-3 font-mono text-[11px] text-faint">
+        <p className="tnum mb-3 font-mono text-[0.6875rem] text-faint">
           父提交：{meta.parents.map((p) => p.slice(0, 7)).join("、")}
         </p>
       )}
@@ -109,12 +127,12 @@ export function FileRow({
     >
       <StatusBadge s={file.status} />
       {file.old_path && (
-        <span className="max-w-[30%] shrink-0 truncate font-mono text-[11px] text-faint line-through">
+        <span className="max-w-[30%] shrink-0 truncate font-mono text-[0.6875rem] text-faint line-through">
           {file.old_path}
         </span>
       )}
-      <span className="truncate font-mono text-[11.5px]">{file.path}</span>
-      <span className="tnum ml-auto shrink-0 text-[10.5px]">
+      <span className="truncate font-mono text-[0.71875rem]">{file.path}</span>
+      <span className="tnum ml-auto shrink-0 text-[0.65625rem]">
         {file.binary ? (
           <span className="text-faint">二进制</span>
         ) : (
@@ -148,6 +166,22 @@ export function ChangesPanel() {
   const conflictPath = useRepo((s) => s.conflictView?.path ?? null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 修正上一次提交（--amend）：勾选时若无输入则预填 HEAD 原信息；提交后自动复位
+  const [amend, setAmend] = useState(false);
+  // 已暂存/未暂存整块折叠；冲突组不折叠（操作进行中的紧迫态）
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(loadCollapsedGroups);
+  const toggleGroup = (g: "staged" | "unstaged") =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g);
+      else next.add(g);
+      try {
+        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        // 持久化失败只影响下次启动的展开状态
+      }
+      return next;
+    });
   // 多选（VS Code 源代码管理风格）：选择只在一个分组内；u:/s: 前缀区分同名文件
   const [selected, setSelected] = useState<{
     group: "staged" | "unstaged";
@@ -285,20 +319,37 @@ export function ChangesPanel() {
     return () => window.removeEventListener("keydown", handler);
   });
 
+  // 勾选 amend：信息框为空时预填 HEAD 原信息（不覆盖已输入内容）；失败保持空白由用户自填
+  const toggleAmend = async (on: boolean) => {
+    setAmend(on);
+    if (on && !message.trim()) {
+      try {
+        setMessage(await ipc.getLastCommitMessage());
+      } catch {
+        // 空仓库等取不到 HEAD 信息的情况，静默跳过
+      }
+    }
+  };
+
   const doCommit = async () => {
     setSubmitting(true);
-    const ok = await commit(message);
+    const ok = await commit(message, amend);
     setSubmitting(false);
-    if (ok) setMessage("");
+    if (ok) {
+      setMessage("");
+      setAmend(false);
+    }
   };
 
   if (!status)
     return (
-      <div className="flex h-full items-center justify-center bg-panel text-xs text-faint">
-        加载工作区…
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-panel text-faint">
+        <LoaderCircle size={22} className="animate-spin" strokeWidth={1.5} aria-hidden />
+        <span className="text-xs">加载工作区…</span>
       </div>
     );
-  const canCommit = status.staged.length > 0 && message.trim().length > 0;
+  // amend 允许零暂存（纯信息修正）；普通提交必须有已暂存改动
+  const canCommit = (amend || status.staged.length > 0) && message.trim().length > 0;
   const total = status.staged.length + status.unstaged.length + status.unmerged.length;
 
   return (
@@ -316,7 +367,7 @@ export function ChangesPanel() {
           {status.unmerged.length === 0 && (
             <button
               onClick={() => void continueOperationFlow()}
-              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-ink transition-colors hover:bg-hover"
+              className="shrink-0 rounded px-1.5 py-0.5 text-[0.6875rem] font-medium text-accent-ink transition-colors hover:bg-hover"
             >
               {OPERATION_LABEL[status.operation].cont}
             </button>
@@ -332,16 +383,16 @@ export function ChangesPanel() {
           )}
           <button
             onClick={() => void abortOperation()}
-            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-bad transition-colors hover:bg-bad-soft"
+            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[0.6875rem] text-bad transition-colors hover:bg-bad-soft"
           >
             中止
           </button>
         </div>
       )}
       <div className="flex shrink-0 items-center justify-between px-4 pb-1.5 pt-3">
-        <h4 className="text-[12px] font-semibold text-ink">工作区</h4>
+        <h4 className="text-[0.75rem] font-semibold text-ink">工作区</h4>
         {total > 0 && (
-          <span className="tnum rounded-full bg-panel2 px-2 py-0.5 text-[10.5px] text-dim">
+          <span className="tnum rounded-full bg-panel2 px-2 py-0.5 text-[0.65625rem] text-dim">
             {total} 个文件
           </span>
         )}
@@ -376,8 +427,10 @@ export function ChangesPanel() {
                 count={status.staged.length}
                 actionLabel="全部取消暂存"
                 onAction={() => void unstage(status.staged.map((f) => f.path))}
+                collapsed={collapsedGroups.has("staged")}
+                onToggle={() => toggleGroup("staged")}
               />
-              {status.staged.map((f) => (
+              {!collapsedGroups.has("staged") && status.staged.map((f) => (
                 <WorkRow
                   key={"s" + f.path}
                   file={f}
@@ -407,8 +460,10 @@ export function ChangesPanel() {
                 count={status.unstaged.length}
                 actionLabel="全部暂存"
                 onAction={() => void stage(status.unstaged.map((f) => f.path))}
+                collapsed={collapsedGroups.has("unstaged")}
+                onToggle={() => toggleGroup("unstaged")}
               />
-              {status.unstaged.map((f) => (
+              {!collapsedGroups.has("unstaged") && status.unstaged.map((f) => (
                 <WorkRow
                   key={"u" + f.path}
                   file={f}
@@ -451,6 +506,25 @@ export function ChangesPanel() {
           placeholder="提交信息（Ctrl+Enter 提交）"
           className="h-14 w-full resize-none rounded-lg border border-brd bg-panel2 px-2.5 py-2 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent"
         />
+        <div className="mt-1.5 flex items-center">
+          <label
+            className={
+              "flex cursor-pointer items-center gap-1.5 text-[0.65625rem] transition-colors " +
+              (amend ? "text-accent-ink" : "text-faint hover:text-dim")
+            }
+          >
+            <input
+              type="checkbox"
+              checked={amend}
+              onChange={(e) => void toggleAmend(e.target.checked)}
+              className="accent-accent"
+            />
+            修正上一次提交
+          </label>
+          {amend && (
+            <span className="ml-2 text-[0.65625rem] text-faint">已推送的提交修正后需强推</span>
+          )}
+        </div>
         <div className="mt-2 flex items-center gap-2">
           <button
             disabled={!canCommit || submitting}
@@ -462,16 +536,16 @@ export function ChangesPanel() {
             ) : (
               <Check size={13} aria-hidden />
             )}
-            提交到 {status.branch}
+            {amend ? "修正上次提交" : `提交到 ${status.branch}`}
           </button>
-          <span className="tnum ml-auto text-[11px] text-faint">
+          <span className="tnum ml-auto text-[0.6875rem] text-faint">
             {status.staged.length} 个已暂存
           </span>
           {total > 0 && !status.operation && (
             <button
               onClick={() => discardAllFlow()}
               title="丢弃全部工作区改动（不可恢复）"
-              className="text-[11px] text-bad transition-colors hover:opacity-80"
+              className="text-[0.6875rem] text-bad transition-colors hover:opacity-80"
             >
               全部丢弃
             </button>
@@ -522,7 +596,7 @@ function WorkRow({
           e.stopPropagation();
           onAction();
         }}
-        className="invisible ml-auto shrink-0 rounded px-1 py-0.5 text-[10.5px] text-faint transition-colors group-hover:visible hover:text-accent-ink"
+        className="invisible ml-auto shrink-0 rounded px-1 py-0.5 text-[0.65625rem] text-faint transition-colors group-hover:visible hover:text-accent-ink"
       >
         {actionLabel}
       </button>
@@ -536,6 +610,8 @@ function GroupLabel({
   count,
   actionLabel,
   onAction,
+  collapsed,
+  onToggle,
 }: {
   color: string;
   label: string;
@@ -543,12 +619,40 @@ function GroupLabel({
   /** 批量动作（悬停组头出现）：全部暂存 / 全部取消暂存 */
   actionLabel?: string;
   onAction?: () => void;
+  /** 整块折叠（已暂存/未暂存）；不传 onToggle = 永远展开（冲突组） */
+  collapsed?: boolean;
+  onToggle?: () => void;
 }) {
-  return (
-    <div className="group sticky top-0 z-10 flex items-center gap-1.5 bg-panel px-2 pb-1 pt-2 text-[11px] font-medium text-dim">
-      <span className={`h-1.5 w-1.5 rounded-full ${color}`} aria-hidden />
-      {label}
+  const labelArea = (
+    <>
+      {onToggle ? (
+        collapsed ? (
+          <ChevronRight size={11} aria-hidden className="shrink-0 text-faint" />
+        ) : (
+          <ChevronDown size={11} aria-hidden className="shrink-0 text-faint" />
+        )
+      ) : (
+        // 不可折叠的组（冲突）用隐身 chevron 占位，色点左缘对齐
+        <ChevronRight size={11} aria-hidden className="invisible shrink-0" />
+      )}
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${color}`} aria-hidden />
+      <span>{label}</span>
       <span className="tnum text-faint">{count}</span>
+    </>
+  );
+  return (
+    <div className="group sticky top-0 z-10 flex items-center gap-1.5 bg-panel px-2 pb-1 pt-2 text-[0.6875rem] font-medium text-dim">
+      {onToggle ? (
+        <button
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors hover:text-ink"
+        >
+          {labelArea}
+        </button>
+      ) : (
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">{labelArea}</span>
+      )}
       {actionLabel && onAction && (
         <button
           onClick={(e) => {
@@ -556,7 +660,7 @@ function GroupLabel({
             onAction();
           }}
           title={actionLabel}
-          className="invisible ml-auto shrink-0 rounded px-1 py-0.5 text-[10.5px] font-normal text-faint transition-colors group-hover:visible hover:text-accent-ink"
+          className="invisible shrink-0 rounded px-1 py-0.5 text-[0.65625rem] font-normal text-faint transition-colors group-hover:visible hover:text-accent-ink"
         >
           {actionLabel}
         </button>

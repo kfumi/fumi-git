@@ -49,21 +49,21 @@ const KIND_CLASS: Record<DiffLine["kind"], string> = {
   add: "bg-add-bg text-add",
   del: "bg-del-bg text-del",
   ctx: "",
-  hunk: "bg-accent-soft text-[10.5px] text-accent-ink",
+  hunk: "bg-accent-soft text-[0.65625rem] text-accent-ink",
   meta: "text-faint italic",
 };
 
 export function DiffView({ patch }: { patch: string }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
   return (
-    <div className="overflow-x-auto rounded-lg font-mono text-[11.5px] leading-[1.65]">
+    <div className="select-text overflow-x-auto rounded-lg font-mono text-[0.71875rem] leading-[1.65]">
       <div className="w-fit min-w-full">
         {lines.map((l, i) => (
           <div key={i} className={'flex whitespace-pre ' + KIND_CLASS[l.kind]}>
-            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
+            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[0.65625rem] text-faint opacity-65">
               {l.oldNo ?? ""}
             </span>
-            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[10.5px] text-faint opacity-65">
+            <span className="tnum w-11 shrink-0 select-none pr-2.5 text-right text-[0.65625rem] text-faint opacity-65">
               {l.newNo ?? ""}
             </span>
             <span className="pr-3">{l.text}</span>

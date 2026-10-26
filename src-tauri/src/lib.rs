@@ -26,6 +26,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_config,
             commands::set_theme,
+            commands::set_appearance,
             commands::open_repo,
             commands::remove_recent,
             commands::get_log,
@@ -36,6 +37,7 @@ pub fn run() {
             commands::stage_paths,
             commands::unstage_paths,
             commands::commit_staged,
+            commands::get_last_commit_message,
             commands::fetch_remote,
             commands::pull_remote,
             commands::push_remote,

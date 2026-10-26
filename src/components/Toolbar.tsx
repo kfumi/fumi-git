@@ -1,4 +1,4 @@
-// 顶部动作栏：仓库、分支（↑↓ 计数）、远程动作、搜索、刷新、主题
+// 顶部动作栏：仓库切换下拉、分支下拉（左键切换 / 右键操作，↑↓ 计数）、远程动作、搜索、刷新、主题
 import { useState } from "react";
 import {
   ArrowDown,
@@ -13,15 +13,25 @@ import {
   Moon,
   RotateCw,
   Search,
+  Settings,
   Sun,
   X,
 } from "lucide-react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { FilterBar } from "./FilterBar";
+import {
+  DETACHED_HINT,
+  detachedHead,
+  branchMenu as branchRowMenu,
+  remoteMenu as remoteRowMenu,
+} from "../lib/menus";
 import { useRepo } from "../stores/repo";
 import { useTheme } from "../theme";
+import { useAppearance } from "../appearance";
 import type { ThemeMode } from "../lib/types";
-import { DETACHED_HINT, detachedHead } from "../lib/menus";
+
+/** origin/feat/x → feat/x（远端名之后的剩余段） */
+const stripRemote = (fullName: string) => fullName.split("/").slice(1).join("/");
 
 const MODES: ThemeMode[] = ["dark", "light", "system"];
 
@@ -33,19 +43,48 @@ const THEME_ICON: Record<ThemeMode, typeof Moon> = {
 
 export function Toolbar() {
   const meta = useRepo((s) => s.meta);
+  const config = useRepo((s) => s.config);
   const summary = useRepo((s) => s.summary);
+  const openRepo = useRepo((s) => s.openRepo);
+  const pickAndOpenRepo = useRepo((s) => s.pickAndOpenRepo);
+  const closeRepo = useRepo((s) => s.closeRepo);
   const filter = useRepo((s) => s.filter);
   const setFilter = useRepo((s) => s.setFilter);
   const remote = useRepo((s) => s.remote);
   const remotes = useRepo((s) => s.remotes);
+  const refs = useRepo((s) => s.refs);
+  const checkout = useRepo((s) => s.checkout);
+  const createBranchFlow = useRepo((s) => s.createBranchFlow);
+  const deleteBranchFlow = useRepo((s) => s.deleteBranchFlow);
+  const renameBranchFlow = useRepo((s) => s.renameBranchFlow);
+  const mergeBranchFlow = useRepo((s) => s.mergeBranchFlow);
+  const copyText = useRepo((s) => s.copyText);
+  const checkoutRemote = useRepo((s) => s.checkoutRemote);
+  const pushToRemote = useRepo((s) => s.pushToRemote);
+  const fetchRemoteFlow = useRepo((s) => s.fetchRemoteFlow);
+  const deleteRemoteBranchFlow = useRepo((s) => s.deleteRemoteBranchFlow);
+  const rebaseOntoFlow = useRepo((s) => s.rebaseOntoFlow);
+  const setUpstreamFlow = useRepo((s) => s.setUpstreamFlow);
+  const unsetUpstream = useRepo((s) => s.unsetUpstream);
+  const pushBranchFlow = useRepo((s) => s.pushBranchFlow);
+  const fetchForBranch = useRepo((s) => s.fetchForBranch);
   const pushToFlow = useRepo((s) => s.pushToFlow);
   const pushAllRemotesFlow = useRepo((s) => s.pushAllRemotesFlow);
   const refresh = useRepo((s) => s.refresh);
+  const openSettings = useAppearance((s) => s.openSettings);
   const { mode, setMode } = useTheme();
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // 推送下拉：{ 锚点 }，菜单挂在 caret 按钮下方
   const [pushMenu, setPushMenu] = useState<{ x: number; y: number } | null>(null);
+  // 仓库切换下拉：同样挂在仓库名按钮下方
+  const [repoMenu, setRepoMenu] = useState<{ x: number; y: number } | null>(null);
+  // 分支下拉面板：挂在分支 chip 下方
+  const [branchPanel, setBranchPanel] = useState<{ x: number; y: number } | null>(null);
+  // 分支行右键操作菜单：{ 位置, 分支全名, 是否远程, tip }
+  const [rowMenu, setRowMenu] = useState<
+    { x: number; y: number; branch: string; tip: string; remote: boolean } | null
+  >(null);
 
   if (!meta) return null;
 
@@ -53,6 +92,20 @@ export function Toolbar() {
     setBusy(op);
     await remote(op);
     setBusy(null);
+  };
+
+  // 仓库切换菜单：最近仓库（当前项不列）→ 打开新目录 → 关闭回欢迎页
+  const repoMenuItems = (): MenuItem[] => {
+    const items: MenuItem[] = [];
+    for (const e of config?.recent_repos ?? []) {
+      if (e.path === meta.path) continue;
+      items.push({ label: e.name, hint: e.path, onSelect: () => void openRepo(e.path) });
+    }
+    if (items.length > 0) items.push({ kind: "separator" });
+    items.push({ label: "打开仓库目录…", onSelect: () => void pickAndOpenRepo() });
+    items.push({ kind: "separator" });
+    items.push({ label: "关闭仓库", hint: "回到欢迎页", onSelect: closeRepo });
+    return items;
   };
 
   // 推送去向菜单：当前上游置顶 + 其余远程 + 全部远程
@@ -85,6 +138,109 @@ export function Toolbar() {
     return items;
   };
 
+  // 分支右键动作集：与侧栏共用同一构建（lib/menus 单点定义），全量接线
+  const localActions = {
+    checkout: (b: string) => void checkout(b),
+    mergeBranch: (r: string) => void mergeBranchFlow(r),
+    createBranchFrom: (ref: string, label: string) => createBranchFlow({ ref, label }),
+    copy: (text: string, label: string) => void copyText(text, label),
+    renameBranch: (b: string) => renameBranchFlow(b),
+    deleteBranch: (b: string) => void deleteBranchFlow(b),
+    rebaseOnto: (r: string) => void rebaseOntoFlow(r),
+    setUpstream: (b: string) => setUpstreamFlow(b),
+    unsetUpstream: (b: string) => void unsetUpstream(b),
+    pushBranch: (b: string) => void pushBranchFlow(b),
+    fetchForBranch: (b: string) => void fetchForBranch(b),
+  };
+  const remoteActions = {
+    checkout: localActions.checkout,
+    mergeBranch: localActions.mergeBranch,
+    createBranchFrom: localActions.createBranchFrom,
+    copy: localActions.copy,
+    rebaseOnto: localActions.rebaseOnto,
+    checkoutRemote: (full: string, branch: string) => void checkoutRemote(full, branch),
+    pushToRemote: (remote: string, branch: string) => void pushToRemote(remote, branch),
+    fetch: (remote?: string) => void fetchRemoteFlow(remote),
+    deleteRemoteBranch: (remote: string, branch: string) => void deleteRemoteBranchFlow(remote, branch),
+  };
+
+  // 分支下拉面板：本地 / 远程两组，左键行 = 切换，右键行 = 该分支操作菜单
+  const branchPanelItems = (): MenuItem[] => {
+    const locals = refs
+      .filter((e) => e.kind === "branch")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const remoteRefs = refs
+      .filter((e) => e.kind === "remote")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const localNames = new Set(locals.map((e) => e.name));
+    const ab =
+      summary && summary.ahead + summary.behind > 0
+        ? ` ↑${summary.ahead} ↓${summary.behind}`
+        : "";
+    const items: MenuItem[] = [{ kind: "header", label: "本地分支" }];
+    if (locals.length === 0) items.push({ label: "暂无本地分支", disabled: true });
+    for (const e of locals) {
+      const current = summary?.branch === e.name;
+      items.push({
+        label: e.name,
+        active: current,
+        disabled: current,
+        hint: current ? `当前分支${ab}` : undefined,
+        title: `${e.name} → ${e.tip.slice(0, 7)}`,
+        onSelect: () => void checkout(e.name),
+        onContextMenu: (x, y) => setRowMenu({ x, y, branch: e.name, tip: e.tip, remote: false }),
+      });
+    }
+    if (remoteRefs.length > 0) {
+      items.push({ kind: "separator" }, { kind: "header", label: "远程分支" });
+      for (const e of remoteRefs) {
+        items.push({
+          label: e.name,
+          title: `${e.name} → ${e.tip.slice(0, 7)}`,
+          // 左键 = git switch 的 DWIM 显式化：同名本地分支直接切，否则弹「新建分支」预填短名、以其 tip 为起点
+          onSelect: () => {
+            const local = stripRemote(e.name);
+            if (local && localNames.has(local)) void checkout(local);
+            else createBranchFlow({ ref: e.tip, label: `远程分支 ${e.name}` }, local);
+          },
+          onContextMenu: (x, y) => setRowMenu({ x, y, branch: e.name, tip: e.tip, remote: true }),
+        });
+      }
+    }
+    items.push({ kind: "separator" });
+    items.push({ label: "新建分支…", hint: "基于当前 HEAD", onSelect: () => createBranchFlow() });
+    return items;
+  };
+
+  const rowMenuItems = (): MenuItem[] => {
+    if (!rowMenu) return [];
+    const detachedNow = detachedHead(summary) !== null;
+    const localNames = new Set(refs.filter((e) => e.kind === "branch").map((e) => e.name));
+    if (rowMenu.remote) {
+      const branch = stripRemote(rowMenu.branch);
+      return remoteRowMenu(
+        {
+          remote: rowMenu.branch.split("/")[0],
+          branch,
+          full: rowMenu.branch,
+          hasLocal: localNames.has(branch),
+          detached: detachedNow,
+        },
+        remoteActions,
+      );
+    }
+    const entry = refs.find((e) => e.kind === "branch" && e.name === rowMenu.branch);
+    return branchRowMenu(
+      {
+        name: rowMenu.branch,
+        current: summary?.branch === rowMenu.branch,
+        upstream: entry?.upstream ?? null,
+        detached: detachedNow,
+      },
+      localActions,
+    );
+  };
+
   const doRefresh = async () => {
     setRefreshing(true);
     await refresh();
@@ -99,15 +255,46 @@ export function Toolbar() {
 
   return (
     <div className="flex h-[42px] shrink-0 items-center gap-1.5 border-b border-brd bg-panel px-3">
-      <span className="flex items-center gap-2 pr-1.5 text-[13px] font-semibold">
-        <span className="h-[7px] w-[7px] rounded-full bg-ok" />
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setRepoMenu({ x: r.left, y: r.bottom + 4 });
+        }}
+        title={meta.path}
+        aria-label="切换仓库"
+        className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[0.8125rem] font-semibold transition-colors hover:bg-hover"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-ok" aria-hidden />
         {meta.name}
-      </span>
-      <span className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium">
+        <ChevronDown
+          size={11}
+          aria-hidden
+          className={"shrink-0 text-faint transition-transform duration-150 " + (repoMenu ? "rotate-180" : "")}
+        />
+      </button>
+      {repoMenu && (
+        <ContextMenu
+          x={repoMenu.x}
+          y={repoMenu.y}
+          items={repoMenuItems()}
+          onClose={() => setRepoMenu(null)}
+        />
+      )}
+      {/* 分支 chip：点击展开下拉面板（本地/远程分支切换 + 操作），↑↓ 为与上游的差数 */}
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setBranchPanel({ x: r.left, y: r.bottom + 4 });
+        }}
+        title="切换分支"
+        aria-label="切换分支"
+        aria-haspopup="menu"
+        className="flex h-7 items-center gap-1.5 rounded-lg border border-brd bg-panel2 px-2.5 text-xs font-medium transition-colors hover:border-accent"
+      >
         <GitBranch size={11} className="shrink-0 text-accent-ink" aria-hidden />
         {detached ? "HEAD（分离）" : (summary?.branch ?? meta.branch)}
         {summary?.upstream && (summary.ahead > 0 || summary.behind > 0) && (
-          <span className="tnum flex items-center gap-1 text-[10.5px] font-normal">
+          <span className="tnum flex items-center gap-1 text-[0.65625rem] font-normal">
             {summary.ahead > 0 && (
               <span className="flex items-center text-ok">
                 <ArrowUp size={9} aria-hidden /> {summary.ahead}
@@ -120,7 +307,29 @@ export function Toolbar() {
             )}
           </span>
         )}
-      </span>
+        <ChevronDown
+          size={11}
+          aria-hidden
+          className={"shrink-0 text-faint transition-transform duration-150 " + (branchPanel ? "rotate-180" : "")}
+        />
+      </button>
+      {branchPanel && (
+        <ContextMenu
+          x={branchPanel.x}
+          y={branchPanel.y}
+          width={260}
+          items={branchPanelItems()}
+          onClose={() => setBranchPanel(null)}
+        />
+      )}
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          items={rowMenuItems()}
+          onClose={() => setRowMenu(null)}
+        />
+      )}
       <button
         disabled={busy !== null || detached !== null}
         onClick={() => void run("pull")}
@@ -225,6 +434,14 @@ export function Toolbar() {
         onClick={() => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])}
       >
         <ThemeIcon size={13} aria-hidden />
+      </button>
+      <button
+        className="btn-ghost icon-btn"
+        title="设置（字体 / 字号 / 缩放）"
+        aria-label="设置"
+        onClick={openSettings}
+      >
+        <Settings size={13} aria-hidden />
       </button>
     </div>
   );

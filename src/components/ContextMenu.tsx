@@ -1,8 +1,9 @@
 // 菜单基元（ui-spec §4）：受控组件，调用方持 {x, y, items} 状态。
-// 三份右键菜单与图谱筛选下拉（§1）共用：checked 勾选项 / kind:"header" 分组标题 /
-// footer 底部扩展槽（筛选下拉的输入框）/ maxListH 长列表内滚 / anchor 锚点。
-// 点击外部 / Escape / 窗口失焦自动关闭；出现位置避让视口边缘。
+// 三份右键菜单、图谱筛选下拉（§1）与分支下拉共用：checked 勾选项 / active 当前行 /
+// kind:"header" 分组标题 / footer 底部扩展槽 / maxListH 长列表内滚 / anchor 锚点 / width。
+// 点击外部 / Escape / 窗口失焦自动关闭；面板内滚动不误关闭；出现位置避让视口边缘。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Check } from "lucide-react";
 
 export type MenuItem = MenuAction | MenuSeparator | MenuHeader;
 
@@ -15,8 +16,12 @@ export interface MenuAction {
   checked?: boolean;
   disabled?: boolean;
   danger?: boolean;
-  /** 悬停说明（如提交者行的邮箱） */
+  /** 当前行标记：左侧 ✓ + 文字加重（分支下拉的「当前分支」） */
+  active?: boolean;
+  /** 悬停 tooltip（如提交者邮箱、分支完整名 → 短 hash） */
   title?: string;
+  /** 行内右键（分支下拉对单个分支呼出操作菜单）；面板自身随之关闭 */
+  onContextMenu?: (x: number, y: number) => void;
   onSelect?: () => void;
 }
 
@@ -25,7 +30,7 @@ export interface MenuSeparator {
   kind: "separator";
 }
 
-/** 分组标题（筛选下拉用）：不可点，点它也不关菜单 */
+/** 分组标题行：不可交互的小节标签（如「本地分支 / 远程分支」） */
 export interface MenuHeader {
   kind: "header";
   label: string;
@@ -49,6 +54,7 @@ export function ContextMenu({
   footer,
   maxListH,
   anchor,
+  width,
 }: {
   x: number;
   y: number;
@@ -60,13 +66,24 @@ export function ContextMenu({
   maxListH?: number;
   /** 锚点元素：它上面的按下不算「点击外部」，按钮才能做正常的开/关 toggle */
   anchor?: React.RefObject<HTMLElement | null>;
+  /** 固定宽度（分支下拉等长列表用）；缺省自适应 min-w-[150px] */
+  width?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
-  // 只有列表里出现过 checked 才给勾选位，右键菜单的排版不受影响
-  const hasCheck = items.some(
-    (i) => !isSeparator(i) && !isHeader(i) && i.checked !== undefined,
+  // 勾选位：checked（筛选下拉）或 active（当前分支）出现时才占位，纯动作菜单排版不受影响
+  const showCheck = items.some(
+    (i) => !isSeparator(i) && !isHeader(i) && (i.checked !== undefined || i.active),
   );
+  // checked 走 ✓ 文本（筛选下拉），active 走图标（分支下拉的当前分支）
+  const checkSlot = (item: MenuAction) =>
+    item.checked ? (
+      <span className="w-3.5 shrink-0 text-accent-ink">✓</span>
+    ) : item.active ? (
+      <Check size={12} className="shrink-0 text-accent" aria-hidden />
+    ) : (
+      <span className="w-3.5 shrink-0" aria-hidden />
+    );
 
   // 首帧按实际尺寸避让视口边缘
   useLayoutEffect(() => {
@@ -110,20 +127,23 @@ export function ContextMenu({
     };
   }, [onClose, anchor]);
 
+  // 被视口下缘顶上去（向上翻转）→ 缩放锚点换到底边，进场动画从底部展开
+  const origin = pos.y < y ? "bottom left" : "top left";
+
   return (
     <div
       ref={ref}
       role="menu"
-      style={{ left: pos.x, top: pos.y }}
+      style={{ left: pos.x, top: pos.y, transformOrigin: origin, ...(width ? { width } : {}) }}
       onContextMenu={(e) => e.preventDefault()}
-      className="fixed z-50 min-w-[150px] rounded-lg border border-brd bg-panel py-1 shadow-card"
+      className="menu-in fixed z-50 max-h-[70vh] min-w-[150px] overflow-y-auto rounded-lg border border-brd bg-panel py-1 shadow-card"
     >
       <div style={maxListH ? { maxHeight: maxListH, overflowY: "auto" } : undefined}>
         {items.map((item, i) =>
           isSeparator(item) ? (
             <div key={i} role="separator" className="mx-2.5 my-1 h-px bg-brd-soft" />
           ) : isHeader(item) ? (
-            <div key={i} className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-medium text-faint">
+            <div key={i} role="presentation" className="section-label px-2.5 pb-0.5 pt-1.5">
               {item.label}
             </div>
           ) : item.disabled ? (
@@ -134,9 +154,11 @@ export function ContextMenu({
               title={item.title}
               className="flex h-7 w-full items-center gap-2 px-2.5 text-left text-xs text-dim opacity-45"
             >
-              {hasCheck && <span className="w-3.5 shrink-0" />}
-              <span className="truncate">{item.label}</span>
-              {item.hint && <span className="ml-auto pl-3 text-[10.5px]">{item.hint}</span>}
+              {showCheck && checkSlot(item)}
+              <span className={item.active ? "truncate font-medium text-ink" : "truncate"}>
+                {item.label}
+              </span>
+              {item.hint && <span className="ml-auto pl-3 text-[0.65625rem]">{item.hint}</span>}
             </button>
           ) : (
             <button
@@ -147,6 +169,7 @@ export function ContextMenu({
                 onClose();
                 item.onSelect?.();
               }}
+              onContextMenu={(e) => item.onContextMenu?.(e.clientX, e.clientY)}
               className={
                 "flex h-7 w-full items-center gap-2 px-2.5 text-left text-xs transition-colors " +
                 (item.danger
@@ -154,12 +177,14 @@ export function ContextMenu({
                   : "text-dim hover:bg-hover hover:text-ink")
               }
             >
-              {hasCheck && (
-                <span className="w-3.5 shrink-0 text-accent-ink">{item.checked ? "✓" : ""}</span>
-              )}
-              <span className="truncate">{item.label}</span>
+              {showCheck && checkSlot(item)}
+              <span className={item.active ? "truncate font-medium text-ink" : "truncate"}>
+                {item.label}
+              </span>
               {item.hint && (
-                <span className="ml-auto shrink-0 pl-3 text-[10.5px] text-faint">{item.hint}</span>
+                <span className="ml-auto shrink-0 pl-3 text-[0.65625rem] text-faint">
+                  {item.hint}
+                </span>
               )}
             </button>
           ),

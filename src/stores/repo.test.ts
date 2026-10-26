@@ -91,7 +91,14 @@ const c = (id: string, subject: string, author = "林一帆"): CommitEntry => ({
 beforeEach(() => {
   vi.clearAllMocks();
   useRepo.setState({
-    config: { recent_repos: [], theme: "system" },
+    config: {
+      recent_repos: [],
+      theme: "system",
+      ui_font: null,
+      mono_font: null,
+      font_scale: 1,
+      zoom: 1,
+    },
     meta: null,
     commits: [],
     logDone: false,
@@ -467,7 +474,7 @@ describe("checkout 安全模型（票 01）", () => {
     await useRepo.getState().checkout("feat");
     expect(ipc.switchBranch).toHaveBeenCalledWith("feat");
     expect(useRepo.getState().dialog).toBeNull();
-    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok", text: "已检出 feat" });
+    expect(useRepo.getState().toasts[0]).toMatchObject({ kind: "ok", text: "已检出到 feat" });
   });
 
   it("脏工作树：拦截弹三选，不直接检出", async () => {
@@ -478,13 +485,13 @@ describe("checkout 安全模型（票 01）", () => {
     const d = useRepo.getState().dialog;
     expect(d).not.toBeNull();
     expect(d?.files).toEqual(["s.ts", "u.ts"]);
-    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动检出", "stash 后检出"]);
+    expect(d?.actions.map((a) => a.label)).toEqual(["带着改动检出", "贮藏后检出"]);
 
     d!.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
   });
 
-  it("脏工作树选「stash 后检出」：先入 stash 再检出", async () => {
+  it("脏工作树选「贮藏后检出」：先入贮藏再检出", async () => {
     (ipc.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(dirty);
     (ipc.getLog as ReturnType<typeof vi.fn>).mockResolvedValue({ commits: [], done: true });
     (ipc.getBranchSummary as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -494,7 +501,7 @@ describe("checkout 安全模型（票 01）", () => {
     // 宿主契约：action.run 返回非 false 时由 DialogHost 关闭对话框
     if (d.actions[1].run("", false) !== false) useRepo.getState().closeDialog();
     await vi.waitFor(() => expect(ipc.switchBranch).toHaveBeenCalledWith("feat"));
-    expect(ipc.stashPush).toHaveBeenCalledWith("检出前自动暂存");
+    expect(ipc.stashPush).toHaveBeenCalledWith("检出前自动贮藏");
     expect(useRepo.getState().dialog).toBeNull();
   });
 });
@@ -1352,7 +1359,7 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(ipc.createBranch).not.toHaveBeenCalled();
     const d = useRepo.getState().dialog!;
     expect(d.files).toEqual(["src/a.ts"]);
-    expect(d.actions.map((a) => a.label)).toEqual(["带着改动检出", "stash 后检出"]);
+    expect(d.actions.map((a) => a.label)).toEqual(["带着改动检出", "贮藏后检出"]);
     d.actions[0].run("", false);
     await vi.waitFor(() => expect(ipc.createBranch).toHaveBeenCalled());
   });
@@ -1641,7 +1648,7 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     expect(ipc.continueOperation).toHaveBeenCalledWith("rebase", "skip");
   });
 
-  it("07 rebaseOntoFlow：脏工作树先拦截，选项是「继续变基 / stash 后变基」", async () => {
+  it("07 rebaseOntoFlow：脏工作树先拦截，选项是「继续变基 / 贮藏后变基」", async () => {
     withRepo();
     logOk();
     status(dirty);
@@ -1650,13 +1657,13 @@ describe("右键菜单对齐批次 03-09（打桩 IPC）", () => {
     useRepo.getState().dialog!.actions[0].run("", false);
     await vi.waitFor(() => expect(useRepo.getState().dialog?.files).toEqual(["src/a.ts"]));
     const guard = useRepo.getState().dialog!;
-    expect(guard.actions.map((a) => a.label)).toEqual(["继续变基", "stash 后变基"]);
+    expect(guard.actions.map((a) => a.label)).toEqual(["继续变基", "贮藏后变基"]);
     expect(ipc.rebase).not.toHaveBeenCalled();
 
-    // 「stash 后变基」= stash push → rebase（不自动 pop）
+    // 「贮藏后变基」= stash push → rebase（不自动 pop）
     guard.actions[1].run("", false);
     await vi.waitFor(() => expect(ipc.rebase).toHaveBeenCalledWith("origin/main"));
-    expect(ipc.stashPush).toHaveBeenCalledWith("变基前自动暂存");
+    expect(ipc.stashPush).toHaveBeenCalledWith("变基前自动贮藏");
   });
   it("08 compareWithHead：成功进比较模式（base=HEAD）；失败清空并报错", async () => {
     withRepo();

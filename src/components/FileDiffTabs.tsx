@@ -1,6 +1,6 @@
 // 右下（历史 tab）：提交详情文件 diff —— 点击右上文件列表打开/切换，多 tab 可关闭
 // 右栏（改动 tab）：工作区单文件 diff 面板，选中工作区文件时才出现
-import { X } from "lucide-react";
+import { X, FileDiff } from "lucide-react";
 import { useRepo } from "../stores/repo";
 import { DiffView, DetailDiff } from "./DiffView";
 
@@ -24,7 +24,7 @@ export function FileDiffTabs() {
           <div
             key={path}
             className={
-              "flex shrink-0 items-center border-r border-brd-soft pl-2.5 pr-1 text-[11px] " +
+              "flex shrink-0 items-center border-r border-brd-soft pl-2.5 pr-1 text-[0.6875rem] " +
               (path === active
                 ? "bg-panel2 text-ink shadow-[inset_0_2px_0_var(--accent)]"
                 : "text-faint hover:text-dim")
@@ -54,7 +54,10 @@ export function FileDiffTabs() {
         ) : active && detail.files.some((f) => f.path === active) ? (
           <DetailDiff detail={detail} selectedFile={active} />
         ) : (
-          <p className="text-xs text-faint">点击上方文件查看 diff</p>
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-faint">
+            <FileDiff size={22} strokeWidth={1.5} aria-hidden />
+            <span className="text-xs">点击上方文件查看 diff</span>
+          </div>
         )}
       </div>
     </div>
@@ -74,13 +77,13 @@ export function WorkDiffView() {
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-brd px-3">
         <span
           className={
-            "rounded px-1.5 py-0.5 text-[10px] font-medium " +
+            "rounded px-1.5 py-0.5 text-[0.625rem] font-medium " +
             (workStaged ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")
           }
         >
           {workStaged ? "已暂存" : "未暂存"}
         </span>
-        <span className="truncate font-mono text-[11px]" title={workFile}>
+        <span className="truncate font-mono text-[0.6875rem]" title={workFile}>
           {workFile}
         </span>
       </div>
@@ -107,10 +110,10 @@ export function StashDiffView() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-brd px-3">
-        <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">
+        <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[0.625rem] font-medium text-accent-ink">
           stash@{`{${stashView.index}}`}
         </span>
-        <span className="truncate text-[11px] text-dim" title={entry?.message}>
+        <span className="truncate text-[0.6875rem] text-dim" title={entry?.message}>
           {entry?.message ?? "加载中…"}
         </span>
       </div>

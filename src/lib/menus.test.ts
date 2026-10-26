@@ -65,10 +65,8 @@ const trace = (items: MenuItem[]) =>
 
 function itemOf(items: MenuItem[], label: string): MenuAction {
   for (const i of items) {
-    // 只有动作项才有 label 语义：分隔线与分组标题都不是可点的菜单项
-    if (i.kind === undefined || i.kind === "item") {
-      if (i.label === label) return i;
-    }
+    // header（分组标题行）与 separator 都不是可点条目
+    if (i.kind !== "separator" && i.kind !== "header" && i.label === label) return i;
   }
   throw new Error(`菜单里没有「${label}」项`);
 }
